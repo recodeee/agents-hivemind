@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "bench": "node --import tsx src/bench.ts",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

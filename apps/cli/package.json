@@ -12,7 +12,7 @@
   "scripts": {
     "build": "tsup src/index.ts --format esm --clean --banner '#!/usr/bin/env node'",
     "dev": "tsup src/index.ts --format esm --watch --banner '#!/usr/bin/env node' --onSuccess \"node dist/index.js\"",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

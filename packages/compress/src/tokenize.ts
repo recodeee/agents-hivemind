@@ -18,57 +18,93 @@ export interface Segment {
   preserved: boolean;
 }
 
-const FENCE_RE = /```[\s\S]*?```|~~~[\s\S]*?~~~/g;
-const INLINE_CODE_RE = /`[^`\n]+`/g;
-const URL_RE = /\bhttps?:\/\/[^\s)\]]+/g;
-const PATH_RE = /(?:(?:\.{1,2})?\/[\w.\-_/]+|~\/[\w.\-_/]+|[A-Z]:\\[\w.\-\\]+)/g;
-const VERSION_RE = /\bv?\d+\.\d+(?:\.\d+)?(?:[-+][\w.]+)?\b/g;
-const ISO_DATE_RE = /\b\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2}(?::\d{2})?)?\b/g;
-const NUMBER_RE = /\b\d+(?:\.\d+)?\b/g;
-// identifier heuristic: snake_case, kebab-case, camelCase, PascalCase with at least one boundary char
-const IDENT_RE = /\b[A-Za-z_][A-Za-z0-9_]*[-_][A-Za-z0-9_\-]+\b|\b[a-z]+[A-Z][A-Za-z0-9]*\b/g;
-const HEADING_RE = /^(#{1,6})\s.*$/gm;
+interface RulePattern {
+  kind: SegmentKind;
+  priority: number;
+  re: RegExp;
+}
+
+// Priority (higher wins on overlap): fence > inline-code > url > heading >
+// path > date > version > number > identifier. Headings are line-scoped.
+const RULES: RulePattern[] = [
+  { kind: 'fence', priority: 100, re: /```[\s\S]*?```|~~~[\s\S]*?~~~/g },
+  { kind: 'inline-code', priority: 90, re: /`[^`\n]+`/g },
+  { kind: 'url', priority: 80, re: /\bhttps?:\/\/[^\s)\]]+/g },
+  { kind: 'heading', priority: 70, re: /^#{1,6}\s[^\n]*$/gm },
+  {
+    kind: 'path',
+    priority: 60,
+    re: /(?:(?:\.{1,2})?\/[A-Za-z0-9._\-/]+|~\/[A-Za-z0-9._\-/]+|[A-Z]:\\[A-Za-z0-9._\-\\]+)/g,
+  },
+  { kind: 'date', priority: 50, re: /\b\d{4}-\d{2}-\d{2}(?:[T\s]\d{2}:\d{2}(?::\d{2})?)?\b/g },
+  { kind: 'version', priority: 40, re: /\bv?\d+\.\d+(?:\.\d+)?(?:[-+][\w.]+)?\b/g },
+  { kind: 'number', priority: 30, re: /\b\d+(?:\.\d+)?\b/g },
+  {
+    kind: 'identifier',
+    priority: 20,
+    re: /\b[A-Za-z_][A-Za-z0-9_]*[-_][A-Za-z0-9_\-]+\b|\b[a-z]+[A-Z][A-Za-z0-9]*\b/g,
+  },
+];
+
+interface Span {
+  start: number;
+  end: number;
+  kind: SegmentKind;
+  priority: number;
+}
 
 /**
- * Split text into segments. Preserved segments pass through untouched.
- * Prose segments are the only candidates for compression.
+ * Single-pass tokenizer. Collects all rule matches across the input, resolves
+ * overlaps by priority (with earlier-start as tie-breaker, then wider span),
+ * and emits a non-overlapping list of preserved + prose segments.
  */
 export function tokenize(input: string): Segment[] {
-  const holders: Array<{ kind: SegmentKind; text: string }> = [];
-  let working = input;
-
-  const protect = (re: RegExp, kind: SegmentKind) => {
-    working = working.replace(re, (m) => {
-      const token = `\u0000${holders.length}\u0000`;
-      holders.push({ kind, text: m });
-      return token;
-    });
-  };
-
-  protect(FENCE_RE, 'fence');
-  protect(INLINE_CODE_RE, 'inline-code');
-  protect(URL_RE, 'url');
-  protect(HEADING_RE, 'heading');
-  protect(PATH_RE, 'path');
-  protect(ISO_DATE_RE, 'date');
-  protect(VERSION_RE, 'version');
-  protect(IDENT_RE, 'identifier');
-  protect(NUMBER_RE, 'number');
-
-  const parts = working.split(/(\u0000\d+\u0000)/g);
-  const out: Segment[] = [];
-  for (const part of parts) {
-    if (!part) continue;
-    const m = /^\u0000(\d+)\u0000$/.exec(part);
-    if (m && m[1] !== undefined) {
-      const idx = Number(m[1]);
-      const h = holders[idx];
-      if (h) {
-        out.push({ kind: h.kind, text: h.text, preserved: true });
+  const spans: Span[] = [];
+  for (const rule of RULES) {
+    rule.re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = rule.re.exec(input)) !== null) {
+      if (m[0].length === 0) {
+        rule.re.lastIndex += 1;
         continue;
       }
+      spans.push({
+        start: m.index,
+        end: m.index + m[0].length,
+        kind: rule.kind,
+        priority: rule.priority,
+      });
     }
-    if (part.length) out.push({ kind: 'prose', text: part, preserved: false });
+  }
+  // Resolve overlaps greedily.
+  spans.sort((a, b) => {
+    if (a.start !== b.start) return a.start - b.start;
+    if (a.priority !== b.priority) return b.priority - a.priority;
+    return b.end - a.end; // wider first
+  });
+  const resolved: Span[] = [];
+  let cursor = 0;
+  for (const s of spans) {
+    if (s.start < cursor) continue; // overlaps a higher-priority/earlier span
+    // Check if a later, higher-priority span starts inside this one.
+    // Because we sorted by start ASC and priority DESC at same start, the
+    // first span starting at any index is the winner. That's sufficient.
+    resolved.push(s);
+    cursor = s.end;
+  }
+  resolved.sort((a, b) => a.start - b.start);
+
+  const out: Segment[] = [];
+  let pos = 0;
+  for (const s of resolved) {
+    if (s.start > pos) {
+      out.push({ kind: 'prose', text: input.slice(pos, s.start), preserved: false });
+    }
+    out.push({ kind: s.kind, text: input.slice(s.start, s.end), preserved: true });
+    pos = s.end;
+  }
+  if (pos < input.length) {
+    out.push({ kind: 'prose', text: input.slice(pos), preserved: false });
   }
   return out;
 }

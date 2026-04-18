@@ -19,7 +19,18 @@
     "declarationMap": true,
     "sourceMap": true,
     "composite": false,
-    "incremental": true
+    "incremental": true,
+    "baseUrl": ".",
+    "paths": {
+      "@caveman-mem/compress": ["./packages/compress/src/index.ts"],
+      "@caveman-mem/config": ["./packages/config/src/index.ts"],
+      "@caveman-mem/core": ["./packages/core/src/index.ts"],
+      "@caveman-mem/storage": ["./packages/storage/src/index.ts"],
+      "@caveman-mem/hooks": ["./packages/hooks/src/index.ts"],
+      "@caveman-mem/installers": ["./packages/installers/src/index.ts"],
+      "@caveman-mem/mcp-server": ["./apps/mcp-server/src/server.ts"],
+      "@caveman-mem/worker": ["./apps/worker/src/server.ts"]
+    }
   },
   "exclude": ["node_modules", "dist"]
 }

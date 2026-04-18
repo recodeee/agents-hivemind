@@ -15,9 +15,9 @@ export function writeJson(path: string, data: unknown): void {
   writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
 }
 
-export function deepMerge<T extends Record<string, unknown>>(base: T, add: Partial<T>): T {
-  const out: Record<string, unknown> = { ...base };
-  for (const [k, v] of Object.entries(add)) {
+export function deepMerge<T>(base: T, add: Partial<T>): T {
+  const out = { ...(base as Record<string, unknown>) };
+  for (const [k, v] of Object.entries(add as Record<string, unknown>)) {
     const existing = out[k];
     if (
       existing &&

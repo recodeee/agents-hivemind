@@ -14,7 +14,7 @@ caveman-mem gives AI coding assistants a durable memory that survives sessions, 
 
 Agent memory systems typically store verbose text and pay for it on every retrieval. Long-running projects accumulate megabytes of observations, and each prompt drags in far more tokens than the model actually needs.
 
-caveman-mem attacks this at the source. Every observation is compressed before it touches disk. Technical content — code, paths, URLs, commands, version numbers — is preserved exactly. Only the prose around it is compacted. The result is a memory store that is ~40–60% smaller in tokens, without losing a character of the substance an agent relies on.
+caveman-mem attacks this at the source. Every observation is compressed before it touches disk. Technical content — code, paths, URLs, commands, version numbers — is preserved exactly. Only the prose around it is compacted. On the in-repo benchmark corpus at default intensity, stored prose is ~33% smaller in tokens without losing a character of technical substance. Aggressive modes push further.
 
 ## Features
 
