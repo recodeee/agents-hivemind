@@ -16,7 +16,7 @@ export function createProgram(): Command {
   program
     .name('cavemem')
     .description('Cross-agent persistent memory with compressed storage.')
-    .version('0.1.0');
+    .version(__CAVEMEM_VERSION__);
 
   registerInstallCommand(program);
   registerUninstallCommand(program);
