@@ -40,7 +40,7 @@ export const claudeCode: Installer = {
           hooks: [
             {
               type: 'command',
-              command: `${ctx.cliPath} hook run ${hookId}`,
+              command: `${ctx.cliPath} hook run ${hookId} --ide claude-code`,
             },
           ],
         },

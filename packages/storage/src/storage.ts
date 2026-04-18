@@ -31,8 +31,12 @@ export class Storage {
   // --- sessions ---
 
   createSession(s: Omit<SessionRow, 'ended_at'>): void {
+    // INSERT OR IGNORE: SessionStart re-fires on resume/clear/compact with the
+    // same session_id, and we want the original row (and ended_at=null) preserved.
     this.db
-      .prepare('INSERT INTO sessions(id, ide, cwd, started_at, metadata) VALUES (?, ?, ?, ?, ?)')
+      .prepare(
+        'INSERT OR IGNORE INTO sessions(id, ide, cwd, started_at, metadata) VALUES (?, ?, ?, ?, ?)',
+      )
       .run(s.id, s.ide, s.cwd, s.started_at, s.metadata);
   }
 

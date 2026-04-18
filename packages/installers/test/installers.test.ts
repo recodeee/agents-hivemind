@@ -70,7 +70,7 @@ describe('claude-code installer', () => {
       ['PostToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'UserPromptSubmit'].sort(),
     );
     expect(first.hooks.SessionStart?.[0]?.hooks?.[0]?.command).toBe(
-      `${ctx.cliPath} hook run session-start`,
+      `${ctx.cliPath} hook run session-start --ide claude-code`,
     );
     expect(first.mcpServers.cavemem).toEqual({ command: ctx.cliPath, args: ['mcp'] });
 

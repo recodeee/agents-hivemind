@@ -2,13 +2,17 @@ import type { MemoryStore } from '@cavemem/core';
 import type { HookInput } from '../types.js';
 
 export async function sessionStart(store: MemoryStore, input: HookInput): Promise<string> {
+  // Idempotent: Claude Code re-fires SessionStart on resume/clear/compact with
+  // the same session_id. We must not blow up on the duplicate.
   store.startSession({
     id: input.session_id,
-    ide: input.ide,
+    ide: input.ide ?? 'unknown',
     cwd: input.cwd ?? null,
   });
-  // Surface a compact, compressed preface into the agent context.
-  const recent = store.storage.listSessions(3);
+  // For resume/clear/compact the agent already has its own context; injecting
+  // a "Prior-session context" preface would be noisy and possibly stale.
+  if (input.source && input.source !== 'startup') return '';
+  const recent = store.storage.listSessions(4);
   const hints = recent
     .filter((s) => s.id !== input.session_id)
     .slice(0, 3)

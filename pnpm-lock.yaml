@@ -29,6 +29,25 @@ importers:
 
   apps/cli:
     dependencies:
+      '@hono/node-server':
+        specifier: ^1.13.7
+        version: 1.19.14(hono@4.12.14)
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.0.0
+        version: 1.29.0(zod@3.25.76)
+      better-sqlite3:
+        specifier: ^11.5.0
+        version: 11.10.0
+      commander:
+        specifier: ^12.1.0
+        version: 12.1.0
+      hono:
+        specifier: ^4.6.10
+        version: 4.12.14
+      kleur:
+        specifier: ^4.1.5
+        version: 4.1.5
+    devDependencies:
       '@cavemem/compress':
         specifier: workspace:*
         version: link:../../packages/compress
@@ -53,25 +72,6 @@ importers:
       '@cavemem/worker':
         specifier: workspace:*
         version: link:../worker
-      '@hono/node-server':
-        specifier: ^1.13.7
-        version: 1.19.14(hono@4.12.14)
-      '@modelcontextprotocol/sdk':
-        specifier: ^1.0.0
-        version: 1.29.0(zod@3.25.76)
-      better-sqlite3:
-        specifier: ^11.5.0
-        version: 11.10.0
-      commander:
-        specifier: ^12.1.0
-        version: 12.1.0
-      hono:
-        specifier: ^4.6.10
-        version: 4.12.14
-      kleur:
-        specifier: ^4.1.5
-        version: 4.1.5
-    devDependencies:
       tsup:
         specifier: ^8.3.5
         version: 8.5.1(postcss@8.5.10)(tsx@4.21.0)(typescript@5.9.3)

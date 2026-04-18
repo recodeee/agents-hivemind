@@ -93,12 +93,85 @@ describe('runHook', () => {
     expect(store.storage.getSession('sess-d')?.ended_at).not.toBeNull();
   });
 
-  it('returns ok=false with an error message when a handler throws', async () => {
-    // Re-using a session id will trigger a PK conflict on session-start.
-    await runHook('session-start', { session_id: 'dup', ide: 'claude-code' }, { store });
-    const r = await runHook('session-start', { session_id: 'dup', ide: 'claude-code' }, { store });
+  it('session-start is idempotent across resume/clear/compact', async () => {
+    const a = await runHook(
+      'session-start',
+      { session_id: 'dup', ide: 'claude-code', source: 'startup' },
+      { store },
+    );
+    const b = await runHook(
+      'session-start',
+      { session_id: 'dup', ide: 'claude-code', source: 'resume' },
+      { store },
+    );
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+    // Resume must not inject a "Prior-session context" preface — the agent
+    // already carries its own context across the resume.
+    expect(b.context).toBe('');
+  });
+
+  it('returns ok=false with an error message when storage is unavailable', async () => {
+    // Force a failure by closing the store before running a hook.
+    const broken = new MemoryStore({
+      dbPath: join(dir, 'broken.db'),
+      settings: defaultSettings,
+    });
+    broken.close();
+    const r = await runHook(
+      'user-prompt-submit',
+      { session_id: 'never', prompt: 'hi' },
+      { store: broken },
+    );
     expect(r.ok).toBe(false);
     expect(r.error).toBeTruthy();
+  });
+
+  it('post-tool-use accepts Claude Code field names (tool_name, tool_response)', async () => {
+    await runHook(
+      'session-start',
+      { session_id: 'sess-cc', ide: 'claude-code', source: 'startup' },
+      { store },
+    );
+    const r = await runHook(
+      'post-tool-use',
+      {
+        session_id: 'sess-cc',
+        tool_name: 'Edit',
+        tool_input: { file_path: '/tmp/x.txt' },
+        tool_response: { success: true },
+      },
+      { store },
+    );
+    expect(r.ok).toBe(true);
+    const tl = store.timeline('sess-cc');
+    expect(tl).toHaveLength(1);
+    expect(tl[0]?.metadata).toEqual({ tool: 'Edit' });
+    expect(tl[0]?.content).toContain('Edit');
+  });
+
+  it('stop accepts Claude Code last_assistant_message and skips empty turns', async () => {
+    await runHook(
+      'session-start',
+      { session_id: 'sess-cc2', ide: 'claude-code', source: 'startup' },
+      { store },
+    );
+    const empty = await runHook(
+      'stop',
+      { session_id: 'sess-cc2', stop_hook_active: false },
+      { store },
+    );
+    expect(empty.ok).toBe(true);
+    expect(store.storage.listSummaries('sess-cc2')).toHaveLength(0);
+
+    const filled = await runHook(
+      'stop',
+      { session_id: 'sess-cc2', last_assistant_message: 'shipped the migration' },
+      { store },
+    );
+    expect(filled.ok).toBe(true);
+    const turns = store.storage.listSummaries('sess-cc2').filter((s) => s.scope === 'turn');
+    expect(turns).toHaveLength(1);
   });
 
   it('hot-path hooks stay under a generous 150ms budget on a warm runtime', async () => {

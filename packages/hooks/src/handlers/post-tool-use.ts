@@ -2,21 +2,21 @@ import type { MemoryStore } from '@cavemem/core';
 import type { HookInput } from '../types.js';
 
 export async function postToolUse(store: MemoryStore, input: HookInput): Promise<void> {
-  const body = summarizeToolCall(input);
-  if (!body) return;
+  const tool = input.tool_name ?? input.tool ?? 'unknown';
+  const toolInput = input.tool_input;
+  const toolOutput = input.tool_response ?? input.tool_output;
+  const body =
+    `${tool} input=${stringifyShort(toolInput)} output=${stringifyShort(toolOutput)}`.slice(
+      0,
+      4000,
+    );
+  if (!body.trim()) return;
   store.addObservation({
     session_id: input.session_id,
     kind: 'tool_use',
     content: body,
-    ...(input.tool !== undefined ? { metadata: { tool: input.tool } } : {}),
+    metadata: { tool },
   });
-}
-
-function summarizeToolCall(input: HookInput): string {
-  const tool = input.tool ?? 'unknown';
-  const inp = stringifyShort(input.tool_input);
-  const out = stringifyShort(input.tool_output);
-  return `${tool} input=${inp} output=${out}`.slice(0, 4000);
 }
 
 function stringifyShort(v: unknown): string {
