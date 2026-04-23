@@ -1,143 +1,196 @@
-<div align="center">
+# agents-hivemind
 
-![](https://em-content.zobj.net/source/apple/391/rock_1faa8.png)
+Multi-agent memory and runtime awareness for local coding agents.
 
-# cavemem
+This repo is the `agents-hivemind` monorepo. It combines:
 
-**why agent forget when agent can remember**
+- local persistent memory for agent sessions
+- compressed storage and progressive retrieval over MCP
+- a compact `hivemind` runtime snapshot tool for active agent lanes
+- a local viewer and worker for browsing and embedding backfill
 
-[![npm](https://img.shields.io/npm/v/cavemem?style=flat&color=yellow)](https://www.npmjs.com/package/cavemem) [![Stars](https://img.shields.io/github/stars/JuliusBrussee/cavemem?style=flat&color=yellow)](https://github.com/JuliusBrussee/cavemem/stargazers) [![Last Commit](https://img.shields.io/github/last-commit/JuliusBrussee/cavemem?style=flat)](https://github.com/JuliusBrussee/cavemem/commits/main) [![License](https://img.shields.io/github/license/JuliusBrussee/cavemem?style=flat)](LICENSE)
+Important current-state note: the published CLI and package names are still `cavemem`, so the commands below use `cavemem` even though this repository is branded as `agents-hivemind`.
 
-[Install](#install) • [How it works](#how-it-works) • [CLI](#cli) • [MCP](#mcp) • [Settings](#settings)
+## What It Does
 
-</div>
+`agents-hivemind` is built for agent-heavy local workflows where you need both memory and live coordination context.
 
-<p align="center">
-  <strong>🪨 Caveman Ecosystem</strong> &nbsp;·&nbsp;
-  <a href="https://github.com/JuliusBrussee/caveman">caveman</a> <em>talk less</em> &nbsp;·&nbsp;
-  <strong>cavemem</strong> <em>remember more</em> <sub>(you are here)</sub> &nbsp;·&nbsp;
-  <a href="https://github.com/JuliusBrussee/cavekit">cavekit</a> <em>build better</em>
-</p>
+- Hooks capture session events from supported IDE/CLI integrations.
+- Prose is compressed before storage while code, paths, URLs, and technical tokens stay intact.
+- Observations are written to local SQLite with FTS-backed search.
+- MCP tools expose progressive retrieval: compact hits first, full bodies only when needed.
+- The `hivemind` MCP tool reads `.omx` runtime state so agents can see who owns which branch, worktree, and task.
+- A local worker serves a read-only browser viewer and optional embedding backfill.
 
+## Current Surface
 
----
+### CLI
 
-Cross-agent persistent memory for coding assistants. Hooks fire at session boundaries, compress observations with the caveman grammar (~75% fewer prose tokens, code and paths preserved byte-for-byte), and write to local SQLite. Agents query their own history through three MCP tools. No network. No cloud.
+The current CLI entrypoint is `cavemem` and registers these command groups:
 
-**Supports:** Claude Code · Cursor · Gemini CLI · OpenCode · Codex
+- `install`
+- `uninstall`
+- `status`
+- `config`
+- `doctor`
+- `start`, `stop`, `restart`, `viewer`
+- `worker`
+- `mcp`
+- `search`
+- `compress`
+- `export`
+- `hook`
+- `reindex`
 
-- **Persistent memory across sessions.** Hooks capture what happened; the store keeps it.
-- **Compressed at rest.** Deterministic caveman grammar, round-trip-guaranteed expansion for humans.
-- **Progressive MCP retrieval.** `search`, `timeline`, `get_observations` — agents filter before fetching.
-- **Hybrid search.** SQLite FTS5 keyword + local vector index, combined with a tunable ranker.
-- **Local by default.** No network calls. Optional remote embedding providers via config.
-- **Web viewer.** Read-only UI at `http://localhost:37777` for browsing sessions in human-readable form.
-- **Cross-IDE installers.** Claude Code, Gemini CLI, OpenCode, Codex, Cursor — one command each.
-- **Privacy-aware.** `<private>...</private>` stripped at write boundary. Path globs exclude whole directories.
+### MCP
 
----
+The MCP server currently exposes:
 
-## Install
+- `hivemind`
+- `search`
+- `timeline`
+- `get_observations`
+- `list_sessions`
 
-```sh
-npm install -g cavemem
-cavemem install                    # Claude Code
-cavemem install --ide cursor       # cursor | gemini-cli | opencode | codex
-cavemem status                     # see wiring + embedding backfill
-cavemem viewer                     # open http://127.0.0.1:37777
+Recommended usage pattern:
+
+1. Call `hivemind` when you need live ownership and task state from `.omx`.
+2. Call `search` or `list_sessions` plus `timeline` to narrow the memory slice.
+3. Call `get_observations` only for the specific IDs you actually need.
+
+## Repo Layout
+
+```text
+apps/
+  cli/          User-facing CLI entrypoint
+  mcp-server/   MCP stdio server, including the hivemind tool
+  worker/       Local HTTP viewer and embedding/backfill worker
+
+packages/
+  compress/     Deterministic prose compression and expansion
+  config/       Settings schema and loader
+  core/         MemoryStore orchestration
+  embedding/    Local/Ollama/OpenAI embedding providers
+  hooks/        IDE hook handlers
+  installers/   IDE integration installers
+  storage/      SQLite + FTS persistence layer
+
+docs/
+  architecture.md
+  compression.md
+  development.md
+  mcp.md
 ```
 
-No daemon to start. Hooks write synchronously. A local worker auto-spawns in the background on the first hook to build embeddings; it self-exits when idle. Disable with `cavemem config set embedding.autoStart false`.
+## Architecture
 
----
+```text
+IDE hooks -> CLI hook runner -> MemoryStore
+                               |- compression
+                               |- SQLite / FTS / embeddings
 
-## How it works
-
-```
-session event  →  redact <private>  →  compress  →  SQLite + FTS5
-                                                           ↑
-                                                MCP queries on demand
-```
-
-What compression looks like in practice:
-
-```
-Input:  "The auth middleware throws a 401 when the session token expires; we should add a refresh path."
-Stored: "auth mw throws 401 @ session token expires. add refresh path."
-Viewed: "The auth middleware throws a 401 when session token expires. Add refresh path."
+MCP client -> apps/mcp-server -> MemoryStore
+Browser    -> apps/worker     -> MemoryStore
 ```
 
-Code blocks, URLs, paths, identifiers, and version numbers are never touched. Hook handlers complete in under 150ms. Full bodies fetched on demand via `get_observations`.
+Write path:
 
----
+1. Hook fires from an IDE or CLI integration.
+2. CLI routes the event into the hook runner.
+3. Private blocks are redacted.
+4. Prose is compressed.
+5. Observation lands in SQLite and search indexes.
+6. Embeddings are computed out of band when enabled.
 
-## CLI
+Read path:
 
-| Command | |
-|---------|--|
-| `cavemem install [--ide <name>]` | Register hooks + MCP for an IDE |
-| `cavemem uninstall [--ide <name>]` | Remove hooks + MCP |
-| `cavemem status` | Single dashboard: wiring, DB counts, embedding backfill, worker pid |
-| `cavemem config show\|get\|set\|open` | View/edit settings — schema is self-documenting |
-| `cavemem start\|stop\|restart` | Control the worker daemon (usually unnecessary — auto-starts) |
-| `cavemem viewer` | Open the memory viewer in your browser |
-| `cavemem doctor` | Verify installation |
-| `cavemem search <query> [--limit N] [--no-semantic]` | Search memory (BM25 + cosine re-rank) |
-| `cavemem compress <file>` | Compress a file with caveman grammar |
-| `cavemem reindex` | Rebuild FTS5 + vector index |
-| `cavemem export <out.jsonl>` | Dump observations to JSONL |
-| `cavemem mcp` | Start MCP server (stdio) |
+- Agents use MCP for compact-first retrieval.
+- Humans use the local viewer on `127.0.0.1`.
+- Multi-agent runtime state comes from `.omx/state/active-sessions/*.json` and worktree `AGENT.lock` telemetry when available.
 
----
+## Quick Start
 
-## MCP
+Prereqs:
 
-Progressive disclosure: `search` and `timeline` return compact results; `get_observations` fetches full bodies.
+- Node `>= 20`
+- pnpm `>= 9`
 
-| Tool | Returns |
-|------|---------|
-| `search(query, limit?)` | `[{id, score, snippet, session_id, ts}]` — BM25 + optional cosine re-rank |
-| `timeline(session_id, around_id?, limit?)` | `[{id, kind, ts}]` |
-| `get_observations(ids[], expand?)` | Full bodies, expanded by default |
-| `list_sessions(limit?)` | `[{id, ide, cwd, started_at, ended_at}]` |
+Install dependencies and build:
 
----
+```bash
+pnpm install
+pnpm build
+```
 
-## Settings
+Link the CLI globally for local use:
 
-`~/.cavemem/settings.json`
+```bash
+cd apps/cli
+pnpm link --global
+cavemem --help
+```
 
-| Key | Default | |
-|-----|---------|--|
-| `dataDir` | `"~/.cavemem"` | SQLite location |
-| `compression.intensity` | `"full"` | `lite` / `full` / `ultra` |
-| `compression.expandForModel` | `false` | Return expanded text to model |
-| `embedding.provider` | `"local"` | `local` / `ollama` / `openai` |
-| `workerPort` | `37777` | Local viewer port |
-| `search.alpha` | `0.5` | BM25 / vector blend |
-| `search.defaultLimit` | `10` | Default result count |
-| `privacy.excludePatterns` | `[]` | Paths never captured |
+Basic local flow:
 
-Content inside `<private>...</private>` is stripped before write. Paths matching `excludePatterns` are never read. The worker binds to `127.0.0.1` only.
+```bash
+cavemem install
+cavemem status
+cavemem mcp
+cavemem viewer
+```
 
----
+Run against a scratch data dir:
 
-## 🪨 The Caveman Ecosystem
+```bash
+export CAVEMEM_HOME=$PWD/.cavemem-dev
+pnpm dev
+```
 
-Three tools. One philosophy: **agent do more with less**.
+## Hivemind Runtime Snapshot
 
-| Repo | What | One-liner |
-|------|------|-----------|
-| [**caveman**](https://github.com/JuliusBrussee/caveman) | Output compression skill | *why use many token when few do trick* — ~75% fewer output tokens across Claude Code, Cursor, Gemini, Codex |
-| [**cavemem**](https://github.com/JuliusBrussee/cavemem) *(you are here)* | Cross-agent persistent memory | *why agent forget when agent can remember* — compressed SQLite + MCP, local by default |
-| [**cavekit**](https://github.com/JuliusBrussee/cavekit) | Spec-driven autonomous build loop | *why agent guess when agent can know* — natural language → kits → parallel build → verified |
+The `hivemind` MCP tool is the repo's Hivemind-specific surface.
 
-They compose: **cavekit** orchestrates the build, **caveman** compresses what the agent *says*, **cavemem** compresses what the agent *remembers*. Install one, some, or all — each stands alone.
+It summarizes active agent sessions without fetching memory bodies, including:
 
-## Also by Julius Brussee
+- repo root
+- branch
+- task name and latest task preview
+- agent and CLI name
+- activity state
+- worktree path
+- pid / pid liveness
+- task mode and routing metadata
 
-- [**Revu**](https://github.com/JuliusBrussee/revu-swift) — local-first macOS study app with FSRS spaced repetition. [revu.cards](https://revu.cards)
+It reads runtime state from:
 
-## License
+- `.omx/state/active-sessions/*.json`
+- `.omx/agent-worktrees/*/AGENT.lock`
+- `.omc/agent-worktrees/*/AGENT.lock`
 
-MIT
+This is meant to answer "who is doing what right now?" before a model starts pulling historical memory.
+
+## Development
+
+Core gates:
+
+```bash
+pnpm typecheck
+pnpm lint
+pnpm test
+pnpm build
+```
+
+All four should pass before merge.
+
+Add a changeset when needed:
+
+```bash
+pnpm changeset
+```
+
+## Related Docs
+
+- [Architecture](docs/architecture.md)
+- [MCP tools](docs/mcp.md)
+- [Development](docs/development.md)
+- [Compression](docs/compression.md)
