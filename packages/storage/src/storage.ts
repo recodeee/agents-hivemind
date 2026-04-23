@@ -420,6 +420,20 @@ export class Storage {
       .all(task_id) as TaskClaimRow[];
   }
 
+  /**
+   * Claims made in the last `since_ts…now` window. Used by the conflict
+   * preface to surface "someone else is ACTIVELY editing this" — stale
+   * claims (outside the window) are intentionally excluded because they
+   * describe work that's already finished, not live collisions.
+   */
+  recentClaims(task_id: number, since_ts: number, limit = 50): TaskClaimRow[] {
+    return this.db
+      .prepare(
+        'SELECT * FROM task_claims WHERE task_id = ? AND claimed_at > ? ORDER BY claimed_at DESC LIMIT ?',
+      )
+      .all(task_id, since_ts, limit) as TaskClaimRow[];
+  }
+
   taskObservationsSince(task_id: number, since_ts: number, limit = 50): ObservationRow[] {
     return this.db
       .prepare('SELECT * FROM observations WHERE task_id = ? AND ts > ? ORDER BY ts ASC LIMIT ?')
