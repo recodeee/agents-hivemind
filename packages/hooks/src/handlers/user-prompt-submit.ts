@@ -21,7 +21,50 @@ export async function userPromptSubmit(store: MemoryStore, input: HookInput): Pr
     });
   }
 
-  return buildTaskUpdatesPreface(store, input.session_id, sinceTs);
+  const activity = buildTaskUpdatesPreface(store, input.session_id, sinceTs);
+  const conflicts = buildConflictPreface(store, input.session_id);
+  return [activity, conflicts].filter(Boolean).join('\n\n');
+}
+
+/**
+ * Active-edit collision warning. Surfaces files that *other* sessions on
+ * the same task have claimed in the last 5 minutes — i.e. work that is
+ * genuinely live, not stale breadcrumbs. Agents that see this preface
+ * should coordinate via task_post or task_hand_off before editing.
+ *
+ * Exported so hook-integration tests can drive the preface builder without
+ * the full runner/transport stack.
+ */
+export function buildConflictPreface(store: MemoryStore, session_id: string): string {
+  const task_id = store.storage.findActiveTaskForSession(session_id);
+  if (task_id === undefined) return '';
+
+  // 5-minute active-edit window. Short by design: we're looking for "live
+  // overlap", not "someone touched this yesterday". A wider window would
+  // raise false-positive rate and agents learn to ignore noisy warnings.
+  const RECENT_WINDOW_MS = 5 * 60_000;
+  const since = Date.now() - RECENT_WINDOW_MS;
+  const recent = store.storage
+    .recentClaims(task_id, since)
+    .filter((c) => c.session_id !== session_id);
+  if (recent.length === 0) return '';
+
+  // Group by session so "codex is editing X, Y, Z" reads cleaner than three
+  // separate lines. Clustered warnings are easier to reason about than
+  // disjoint ones — "I should stay off codex's work" beats three bullets.
+  const bySession = new Map<string, string[]>();
+  for (const c of recent) {
+    const list = bySession.get(c.session_id) ?? [];
+    list.push(c.file_path);
+    bySession.set(c.session_id, list);
+  }
+
+  const lines = ['## Files being actively edited by other sessions'];
+  for (const [sess, paths] of bySession) {
+    lines.push(`  ${sess}: ${paths.join(', ')}`);
+  }
+  lines.push('Coordinate via task_post or task_hand_off before editing these files.');
+  return lines.join('\n');
 }
 
 /**

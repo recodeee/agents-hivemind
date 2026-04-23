@@ -1,6 +1,22 @@
 import type { MemoryStore } from '@cavemem/core';
 import type { HookInput } from '../types.js';
 
+/**
+ * Tool names whose `file_path` input indicates "this agent just edited that
+ * file". Conservative on purpose — `Read` and `Glob` aren't claim-worthy
+ * because they don't mutate; `Bash` isn't because we can't reliably parse
+ * file paths out of arbitrary shell. Expand only when a new tool
+ * demonstrably means "I am editing this file".
+ */
+const WRITE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+
+/**
+ * Claims older than this window are considered stale and no longer count
+ * as "active editing" for the purpose of conflict warnings. Matches the
+ * default handoff TTL so the two user-facing timeouts stay aligned.
+ */
+const STALE_CLAIM_MS = 30 * 60_000;
+
 export async function postToolUse(store: MemoryStore, input: HookInput): Promise<void> {
   const tool = input.tool_name ?? input.tool ?? 'unknown';
   const toolInput = input.tool_input;
@@ -17,6 +33,72 @@ export async function postToolUse(store: MemoryStore, input: HookInput): Promise
     content: body,
     metadata: { tool },
   });
+
+  // Side effect: record a claim for every file this tool edited. Observed
+  // (not predictive) — the agent doesn't have to know the claim system
+  // exists for the claim system to protect its work. The next session that
+  // touches the same file gets a warning in its UserPromptSubmit preface.
+  autoClaimFromToolUse(store, input);
+}
+
+/**
+ * Extract file paths that a tool call mutated. Returns `[]` when the tool
+ * isn't a write tool or the input shape isn't recognisable — silent-skip
+ * rather than throw, because PostToolUse runs on every tool call and any
+ * error here would degrade every turn.
+ */
+export function extractTouchedFiles(toolName: string, toolInput: unknown): string[] {
+  if (!WRITE_TOOLS.has(toolName)) return [];
+  if (typeof toolInput !== 'object' || toolInput === null) return [];
+  const input = toolInput as Record<string, unknown>;
+  if (typeof input.file_path === 'string' && input.file_path.length > 0) {
+    return [input.file_path];
+  }
+  return [];
+}
+
+/**
+ * Auto-claim files the current session just edited. No-op when the session
+ * isn't joined to a task — solo agents don't need claims because there's
+ * no one to conflict with.
+ *
+ * Returns the list of files newly claimed and the list of files that were
+ * held by a different session at the moment we took over. Exposed for
+ * tests; the main handler ignores the return value because the conflict
+ * surfacing happens next turn via buildConflictPreface, not mid-tool.
+ */
+export function autoClaimFromToolUse(
+  store: MemoryStore,
+  input: Pick<HookInput, 'session_id' | 'tool_name' | 'tool' | 'tool_input'>,
+): { claimed: string[]; conflicts: Array<{ file_path: string; other_session: string }> } {
+  const toolName = input.tool_name ?? input.tool ?? '';
+  const files = extractTouchedFiles(toolName, input.tool_input);
+  if (files.length === 0) return { claimed: [], conflicts: [] };
+
+  const task_id = store.storage.findActiveTaskForSession(input.session_id);
+  if (task_id === undefined) return { claimed: [], conflicts: [] };
+
+  const claimed: string[] = [];
+  const conflicts: Array<{ file_path: string; other_session: string }> = [];
+
+  for (const file_path of files) {
+    // Check-then-claim: the gap is irrelevant for correctness because
+    // we're not enforcing a lock, we're surfacing observed overlap. Two
+    // separate ops let us report "this WAS someone else's before I took
+    // over" cleanly in the return value.
+    const existing = store.storage.getClaim(task_id, file_path);
+    if (
+      existing &&
+      existing.session_id !== input.session_id &&
+      Date.now() - existing.claimed_at < STALE_CLAIM_MS
+    ) {
+      conflicts.push({ file_path, other_session: existing.session_id });
+    }
+    store.storage.claimFile({ task_id, file_path, session_id: input.session_id });
+    claimed.push(file_path);
+  }
+
+  return { claimed, conflicts };
 }
 
 function stringifyShort(v: unknown): string {

@@ -151,6 +151,30 @@ describe('tasks', () => {
     expect(storage.lastObservationTsForSession('s-a', 'user_prompt')).toBe(0);
   });
 
+  it('recentClaims filters by the (since_ts, now] window', () => {
+    seedSessions('s-a');
+    const task = storage.findOrCreateTask({
+      title: 't',
+      repo_root: '/r',
+      branch: 'b',
+      created_by: 's-a',
+    });
+    storage.claimFile({ task_id: task.id, file_path: 'fresh.ts', session_id: 's-a' });
+    // Stale claim: write then overwrite claimed_at to a past timestamp.
+    storage.claimFile({ task_id: task.id, file_path: 'stale.ts', session_id: 's-a' });
+    (
+      storage as unknown as {
+        db: { prepare: (s: string) => { run: (...a: unknown[]) => unknown } };
+      }
+    ).db
+      .prepare('UPDATE task_claims SET claimed_at = ? WHERE file_path = ?')
+      .run(Date.now() - 60 * 60_000, 'stale.ts');
+
+    const window = Date.now() - 5 * 60_000;
+    const recent = storage.recentClaims(task.id, window);
+    expect(recent.map((c) => c.file_path)).toEqual(['fresh.ts']);
+  });
+
   it('reopening an existing database preserves the task schema', () => {
     seedSessions('s-a');
     storage.findOrCreateTask({
