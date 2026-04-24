@@ -110,6 +110,49 @@ export const SettingsSchema = z
       .record(z.string(), z.boolean())
       .default({})
       .describe('Installed IDE integrations (set by `colony install`).'),
+    foraging: z
+      .object({
+        enabled: z
+          .boolean()
+          .default(true)
+          .describe('Auto-index <repo_root>/examples food sources on SessionStart.'),
+        maxDepth: z
+          .number()
+          .int()
+          .positive()
+          .max(5)
+          .default(2)
+          .describe('How deep to walk into each example directory.'),
+        maxFileBytes: z
+          .number()
+          .int()
+          .positive()
+          .default(200_000)
+          .describe('Truncate indexed files larger than this.'),
+        maxFilesPerSource: z
+          .number()
+          .int()
+          .positive()
+          .default(50)
+          .describe('Stop indexing after this many files per example.'),
+        scanOnSessionStart: z
+          .boolean()
+          .default(true)
+          .describe('Fire-and-forget the scanner when SessionStart fires.'),
+        extraSecretEnvNames: z
+          .array(z.string())
+          .default([])
+          .describe('Additional env-var names to treat as secrets during redaction.'),
+      })
+      .default({
+        enabled: true,
+        maxDepth: 2,
+        maxFileBytes: 200_000,
+        maxFilesPerSource: 50,
+        scanOnSessionStart: true,
+        extraSecretEnvNames: [],
+      })
+      .describe('Foraging: turn <repo_root>/examples into a reusable food source.'),
   })
   .strict();
 

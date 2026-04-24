@@ -709,6 +709,41 @@ export class Storage {
       .run(repo_root, example_name);
   }
 
+  /**
+   * Drop every `foraged-pattern` observation that belongs to a food
+   * source. Called by the indexer before re-indexing a changed example —
+   * without it, each rescan would accumulate a parallel copy of the
+   * same content. Returns the number of rows deleted.
+   */
+  deleteForagedObservations(repo_root: string, example_name: string): number {
+    const info = this.db
+      .prepare(
+        `DELETE FROM observations
+         WHERE kind = 'foraged-pattern'
+           AND json_extract(metadata, '$.repo_root') = ?
+           AND json_extract(metadata, '$.example_name') = ?`,
+      )
+      .run(repo_root, example_name);
+    return Number(info.changes);
+  }
+
+  /**
+   * All `foraged-pattern` observations for a (repo_root, example_name).
+   * Ordered oldest→newest so the MCP `examples_query` consumers (and
+   * tests here) see a stable shape.
+   */
+  listForagedObservations(repo_root: string, example_name: string): ObservationRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM observations
+         WHERE kind = 'foraged-pattern'
+           AND json_extract(metadata, '$.repo_root') = ?
+           AND json_extract(metadata, '$.example_name') = ?
+         ORDER BY ts ASC`,
+      )
+      .all(repo_root, example_name) as ObservationRow[];
+  }
+
   // --- observe / debrief analytics ---
   //
   // These are read-heavy queries serving the CLI dashboards. They stay on

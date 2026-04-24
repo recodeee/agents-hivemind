@@ -1,8 +1,10 @@
 import { createHash } from 'node:crypto';
 import { readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import type { MemoryStore } from '@colony/core';
 import { type ExtractedShape, extract, readCapped } from './extractor.js';
-import { DEFAULT_SCAN_LIMITS, type FoodSource, type ScanLimits } from './types.js';
+import { indexFoodSource } from './indexer.js';
+import { DEFAULT_SCAN_LIMITS, type FoodSource, type ScanLimits, type ScanResult } from './types.js';
 
 export interface ScanFsOptions {
   repo_root: string;
@@ -93,4 +95,64 @@ function mergeLimits(partial?: Partial<ScanLimits>): ScanLimits {
     max_file_bytes: partial?.max_file_bytes ?? DEFAULT_SCAN_LIMITS.max_file_bytes,
     max_files_per_source: partial?.max_files_per_source ?? DEFAULT_SCAN_LIMITS.max_files_per_source,
   };
+}
+
+export interface ScanOptions {
+  repo_root: string;
+  store: MemoryStore;
+  session_id: string;
+  limits?: Partial<ScanLimits>;
+  extra_secret_env_names?: readonly string[];
+}
+
+/**
+ * Storage-aware scan. For each discovered food source: check the
+ * cached `content_hash` on `storage.examples`. If unchanged, skip.
+ * Otherwise clear stale observations, re-index, and upsert the
+ * examples row with the new hash + observation count.
+ *
+ * Idempotent by construction: running twice on an unchanged tree
+ * yields the same result the second time (all skipped). A partial
+ * failure mid-index means the examples row is not upserted, so the
+ * next run treats the source as changed and retries cleanly.
+ */
+export function scanExamples(opts: ScanOptions): ScanResult {
+  const { scanned } = scanExamplesFs({
+    repo_root: opts.repo_root,
+    ...(opts.limits !== undefined ? { limits: opts.limits } : {}),
+  });
+  let skipped_unchanged = 0;
+  let indexed_observations = 0;
+
+  for (const food of scanned) {
+    const existing = opts.store.storage.getExample(food.repo_root, food.example_name);
+    if (existing && existing.content_hash === food.content_hash) {
+      skipped_unchanged += 1;
+      continue;
+    }
+
+    opts.store.storage.deleteForagedObservations(food.repo_root, food.example_name);
+
+    const options: Parameters<typeof indexFoodSource>[2] = {
+      session_id: opts.session_id,
+      ...(opts.limits?.max_file_bytes !== undefined
+        ? { max_file_bytes: opts.limits.max_file_bytes }
+        : {}),
+      ...(opts.extra_secret_env_names !== undefined
+        ? { extra_secret_env_names: opts.extra_secret_env_names }
+        : {}),
+    };
+    const count = indexFoodSource(food, opts.store, options);
+    indexed_observations += count;
+
+    opts.store.storage.upsertExample({
+      repo_root: food.repo_root,
+      example_name: food.example_name,
+      content_hash: food.content_hash,
+      manifest_kind: food.manifest_kind,
+      observation_count: count,
+    });
+  }
+
+  return { scanned, skipped_unchanged, indexed_observations };
 }
