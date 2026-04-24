@@ -1,4 +1,10 @@
-# cavemem
+# @imdeadpool/colony
+
+> History note: the CLI was published as `cavemem` through 0.3.0 and renamed to
+> `@imdeadpool/colony` during the 0.3.0 cycle. Version 0.4.0 was consumed by the
+> `@colony/mcp-server` heartbeat bump (the CLI did not publish a 0.4.0); 0.5.0
+> is the first linked release where the CLI and `@colony/*` workspace packages
+> ship together.
 
 ## 0.5.0
 
