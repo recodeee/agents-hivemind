@@ -275,4 +275,27 @@ describe('Storage', () => {
     expect(storage.countEmbeddings({ model: 'm', dim: 1 })).toBe(1);
     expect(storage.countEmbeddings({ model: 'm', dim: 2 })).toBe(0);
   });
+
+  it('backfillUnknownIde only rewrites rows the mapper can classify', () => {
+    storage.createSession({ id: 'codex-foo', ide: 'unknown', cwd: null, started_at: 1, metadata: null });
+    storage.createSession({ id: 'agent/codex/bar', ide: 'unknown', cwd: null, started_at: 2, metadata: null });
+    storage.createSession({ id: 'mystery-slug', ide: 'unknown', cwd: null, started_at: 3, metadata: null });
+    storage.createSession({ id: 'known-session', ide: 'claude-code', cwd: null, started_at: 4, metadata: null });
+
+    const mapper = (id: string): string | undefined => {
+      if (id.startsWith('codex-')) return 'codex';
+      if (id.startsWith('agent/codex/')) return 'codex';
+      return undefined;
+    };
+    const result = storage.backfillUnknownIde(mapper);
+    expect(result).toEqual({ scanned: 3, updated: 2 });
+
+    expect(storage.getSession('codex-foo')?.ide).toBe('codex');
+    expect(storage.getSession('agent/codex/bar')?.ide).toBe('codex');
+    expect(storage.getSession('mystery-slug')?.ide).toBe('unknown');
+    expect(storage.getSession('known-session')?.ide).toBe('claude-code');
+
+    // Idempotent: running again should not touch anything.
+    expect(storage.backfillUnknownIde(mapper)).toEqual({ scanned: 1, updated: 0 });
+  });
 });

@@ -2,6 +2,7 @@
 import { realpathSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { Command } from 'commander';
+import { registerBackfillCommand } from './commands/backfill.js';
 import { registerCompressCommands } from './commands/compress.js';
 import { registerConfigCommand } from './commands/config.js';
 import { registerDebriefCommand } from './commands/debrief.js';
@@ -42,6 +43,7 @@ export function createProgram(): Command {
   registerExportCommand(program);
   registerHookCommand(program);
   registerReindexCommand(program);
+  registerBackfillCommand(program);
   registerNoteCommand(program);
   registerObserveCommand(program);
   registerDebriefCommand(program);
