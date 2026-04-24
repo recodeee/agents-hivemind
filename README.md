@@ -3,7 +3,7 @@
 **A biologically-grounded hivemind for AI coding agents.**
 
 <p align="center">
-  <img src="docs/assets/colony-logo.png" alt="Colony logo" width="520" />
+  <img src="docs/assets/colony-logo.png" alt="Colony logo" width="420" />
 </p>
 
 cavemem is a local-first memory and coordination system that lets multiple AI coding agents — Claude Code, Codex, Cursor, and friends — work on the same codebase without stepping on each other. It persists memory across sessions, surfaces what other agents are doing in real time, and coordinates their work through mechanisms borrowed directly from ant colonies: chemical-trail-style signals that strengthen with use and fade without it.
