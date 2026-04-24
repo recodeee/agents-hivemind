@@ -7,6 +7,7 @@ import { registerConfigCommand } from './commands/config.js';
 import { registerDebriefCommand } from './commands/debrief.js';
 import { registerDoctorCommand } from './commands/doctor.js';
 import { registerExportCommand } from './commands/export.js';
+import { registerForagingCommand } from './commands/foraging.js';
 import { registerHookCommand } from './commands/hook.js';
 import { registerInboxCommand } from './commands/inbox.js';
 import { registerInstallCommand } from './commands/install.js';
@@ -45,6 +46,7 @@ export function createProgram(): Command {
   registerObserveCommand(program);
   registerDebriefCommand(program);
   registerInboxCommand(program);
+  registerForagingCommand(program);
 
   return program;
 }

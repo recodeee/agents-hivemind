@@ -1,4 +1,5 @@
 import { type MemoryStore, ProposalSystem, TaskThread, detectRepoBranch } from '@colony/core';
+import { spawnNodeScript } from '@colony/process';
 import type { HookInput } from '../types.js';
 
 export async function sessionStart(store: MemoryStore, input: HookInput): Promise<string> {
@@ -10,11 +11,52 @@ export async function sessionStart(store: MemoryStore, input: HookInput): Promis
     cwd: input.cwd ?? null,
   });
 
+  kickForagingScan(store, input);
+
   const priorPreface = buildPriorPreface(store, input);
   const taskPreface = buildTaskPreface(store, input);
   const proposalPreface = buildProposalPreface(store, input);
+  const foragingPreface = buildForagingPreface(store, input);
 
-  return [priorPreface, taskPreface, proposalPreface].filter(Boolean).join('\n\n');
+  return [priorPreface, taskPreface, proposalPreface, foragingPreface].filter(Boolean).join('\n\n');
+}
+
+/**
+ * Detach-spawn the CLI's `foraging scan` so the scan runs in the
+ * background. The hook itself must not wait — the synchronous preface
+ * below only surfaces state from a *previous* scan. First SessionStart
+ * on a new repo therefore shows nothing foraging-related; second one
+ * shows the indexed set once the background scan has finished.
+ */
+function kickForagingScan(store: MemoryStore, input: HookInput): void {
+  const settings = store.settings;
+  if (!settings.foraging.enabled) return;
+  if (!settings.foraging.scanOnSessionStart) return;
+  const cwd = input.cwd;
+  if (!cwd) return;
+  const cli = process.argv[1];
+  if (!cli) return;
+  try {
+    spawnNodeScript(cli, ['foraging', 'scan', '--cwd', cwd]);
+  } catch {
+    // Best-effort. Foraging is not load-bearing for the hook's primary job.
+  }
+}
+
+export function buildForagingPreface(store: MemoryStore, input: Pick<HookInput, 'cwd'>): string {
+  if (!input.cwd) return '';
+  const rows = store.storage.listExamples(input.cwd);
+  if (rows.length === 0) return '';
+  const names = rows
+    .slice(0, 5)
+    .map((r) => r.example_name)
+    .join(', ');
+  const more = rows.length > 5 ? ` (+${rows.length - 5} more)` : '';
+  return [
+    '## Examples indexed (foraging)',
+    `${rows.length} food source${rows.length === 1 ? '' : 's'}: ${names}${more}.`,
+    'Query with examples_query; fetch a plan with examples_integrate_plan.',
+  ].join('\n');
 }
 
 function buildPriorPreface(store: MemoryStore, input: HookInput): string {

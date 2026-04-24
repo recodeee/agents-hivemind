@@ -12,6 +12,7 @@ describe('Colony CLI program', () => {
       'doctor',
       'expand',
       'export',
+      'foraging',
       'hook',
       'import',
       'install',
@@ -51,5 +52,17 @@ describe('Colony CLI program', () => {
   it('advertises a semantic version', () => {
     const program = createProgram();
     expect(program.version()).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  it('exposes foraging scan/list/clear subcommands', () => {
+    const program = createProgram();
+    const foraging = program.commands.find((c) => c.name() === 'foraging');
+    expect(foraging).toBeDefined();
+    const subs = foraging?.commands.map((c) => c.name()).sort() ?? [];
+    expect(subs).toEqual(['clear', 'list', 'scan']);
+    const scan = foraging?.commands.find((c) => c.name() === 'scan');
+    expect(scan?.options.find((o) => o.long === '--cwd')).toBeDefined();
+    const clear = foraging?.commands.find((c) => c.name() === 'clear');
+    expect(clear?.options.find((o) => o.long === '--example')).toBeDefined();
   });
 });
