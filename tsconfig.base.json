@@ -25,6 +25,7 @@
       "@colony/config": ["./packages/config/src/index.ts"],
       "@colony/core": ["./packages/core/src/index.ts"],
       "@colony/embedding": ["./packages/embedding/src/index.ts"],
+      "@colony/foraging": ["./packages/foraging/src/index.ts"],
       "@colony/storage": ["./packages/storage/src/index.ts"],
       "@colony/hooks": ["./packages/hooks/src/index.ts"],
       "@colony/installers": ["./packages/installers/src/index.ts"],
