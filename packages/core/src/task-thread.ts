@@ -18,7 +18,8 @@ export type CoordinationKind =
   | 'note'
   | 'wake_request'
   | 'wake_ack'
-  | 'wake_cancel';
+  | 'wake_cancel'
+  | 'message';
 
 export type HandoffStatus = 'pending' | 'accepted' | 'expired' | 'cancelled';
 export type HandoffTarget = 'claude' | 'codex' | 'any';
@@ -26,10 +27,15 @@ export type HandoffTarget = 'claude' | 'codex' | 'any';
 export type WakeStatus = 'pending' | 'acknowledged' | 'expired' | 'cancelled';
 export type WakeTarget = 'claude' | 'codex' | 'any';
 
+export type MessageStatus = 'unread' | 'read' | 'replied';
+export type MessageTarget = 'claude' | 'codex' | 'any';
+export type MessageUrgency = 'fyi' | 'needs_reply' | 'blocking';
+
 export const TASK_THREAD_ERROR_CODES = {
   OBSERVATION_NOT_ON_TASK: 'OBSERVATION_NOT_ON_TASK',
   NOT_HANDOFF: 'NOT_HANDOFF',
   NOT_WAKE_REQUEST: 'NOT_WAKE_REQUEST',
+  NOT_MESSAGE: 'NOT_MESSAGE',
   TASK_MISMATCH: 'TASK_MISMATCH',
   METADATA_MISSING: 'METADATA_MISSING',
   ALREADY_ACCEPTED: 'ALREADY_ACCEPTED',
@@ -162,6 +168,52 @@ export interface HandOffArgs {
   expires_in_ms?: number;
 }
 
+/**
+ * Direct-message metadata persisted on an observation with kind='message'.
+ * Reuses the task_post storage path with explicit addressing + a read/reply
+ * lifecycle, kept parallel to Handoff/Wake so the preface renderer can treat
+ * all three coordination primitives uniformly. No schema migration: the
+ * content body goes through `MemoryStore.addObservation` (compressed), while
+ * the structured fields below live in `observations.metadata` as JSON.
+ *
+ * `status` transitions:
+ *   - `unread`  → set at send time
+ *   - `read`    → set by `markMessageRead` on the recipient's fetch (advisory)
+ *   - `replied` → set on *write* when someone posts with `reply_to=<this id>`;
+ *                 authoritative — overrides `read`. Flipping on write (not
+ *                 read) avoids a race where the sender could see their own
+ *                 reply round-tripped as still-unread.
+ */
+export interface MessageMetadata {
+  kind: 'message';
+  from_session_id: string;
+  from_agent: string;
+  to_agent: MessageTarget;
+  to_session_id: string | null;
+  urgency: MessageUrgency;
+  status: MessageStatus;
+  read_by_session_id: string | null;
+  read_at: number | null;
+  replied_by_observation_id: number | null;
+  replied_at: number | null;
+}
+
+export interface MessageObservation {
+  id: number;
+  ts: number;
+  meta: MessageMetadata;
+}
+
+export interface PostMessageArgs {
+  from_session_id: string;
+  from_agent: string;
+  to_agent: MessageTarget;
+  to_session_id?: string;
+  content: string;
+  reply_to?: number;
+  urgency?: MessageUrgency;
+}
+
 const DEFAULT_HANDOFF_TTL_MS = 2 * 60 * 60 * 1000;
 const DEFAULT_WAKE_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -220,12 +272,15 @@ export class TaskThread {
   }
 
   /**
-   * Post a coordination message. Handoffs must go through handOff() instead
-   * because they have transactional side effects on claims.
+   * Post a coordination message. Handoffs and direct messages have dedicated
+   * paths (handOff, postMessage) because they carry typed metadata the
+   * preface renderer relies on — routing both through the generic post()
+   * would let a caller accidentally write a raw message-kind row without the
+   * addressing/status fields that downstream inbox queries expect.
    */
   post(p: {
     session_id: string;
-    kind: Exclude<CoordinationKind, 'handoff'>;
+    kind: Exclude<CoordinationKind, 'handoff' | 'message'>;
     content: string;
     reply_to?: number;
     metadata?: Record<string, unknown>;
@@ -620,6 +675,111 @@ export class TaskThread {
           (meta.to_session_id === session_id || meta.to_agent === 'any' || meta.to_agent === agent),
       );
   }
+
+  /**
+   * Post a direct message on this task thread. A message is a task_post with
+   * explicit addressing (to_agent / to_session_id) plus a read/reply
+   * lifecycle. If `reply_to` points at another message, we flip the parent's
+   * status to `replied` in the same transaction — authoritative on the
+   * sender side so the sender sees resolution on their next read.
+   */
+  postMessage(args: PostMessageArgs): number {
+    const meta: MessageMetadata = {
+      kind: 'message',
+      from_session_id: args.from_session_id,
+      from_agent: args.from_agent,
+      to_agent: args.to_agent,
+      to_session_id: args.to_session_id ?? null,
+      urgency: args.urgency ?? 'fyi',
+      status: 'unread',
+      read_by_session_id: null,
+      read_at: null,
+      replied_by_observation_id: null,
+      replied_at: null,
+    };
+    return this.store.storage.transaction(() => {
+      const id = this.store.addObservation({
+        session_id: args.from_session_id,
+        kind: 'message',
+        content: args.content,
+        task_id: this.task_id,
+        ...(args.reply_to !== undefined ? { reply_to: args.reply_to } : {}),
+        metadata: meta as unknown as Record<string, unknown>,
+      });
+      if (args.reply_to !== undefined) {
+        const parent = this.store.storage.getObservation(args.reply_to);
+        // Guard on same-task before mutating parent metadata. A reply_to
+        // pointing at another task would otherwise silently flip a foreign
+        // message's status to 'replied' — the same asymmetry markMessageRead
+        // already rejects via TASK_MISMATCH. Only message→message replies
+        // flip status; replies onto non-message kinds (a reply to a
+        // decline/note) are left alone so other primitives stay
+        // authoritative over their own lifecycle.
+        const parentMeta =
+          parent && parent.task_id === this.task_id ? parseMessage(parent.metadata) : null;
+        if (parentMeta && parentMeta.status !== 'replied') {
+          parentMeta.status = 'replied';
+          parentMeta.replied_by_observation_id = id;
+          parentMeta.replied_at = Date.now();
+          this.store.storage.updateObservationMetadata(args.reply_to, JSON.stringify(parentMeta));
+        }
+      }
+      this.store.storage.touchTask(this.task_id);
+      return id;
+    });
+  }
+
+  /**
+   * Mark a message as read by this session. Idempotent — re-marking a
+   * already-read (or replied) message is a no-op so concurrent fetches from
+   * the same recipient don't clobber the first reader's `read_at`. Returns
+   * the resulting status for callers that want to short-circuit.
+   */
+  markMessageRead(message_observation_id: number, session_id: string): MessageStatus {
+    const obs = this.store.storage.getObservation(message_observation_id);
+    if (!obs || obs.kind !== 'message') {
+      throw taskError(
+        TASK_THREAD_ERROR_CODES.NOT_MESSAGE,
+        `observation ${message_observation_id} is not a message`,
+      );
+    }
+    if (obs.task_id !== this.task_id) {
+      throw taskError(
+        TASK_THREAD_ERROR_CODES.TASK_MISMATCH,
+        `message belongs to task ${obs.task_id}, not ${this.task_id}`,
+      );
+    }
+    const meta = parseMessage(obs.metadata);
+    if (!meta) {
+      throw taskError(TASK_THREAD_ERROR_CODES.METADATA_MISSING, 'message metadata missing');
+    }
+    if (meta.status === 'unread') {
+      meta.status = 'read';
+      meta.read_by_session_id = session_id;
+      meta.read_at = Date.now();
+      this.store.storage.updateObservationMetadata(message_observation_id, JSON.stringify(meta));
+    }
+    return meta.status;
+  }
+
+  /** Unread messages addressed to `session_id` / `agent`. Broadcast
+   *  messages (to_agent='any') are visible to every participant but the
+   *  sender. */
+  pendingMessagesFor(session_id: string, agent: string): MessageObservation[] {
+    return this.store.storage
+      .taskObservationsByKind(this.task_id, 'message')
+      .map((row) => {
+        const meta = parseMessage(row.metadata);
+        return meta ? { id: row.id, ts: row.ts, meta } : null;
+      })
+      .filter((x): x is MessageObservation => x !== null)
+      .filter(
+        ({ meta }) =>
+          meta.status === 'unread' &&
+          meta.from_session_id !== session_id &&
+          (meta.to_session_id === session_id || meta.to_agent === 'any' || meta.to_agent === agent),
+      );
+  }
 }
 
 function parseHandoff(metadata: string | null): HandoffMetadata | null {
@@ -643,6 +803,19 @@ function parseWake(metadata: string | null): WakeRequestMetadata | null {
     const m = parsed as Partial<WakeRequestMetadata>;
     if (m.kind !== 'wake_request' || typeof m.status !== 'string') return null;
     return parsed as WakeRequestMetadata;
+  } catch {
+    return null;
+  }
+}
+
+function parseMessage(metadata: string | null): MessageMetadata | null {
+  if (!metadata) return null;
+  try {
+    const parsed = JSON.parse(metadata) as unknown;
+    if (!parsed || typeof parsed !== 'object') return null;
+    const m = parsed as Partial<MessageMetadata>;
+    if (m.kind !== 'message' || typeof m.status !== 'string') return null;
+    return parsed as MessageMetadata;
   } catch {
     return null;
   }

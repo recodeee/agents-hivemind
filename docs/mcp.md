@@ -397,6 +397,60 @@ Cancel a pending wake. Either the sender (withdrawing) or the target (declining)
 
 Returns `{ status: 'cancelled' }`. Errors include `{ code, error }`.
 
+## `task_message`
+
+Send a direct message to another agent on a task thread. Use for coordination chat that **doesn't** transfer file claims — for "hand off the work + files", use `task_hand_off`. A message is a `task_post` with kind `message`, explicit addressing, and a read/reply lifecycle.
+
+```json
+{
+  "name": "task_message",
+  "input": {
+    "task_id": 17,
+    "session_id": "sess_abc",
+    "agent": "claude",
+    "to_agent": "codex",
+    "to_session_id": "sess_xyz",
+    "content": "can you re-run the typecheck on your branch?",
+    "urgency": "needs_reply",
+    "reply_to": 401
+  }
+}
+```
+
+`to_agent` ∈ `claude | codex | any` — `any` broadcasts to every participant but the sender. `to_session_id` narrows delivery to a specific live session. `urgency` ∈ `fyi | needs_reply | blocking` and controls preface prominence. `reply_to` chains a reply; the parent message's status flips to `replied` atomically on the send. Returns `{ message_observation_id, status: 'unread' }`.
+
+## `task_messages`
+
+List messages addressed to you across tasks you participate in (or scoped with `task_ids`). Compact shape — fetch full bodies via `get_observations`. Does **not** mark as read; call `task_message_mark_read` explicitly so an agent can peek at its inbox during planning without burning the "you have new mail" signal.
+
+```json
+{
+  "name": "task_messages",
+  "input": {
+    "session_id": "sess_abc",
+    "agent": "claude",
+    "since_ts": 1714000000000,
+    "unread_only": true,
+    "limit": 50
+  }
+}
+```
+
+Returns `[ { id, task_id, ts, from_session_id, from_agent, to_agent, to_session_id, urgency, status, reply_to, preview } ]`, newest-first.
+
+## `task_message_mark_read`
+
+Mark a message as read. Idempotent — re-marking a read or replied message is a no-op. Returns the resulting `status`.
+
+```json
+{
+  "name": "task_message_mark_read",
+  "input": { "message_observation_id": 512, "session_id": "sess_xyz" }
+}
+```
+
+Errors include `{ code, error }` with stable codes like `NOT_MESSAGE`, `TASK_MISMATCH`, or `OBSERVATION_NOT_ON_TASK`.
+
 ## `attention_inbox`
 
 Compact list of what needs the caller's attention: pending handoffs, pending wakes, stalled lanes, and recent other-session file claims. Fetch full bodies via `get_observations`.

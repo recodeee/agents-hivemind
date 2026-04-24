@@ -11,6 +11,7 @@ import * as foraging from './tools/foraging.js';
 import * as handoff from './tools/handoff.js';
 import { installActiveSessionHeartbeat } from './tools/heartbeat.js';
 import * as hivemind from './tools/hivemind.js';
+import * as message from './tools/message.js';
 import * as profile from './tools/profile.js';
 import * as proposal from './tools/proposal.js';
 import * as search from './tools/search.js';
@@ -71,6 +72,7 @@ export function buildServer(store: MemoryStore, settings: Settings): McpServer {
   proposal.register(server, ctx);
   profile.register(server, ctx);
   wake.register(server, ctx);
+  message.register(server, ctx);
 
   // Spec-driven dev lane (@colony/spec). Adds spec_read, spec_change_open,
   // spec_change_add_delta, spec_build_context, spec_build_record_failure,

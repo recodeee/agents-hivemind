@@ -20,6 +20,12 @@ export {
   type HandoffStatus,
   type HandoffTarget,
   type HandOffArgs,
+  type MessageMetadata,
+  type MessageObservation,
+  type MessageStatus,
+  type MessageTarget,
+  type MessageUrgency,
+  type PostMessageArgs,
   type RequestWakeArgs,
   type TaskThreadErrorCode,
   type WakeRequestMetadata,
@@ -27,6 +33,11 @@ export {
   type WakeStatus,
   type WakeTarget,
 } from './task-thread.js';
+export {
+  listMessagesForAgent,
+  type ListMessagesOptions,
+  type MessageSummary,
+} from './messages.js';
 export {
   buildAttentionInbox,
   type AttentionInbox,
