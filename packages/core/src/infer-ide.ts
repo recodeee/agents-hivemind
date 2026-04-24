@@ -12,9 +12,16 @@
  */
 export function inferIdeFromSessionId(sessionId: string): string | undefined {
   if (!sessionId) return undefined;
-  const prefix = sessionId.split(/[@\-:/_]/)[0]?.toLowerCase();
-  if (!prefix) return undefined;
-  switch (prefix) {
+  const parts = sessionId.split(/[@\-:/_]/).map((p) => p.toLowerCase());
+  const first = parts[0];
+  if (!first) return undefined;
+  // When an agent writes its session id using the Guardex branch form
+  // (`agent/<name>/<task-slug>`), the literal leading segment is `agent`
+  // and the IDE name lives in the second segment. Peel that off before
+  // the normal prefix match so those rows get classified instead of
+  // landing in storage as `unknown`.
+  const candidate = first === 'agent' && parts[1] ? parts[1] : first;
+  switch (candidate) {
     case 'claude':
     case 'claudecode':
       return 'claude-code';

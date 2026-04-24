@@ -22,8 +22,22 @@ describe('inferIdeFromSessionId', () => {
     expect(inferIdeFromSessionId('claudecode/foo')).toBe('claude-code');
   });
 
+  it('peels the agent/<name>/... Guardex branch form', () => {
+    // Regression: some agents persist their Guardex branch name as the
+    // session id. The leading segment is literally `agent`, so without
+    // this special-case the row was classified as unknown.
+    expect(
+      inferIdeFromSessionId('agent/codex/make-openspec-lighter-with-colony-spec-m-2026-04-24-21-32'),
+    ).toBe('codex');
+    expect(
+      inferIdeFromSessionId('agent/claude/fix-unknown-ide-owner-infer-2026-04-24-21-21'),
+    ).toBe('claude-code');
+  });
+
   it('returns undefined for unknown prefixes and empty input', () => {
     expect(inferIdeFromSessionId('some-random-id')).toBeUndefined();
     expect(inferIdeFromSessionId('')).toBeUndefined();
+    // `agent/<unknown>/...` still falls through so we do not invent an owner.
+    expect(inferIdeFromSessionId('agent/telemetry/abc')).toBeUndefined();
   });
 });
