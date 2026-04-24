@@ -19,7 +19,7 @@
   "packageManager": "pnpm@9.12.0",
   "scripts": {
     "build": "pnpm -r --filter \"./packages/*\" --filter \"./apps/*\" build",
-    "dev": "pnpm --filter @imdeadpool/colony dev",
+    "dev": "pnpm --filter @imdeadpool/colony-cli dev",
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
     "lint": "biome check .",
@@ -27,8 +27,8 @@
     "format": "biome format --write .",
     "clean": "pnpm -r exec rm -rf dist && rm -rf node_modules/.cache",
     "p": "pnpm run publish:cli",
-    "publish:cli": "pnpm --filter @imdeadpool/colony pack:release && npm publish apps/cli/release --access public --cache /tmp/agents-hivemind-npm-cache",
-    "publish:cli:dry-run": "pnpm --filter @imdeadpool/colony pack:release && npm publish apps/cli/release --dry-run --access public --cache /tmp/agents-hivemind-npm-cache",
+    "publish:cli": "pnpm --filter @imdeadpool/colony-cli pack:release && npm publish apps/cli/release --access public --cache /tmp/agents-hivemind-npm-cache",
+    "publish:cli:dry-run": "pnpm --filter @imdeadpool/colony-cli pack:release && npm publish apps/cli/release --dry-run --access public --cache /tmp/agents-hivemind-npm-cache",
     "release": "changeset publish"
   },
   "devDependencies": {

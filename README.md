@@ -32,7 +32,7 @@ The design is ant-colony inspired on purpose. Agents do not need a central plann
 ## Install
 
 ```bash
-npm install -g @imdeadpool/colony
+npm install -g @imdeadpool/colony-cli
 ```
 
 Register Colony with your IDE or agent runtime:

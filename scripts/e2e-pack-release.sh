@@ -27,7 +27,7 @@ cleanup
 mkdir -p "$PACK" "$PREFIX" "$HOME_DIR"
 
 echo "==> 1. pack:release (build + pack-release.mjs)"
-pnpm --filter @imdeadpool/colony pack:release >/dev/null
+pnpm --filter @imdeadpool/colony-cli pack:release >/dev/null
 
 REL="$REPO/apps/cli/release"
 test -f "$REL/package.json" || { echo "release dir missing package.json"; exit 1; }
@@ -36,10 +36,9 @@ test -f "$REL/LICENSE"      || { echo "release dir missing LICENSE"; exit 1; }
 test -d "$REL/hooks-scripts" || { echo "release dir missing hooks-scripts"; exit 1; }
 
 echo "==> 2. npm pack the release dir (mirrors what publish:release uploads)"
-VERSION=$(node -e "console.log(require('$REPO/apps/cli/package.json').version)")
 ( cd "$REL" && npm pack --pack-destination "$PACK" >/dev/null )
-TGZ="$PACK/colony-$VERSION.tgz"
-test -f "$TGZ" || { echo "tarball missing at $TGZ"; ls "$PACK"; exit 1; }
+TGZ=$(node -e "const fs=require('fs'); const path=require('path'); const f=fs.readdirSync('$PACK').find((name)=>name.endsWith('.tgz')); if (!f) process.exit(1); console.log(path.join('$PACK', f));")
+test -f "$TGZ" || { echo "tarball missing in $PACK"; ls "$PACK"; exit 1; }
 
 echo "==> 3. install -g into isolated prefix"
 npm install --prefix "$PREFIX" --global "$TGZ" >/dev/null

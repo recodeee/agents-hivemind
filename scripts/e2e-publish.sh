@@ -41,13 +41,12 @@ echo "==> 1. build everything"
 pnpm build >/dev/null
 
 echo "==> 2. stage publish files (README, LICENSE, hooks-scripts)"
-pnpm --filter @imdeadpool/colony stage-publish
+pnpm --filter @imdeadpool/colony-cli stage-publish
 
 echo "==> 3. npm pack from apps/cli"
-VERSION=$(node -e "console.log(require('$REPO/apps/cli/package.json').version)")
 ( cd "$REPO/apps/cli" && npm pack --pack-destination "$PACK" >/dev/null )
-TGZ="$PACK/colony-$VERSION.tgz"
-test -f "$TGZ" || { echo "tarball missing at $TGZ"; ls "$PACK"; exit 1; }
+TGZ=$(node -e "const fs=require('fs'); const path=require('path'); const f=fs.readdirSync('$PACK').find((name)=>name.endsWith('.tgz')); if (!f) process.exit(1); console.log(path.join('$PACK', f));")
+test -f "$TGZ" || { echo "tarball missing in $PACK"; ls "$PACK"; exit 1; }
 
 echo "==> 4. inspect tarball contents"
 tar -tzf "$TGZ" | sort
