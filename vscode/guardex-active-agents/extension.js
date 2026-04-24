@@ -1,6 +1,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const cp = require('node:child_process');
+const http = require('node:http');
+const os = require('node:os');
 const vscode = require('vscode');
 const {
   formatElapsedFrom,
@@ -9,6 +11,84 @@ const {
   readSessionInspectData,
   sanitizeBranchForFile,
 } = require('./session-schema.js');
+
+const COLONY_DEFAULT_PORT = 37777;
+const COLONY_SNAPSHOT_TTL_MS = 5_000;
+const COLONY_FETCH_TIMEOUT_MS = 800;
+
+function colonyDataDir() {
+  return process.env.COLONY_HOME
+    || process.env.CAVEMEM_HOME
+    || path.join(os.homedir(), '.colony');
+}
+
+function readColonyPort() {
+  try {
+    const raw = fs.readFileSync(path.join(colonyDataDir(), 'settings.json'), 'utf8');
+    const parsed = JSON.parse(raw);
+    const port = Number(parsed?.workerPort);
+    return Number.isFinite(port) && port > 0 ? port : COLONY_DEFAULT_PORT;
+  } catch (_error) {
+    return COLONY_DEFAULT_PORT;
+  }
+}
+
+function fetchColonyJson(urlPath) {
+  return new Promise((resolve) => {
+    const req = http.get(
+      {
+        hostname: '127.0.0.1',
+        port: readColonyPort(),
+        path: urlPath,
+        timeout: COLONY_FETCH_TIMEOUT_MS,
+      },
+      (res) => {
+        if (res.statusCode !== 200) {
+          res.resume();
+          resolve(null);
+          return;
+        }
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => {
+          body += chunk;
+        });
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(body));
+          } catch (_error) {
+            resolve(null);
+          }
+        });
+      },
+    );
+    req.on('error', () => resolve(null));
+    req.on('timeout', () => {
+      req.destroy();
+      resolve(null);
+    });
+  });
+}
+
+const colonyTasksCache = new Map();
+
+async function readColonyTasksForRepo(repoRoot) {
+  const cached = colonyTasksCache.get(repoRoot);
+  if (cached && Date.now() - cached.at < COLONY_SNAPSHOT_TTL_MS) {
+    return cached.tasks;
+  }
+  const encoded = encodeURIComponent(repoRoot);
+  const tasks = await fetchColonyJson(`/api/colony/tasks?repo_root=${encoded}`);
+  const resolved = Array.isArray(tasks) ? tasks : [];
+  colonyTasksCache.set(repoRoot, { at: Date.now(), tasks: resolved });
+  return resolved;
+}
+
+function compactColonyBranchLabel(branch) {
+  if (typeof branch !== 'string' || !branch) return 'unknown';
+  const parts = branch.split('/').filter(Boolean);
+  return parts.length > 2 ? parts.slice(-2).join('/') : branch;
+}
 
 const SESSION_DECORATION_SCHEME = 'gitguardex-agent';
 const IDLE_WARNING_MS = 10 * 60 * 1000;
@@ -392,11 +472,12 @@ class InfoItem extends vscode.TreeItem {
 }
 
 class RepoItem extends vscode.TreeItem {
-  constructor(repoRoot, sessions, changes) {
+  constructor(repoRoot, sessions, changes, options = {}) {
     super(path.basename(repoRoot), vscode.TreeItemCollapsibleState.Expanded);
     this.repoRoot = repoRoot;
     this.sessions = sessions;
     this.changes = changes;
+    this.colonyTasks = Array.isArray(options.colonyTasks) ? options.colonyTasks : [];
     const descriptionParts = [];
     const activeCount = countActiveSessions(sessions);
     const deadCount = countSessionsByActivityKind(sessions, 'dead');
@@ -413,6 +494,17 @@ class RepoItem extends vscode.TreeItem {
     const changedCount = countChangedPaths(repoRoot, sessions, changes);
     if (changedCount > 0) {
       descriptionParts.push(`${changedCount} changed`);
+    }
+    const colonyTaskCount = this.colonyTasks.length;
+    if (colonyTaskCount > 0) {
+      descriptionParts.push(formatCountLabel(colonyTaskCount, 'colony task'));
+    }
+    const pendingHandoffs = this.colonyTasks.reduce(
+      (total, task) => total + (task.pending_handoff_count || 0),
+      0,
+    );
+    if (pendingHandoffs > 0) {
+      descriptionParts.push(formatCountLabel(pendingHandoffs, 'pending handoff'));
     }
     this.description = descriptionParts.join(' · ');
     this.tooltip = [repoRoot, this.description].join('\n');
@@ -1621,6 +1713,38 @@ class ActiveAgentsProvider {
           ),
         );
       }
+      const colonyTasks = Array.isArray(element.colonyTasks) ? element.colonyTasks : [];
+      if (colonyTasks.length > 0) {
+        const colonyItems = colonyTasks.map((task) => {
+          const participantLabel =
+            (task.participants || []).map((p) => p.agent).filter(Boolean).join(', ')
+            || 'no participants';
+          const pendingLabel = task.pending_handoff_count > 0
+            ? formatCountLabel(task.pending_handoff_count, 'pending handoff')
+            : 'quiet';
+          const label = `#${task.id} · ${compactColonyBranchLabel(task.branch)}`;
+          const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
+          item.description = `${participantLabel} · ${pendingLabel}`;
+          item.tooltip = [
+            task.branch,
+            `task #${task.id}`,
+            participantLabel,
+            task.pending_handoff_count > 0
+              ? formatCountLabel(task.pending_handoff_count, 'pending handoff')
+              : '',
+          ].filter(Boolean).join('\n');
+          item.iconPath = new vscode.ThemeIcon(
+            task.pending_handoff_count > 0 ? 'warning' : 'comment-discussion',
+          );
+          item.contextValue = 'gitguardex.colonyTask';
+          return item;
+        });
+        sectionItems.push(
+          new SectionItem('COLONY TASKS', colonyItems, {
+            description: String(colonyItems.length),
+          }),
+        );
+      }
       return sectionItems;
     }
 
@@ -1640,24 +1764,32 @@ class ActiveAgentsProvider {
       return [new InfoItem('No active Guardex agents', 'Open or start a sandbox session.')];
     }
 
-    return repoEntries.map((entry) => new RepoItem(entry.repoRoot, entry.sessions, entry.changes));
+    return repoEntries.map((entry) =>
+      new RepoItem(entry.repoRoot, entry.sessions, entry.changes, {
+        colonyTasks: entry.colonyTasks,
+      }),
+    );
   }
 
   async loadRepoEntries() {
     const repoEntries = await findRepoSessionEntries();
-    return repoEntries.map((entry) => {
-      const repoRoot = entry.repoRoot;
-      const lockRegistry = this.getLockRegistryForRepo(repoRoot);
-      const currentBranch = readCurrentBranch(repoRoot);
-      return {
-        repoRoot,
-        sessions: entry.sessions.map((session) => decorateSession(session, lockRegistry)),
-        changes: readRepoChanges(repoRoot).map((change) =>
-          decorateChange(change, lockRegistry, currentBranch),
-        ),
-        lockEntries: Array.from(lockRegistry.entriesByPath.entries()),
-      };
-    });
+    return Promise.all(
+      repoEntries.map(async (entry) => {
+        const repoRoot = entry.repoRoot;
+        const lockRegistry = this.getLockRegistryForRepo(repoRoot);
+        const currentBranch = readCurrentBranch(repoRoot);
+        const colonyTasks = await readColonyTasksForRepo(repoRoot);
+        return {
+          repoRoot,
+          sessions: entry.sessions.map((session) => decorateSession(session, lockRegistry)),
+          changes: readRepoChanges(repoRoot).map((change) =>
+            decorateChange(change, lockRegistry, currentBranch),
+          ),
+          lockEntries: Array.from(lockRegistry.entriesByPath.entries()),
+          colonyTasks,
+        };
+      }),
+    );
   }
 }
 

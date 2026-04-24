@@ -41,6 +41,77 @@ export function buildApp(
 
   app.get('/api/hivemind', (c) => c.json(readWorkerHivemind(options)));
 
+  app.get('/api/colony/tasks', (c) => {
+    const repoRoot = c.req.query('repo_root');
+    const limit = Number(c.req.query('limit') ?? 50);
+    const all = store.storage.listTasks(limit);
+    const tasks = repoRoot ? all.filter((t) => t.repo_root === repoRoot) : all;
+    return c.json(
+      tasks.map((t) => {
+        const pending = store.storage.pendingHandoffs(t.id);
+        const participants = store.storage.listParticipants(t.id);
+        return {
+          id: t.id,
+          repo_root: t.repo_root,
+          branch: t.branch,
+          created_at: t.created_at,
+          updated_at: t.updated_at,
+          status: t.status,
+          participants: participants.map((p) => ({
+            agent: p.agent,
+            session_id: p.session_id,
+            joined_at: p.joined_at,
+          })),
+          pending_handoff_count: pending.length,
+        };
+      }),
+    );
+  });
+
+  app.get('/api/colony/tasks/:id/attention', (c) => {
+    const taskId = Number(c.req.param('id'));
+    if (!Number.isFinite(taskId) || taskId <= 0) {
+      return c.json({ pending_handoffs: [], pending_wakes: [], recent: [] });
+    }
+    const pending = store.storage.pendingHandoffs(taskId);
+    const recent = store.storage.taskTimeline(taskId, 20);
+    const now = Date.now();
+    return c.json({
+      pending_handoffs: pending.map((h) => {
+        const meta = safeJsonObject(h.metadata);
+        return {
+          id: h.id,
+          from_agent: (meta.from_agent as string | undefined) ?? null,
+          to_agent: (meta.to_agent as string | undefined) ?? null,
+          summary: (meta.summary as string | undefined) ?? '',
+          status: (meta.status as string | undefined) ?? 'pending',
+          expires_at: (meta.expires_at as number | undefined) ?? null,
+          ts: h.ts,
+        };
+      }),
+      pending_wakes: recent
+        .filter((r) => r.kind === 'wake_request')
+        .map((r) => {
+          const meta = safeJsonObject(r.metadata);
+          return {
+            id: r.id,
+            ts: r.ts,
+            status: (meta.status as string | undefined) ?? 'pending',
+            reason: (meta.reason as string | undefined) ?? '',
+            to_agent: (meta.to_agent as string | undefined) ?? null,
+            expires_at: (meta.expires_at as number | undefined) ?? null,
+          };
+        })
+        .filter((w) => w.status === 'pending' && (w.expires_at == null || w.expires_at > now)),
+      recent: recent.slice(0, 10).map((r) => ({
+        id: r.id,
+        kind: r.kind,
+        session_id: r.session_id,
+        ts: r.ts,
+      })),
+    });
+  });
+
   app.get('/api/sessions/:id/observations', (c) => {
     const id = c.req.param('id');
     const limit = Number(c.req.query('limit') ?? 200);
@@ -71,6 +142,18 @@ export function buildApp(
   });
 
   return app;
+}
+
+function safeJsonObject(raw: string | null): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 function readWorkerHivemind(options: WorkerAppOptions): ReturnType<typeof readHivemind> {

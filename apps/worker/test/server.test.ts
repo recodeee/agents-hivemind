@@ -196,4 +196,121 @@ describe('worker HTTP', () => {
     const res = await app.request('/sessions/does-not-exist');
     expect(res.status).toBe(404);
   });
+
+  it('GET /api/colony/tasks lists tasks with pending handoff counts and participants', async () => {
+    const task = store.storage.findOrCreateTask({
+      title: 'viewer-task',
+      repo_root: '/tmp/repo-a',
+      branch: 'agent/codex/viewer-task',
+      created_by: 'sess-1',
+    });
+    store.startSession({ id: 'sess-1', ide: 'codex', cwd: '/tmp/repo-a' });
+    store.storage.addTaskParticipant({
+      task_id: task.id,
+      session_id: 'sess-1',
+      agent: 'codex',
+    });
+    store.addObservation({
+      session_id: 'sess-1',
+      kind: 'handoff',
+      content: 'pass ownership',
+      task_id: task.id,
+      metadata: {
+        status: 'pending',
+        from_agent: 'codex',
+        to_agent: 'claude',
+        summary: 'take over auth module',
+        expires_at: Date.now() + 60_000,
+      },
+    });
+
+    const res = await app.request('/api/colony/tasks');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Array<{
+      id: number;
+      repo_root: string;
+      branch: string;
+      pending_handoff_count: number;
+      participants: Array<{ agent: string; session_id: string }>;
+    }>;
+    const row = body.find((t) => t.id === task.id);
+    expect(row).toBeDefined();
+    expect(row?.repo_root).toBe('/tmp/repo-a');
+    expect(row?.branch).toBe('agent/codex/viewer-task');
+    expect(row?.pending_handoff_count).toBe(1);
+    expect(row?.participants.map((p) => p.agent)).toContain('codex');
+  });
+
+  it('GET /api/colony/tasks filters by repo_root', async () => {
+    store.storage.findOrCreateTask({
+      title: 'task-a',
+      repo_root: '/tmp/repo-a',
+      branch: 'agent/a/work',
+      created_by: 'sess-a',
+    });
+    store.storage.findOrCreateTask({
+      title: 'task-b',
+      repo_root: '/tmp/repo-b',
+      branch: 'agent/b/work',
+      created_by: 'sess-b',
+    });
+    const res = await app.request('/api/colony/tasks?repo_root=/tmp/repo-a');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Array<{ repo_root: string }>;
+    expect(body.every((t) => t.repo_root === '/tmp/repo-a')).toBe(true);
+    expect(body.length).toBeGreaterThan(0);
+  });
+
+  it('GET /api/colony/tasks/:id/attention surfaces pending handoffs and wake requests', async () => {
+    const task = store.storage.findOrCreateTask({
+      title: 'attention-task',
+      repo_root: '/tmp/repo-attn',
+      branch: 'agent/codex/attn',
+      created_by: 'sess-attn',
+    });
+    store.startSession({ id: 'sess-attn', ide: 'codex', cwd: '/tmp/repo-attn' });
+    store.storage.addTaskParticipant({
+      task_id: task.id,
+      session_id: 'sess-attn',
+      agent: 'codex',
+    });
+    const handoffId = store.addObservation({
+      session_id: 'sess-attn',
+      kind: 'handoff',
+      content: 'hand it off',
+      task_id: task.id,
+      metadata: {
+        status: 'pending',
+        from_agent: 'codex',
+        to_agent: 'claude',
+        summary: 'finish the migration',
+        expires_at: Date.now() + 60_000,
+      },
+    });
+    const wakeId = store.addObservation({
+      session_id: 'sess-attn',
+      kind: 'wake_request',
+      content: 'ping',
+      task_id: task.id,
+      metadata: {
+        kind: 'wake_request',
+        status: 'pending',
+        to_agent: 'claude',
+        reason: 'need review',
+        expires_at: Date.now() + 60_000,
+      },
+    });
+
+    const res = await app.request(`/api/colony/tasks/${task.id}/attention`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      pending_handoffs: Array<{ id: number; to_agent: string | null; status: string }>;
+      pending_wakes: Array<{ id: number; status: string }>;
+      recent: Array<{ id: number; kind: string }>;
+    };
+    expect(body.pending_handoffs.find((h) => h.id === handoffId)?.to_agent).toBe('claude');
+    expect(body.pending_wakes.find((w) => w.id === wakeId)?.status).toBe('pending');
+    expect(body.recent.length).toBeGreaterThan(0);
+    expect(body.recent.some((r) => r.kind === 'wake_request')).toBe(true);
+  });
 });
