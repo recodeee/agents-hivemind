@@ -226,6 +226,45 @@ describe('runHook', () => {
     });
   });
 
+  it('active-session previews keep task intent and show meaningful Bash commands', async () => {
+    const repo = join(dir, 'repo-bash');
+    mkdirSync(join(repo, '.git'), { recursive: true });
+    writeFileSync(join(repo, '.git', 'HEAD'), 'ref: refs/heads/agent/claude/bash\n', 'utf8');
+
+    await runHook(
+      'user-prompt-submit',
+      {
+        session_id: 'claude@bash-task',
+        ide: 'claude-code',
+        cwd: repo,
+        prompt: 'Find what every agent is doing',
+      },
+      { store },
+    );
+    await runHook(
+      'post-tool-use',
+      {
+        session_id: 'claude@bash-task',
+        ide: 'claude-code',
+        cwd: repo,
+        tool_name: 'Bash',
+        tool_input: {
+          command: 'API_TOKEN=abc123 pnpm test --filter @colony/hooks',
+        },
+        tool_response: 'ok',
+      },
+      { store },
+    );
+
+    const sessionFile = join(repo, '.omx', 'state', 'active-sessions', 'claude_bash-task.json');
+    const active = JSON.parse(readFileSync(sessionFile, 'utf8')) as Record<string, unknown>;
+    expect(active).toMatchObject({
+      taskName: 'Find what every agent is doing',
+      latestTaskPreview: 'Bash: API_TOKEN=<redacted> pnpm test --filter @colony/hooks',
+      state: 'working',
+    });
+  });
+
   it('post-tool-use accepts Claude Code field names (tool_name, tool_response)', async () => {
     await runHook(
       'session-start',
