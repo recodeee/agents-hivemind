@@ -102,6 +102,38 @@ export class Storage {
       .all(limit) as SessionRow[];
   }
 
+  /**
+   * Walk every session row whose ide is `'unknown'` and, when the caller's
+   * mapper returns a concrete IDE for that session_id, persist it. Used by
+   * `colony backfill ide` to heal rows written before the on-demand
+   * `MemoryStore.ensureSession` learned to infer the owner from the session
+   * id itself. Returns `{ scanned, updated }` so the CLI can print an
+   * honest summary instead of pretending every row was touched.
+   */
+  backfillUnknownIde(mapper: (sessionId: string) => string | undefined): {
+    scanned: number;
+    updated: number;
+  } {
+    const rows = this.db
+      .prepare("SELECT id FROM sessions WHERE ide = 'unknown'")
+      .all() as Array<{ id: string }>;
+    const update = this.db.prepare('UPDATE sessions SET ide = ? WHERE id = ? AND ide = ?');
+    let updated = 0;
+    const tx = this.db.transaction((pending: Array<{ id: string; ide: string }>) => {
+      for (const row of pending) {
+        const info = update.run(row.ide, row.id, 'unknown');
+        if (info.changes > 0) updated += 1;
+      }
+    });
+    const pending: Array<{ id: string; ide: string }> = [];
+    for (const row of rows) {
+      const next = mapper(row.id);
+      if (next && next !== 'unknown') pending.push({ id: row.id, ide: next });
+    }
+    tx(pending);
+    return { scanned: rows.length, updated };
+  }
+
   // --- observations ---
 
   insertObservation(o: NewObservation): number {
