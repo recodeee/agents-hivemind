@@ -239,10 +239,14 @@ describe('buildAttentionInbox', () => {
     });
     thread.markMessageRead(id, 'codex');
 
+    // Disable the min-age gate for this assertion. Without it, the
+    // receipt is suppressed for the first 5m so the test would race the
+    // wall clock; the next test covers the gating semantics directly.
     const senderInbox = buildAttentionInbox(store, {
       session_id: 'claude',
       agent: 'claude',
       task_ids: [thread.task_id],
+      read_receipt_min_age_ms: 0,
     });
     expect(senderInbox.read_receipts).toHaveLength(1);
     expect(senderInbox.read_receipts[0]?.read_message_id).toBe(id);
@@ -261,8 +265,59 @@ describe('buildAttentionInbox', () => {
       session_id: 'claude',
       agent: 'claude',
       task_ids: [thread.task_id],
+      read_receipt_min_age_ms: 0,
     });
     expect(after.read_receipts).toHaveLength(0);
+  });
+
+  it('suppresses fresh read receipts until the min-age window passes', () => {
+    seed('claude', 'codex');
+    const thread = TaskThread.open(store, {
+      repo_root: '/r',
+      branch: 'feat/inbox-receipt-ripening',
+      session_id: 'claude',
+    });
+    thread.join('claude', 'claude');
+    thread.join('codex', 'codex');
+    const id = thread.postMessage({
+      from_session_id: 'claude',
+      from_agent: 'claude',
+      to_agent: 'codex',
+      content: 'please review',
+      urgency: 'needs_reply',
+    });
+    thread.markMessageRead(id, 'codex');
+
+    // Default 5m gate: the receipt exists in storage but is too fresh
+    // to surface — recipient might still be typing.
+    const fresh = buildAttentionInbox(store, {
+      session_id: 'claude',
+      agent: 'claude',
+      task_ids: [thread.task_id],
+    });
+    expect(fresh.read_receipts).toHaveLength(0);
+
+    // Advancing the clock past the gate ripens the receipt. We pass
+    // `now` rather than mock Date.now so the assertion is explicit.
+    const ripe = buildAttentionInbox(store, {
+      session_id: 'claude',
+      agent: 'claude',
+      task_ids: [thread.task_id],
+      now: Date.now() + 6 * 60_000,
+    });
+    expect(ripe.read_receipts).toHaveLength(1);
+    expect(ripe.read_receipts[0]?.read_message_id).toBe(id);
+
+    // Custom shorter gate works too — a 1-second window surfaces the
+    // receipt almost immediately, which is what tests / hot debug
+    // sessions want.
+    const custom = buildAttentionInbox(store, {
+      session_id: 'claude',
+      agent: 'claude',
+      task_ids: [thread.task_id],
+      read_receipt_min_age_ms: 0,
+    });
+    expect(custom.read_receipts).toHaveLength(1);
   });
 
   it('returns the quiet-inbox next_action hint when nothing is pending', () => {

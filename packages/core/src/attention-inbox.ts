@@ -156,12 +156,22 @@ export interface AttentionInboxOptions {
    *  out so a long-running session doesn't accumulate stale "B read your
    *  message 3 days ago" hints. Default 6h. */
   read_receipt_window_ms?: number;
+  /**
+   * Minimum age (ms) before a read receipt becomes surface-worthy. Receipts
+   * younger than this are suppressed because "B read 30s ago, no reply yet"
+   * is noise — B is still thinking. The receipt only carries signal once
+   * "they had time to respond and didn't" is meaningful. Default 5m;
+   * shorter windows make sense in tests, longer windows make sense for
+   * heavyweight reviews where 5m is still too eager. Set to 0 to disable.
+   */
+  read_receipt_min_age_ms?: number;
   read_receipt_limit?: number;
 }
 
 const DEFAULT_RECENT_CLAIM_WINDOW_MS = 15 * 60_000;
 const DEFAULT_RECENT_CLAIM_LIMIT = 20;
 const DEFAULT_READ_RECEIPT_WINDOW_MS = 6 * 60 * 60_000;
+const DEFAULT_READ_RECEIPT_MIN_AGE_MS = 5 * 60_000;
 const DEFAULT_READ_RECEIPT_LIMIT = 20;
 
 /**
@@ -288,8 +298,12 @@ function coalesceMessages(messages: InboxMessage[]): CoalescedMessageGroup[] {
  * Walk task observation rows of kind 'message_read' and surface the ones
  * whose metadata names the calling session as the original sender. Drops
  * a receipt when the underlying message has since been replied to (the
- * reply is the stronger signal) or when the receipt is older than
- * `read_receipt_window_ms`.
+ * reply is the stronger signal), when the receipt is older than
+ * `read_receipt_window_ms`, or when the receipt is *younger* than
+ * `read_receipt_min_age_ms`. The min-age filter prevents the noisy
+ * "B read 30s ago, no reply yet" case where the recipient is still
+ * formulating a response — the receipt only carries signal once enough
+ * time has passed that "could have replied and didn't" is honest.
  */
 function collectReadReceipts(
   store: MemoryStore,
@@ -298,8 +312,10 @@ function collectReadReceipts(
   now: number,
 ): ReadReceipt[] {
   const window = opts.read_receipt_window_ms ?? DEFAULT_READ_RECEIPT_WINDOW_MS;
+  const minAge = opts.read_receipt_min_age_ms ?? DEFAULT_READ_RECEIPT_MIN_AGE_MS;
   const cap = opts.read_receipt_limit ?? DEFAULT_READ_RECEIPT_LIMIT;
   const since = now - window;
+  const ripeBefore = now - minAge;
   const out: ReadReceipt[] = [];
   for (const task_id of taskIds) {
     const rows = store.storage.taskObservationsByKind(task_id, 'message_read', cap * 2);
@@ -323,6 +339,11 @@ function collectReadReceipts(
       if (meta.kind !== 'message_read') continue;
       if (meta.original_sender_session_id !== opts.session_id) continue;
       if (typeof meta.read_message_id !== 'number') continue;
+      const readAt = typeof meta.ts === 'number' ? meta.ts : r.ts;
+      // Min-age gate: the receipt is real but too fresh to act on.
+      // Recipient might still be typing; surfacing now turns every
+      // mark_read into a "follow up?" prompt for the sender.
+      if (readAt > ripeBefore) continue;
       // Drop when the original message has since been replied to. The
       // reply already reaches the sender as a fresh inbox entry, so a
       // surviving receipt would be redundant noise.
@@ -337,7 +358,7 @@ function collectReadReceipts(
       out.push({
         task_id,
         read_message_id: meta.read_message_id,
-        read_at: typeof meta.ts === 'number' ? meta.ts : r.ts,
+        read_at: readAt,
         read_by_session_id: meta.read_by_session_id ?? r.session_id,
         read_by_agent: meta.read_by_agent ?? '',
         urgency: meta.urgency ?? 'fyi',
