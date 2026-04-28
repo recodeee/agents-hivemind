@@ -950,6 +950,28 @@ export class Storage {
     }>;
   }
 
+  /** Per-tool invocation count since `since_ts`, sorted descending. Built-in
+   *  tools (Edit, Read, Bash, …) and MCP tools (mcp__<server>__<tool>) appear
+   *  in the same list — the prefix is enough to tell them apart visually.
+   *  Surfaced by `debrief` so build/cut decisions about MCP tool surface area
+   *  can lean on actual call counts instead of intuition. */
+  toolInvocationDistribution(
+    since_ts: number,
+    limit = 50,
+  ): Array<{ tool: string; count: number }> {
+    return this.db
+      .prepare(
+        `SELECT json_extract(metadata, '$.tool') AS tool, COUNT(*) AS count
+         FROM observations
+         WHERE ts > ? AND kind = 'tool_use'
+           AND json_extract(metadata, '$.tool') IS NOT NULL
+         GROUP BY tool
+         ORDER BY count DESC, tool ASC
+         LIMIT ?`,
+      )
+      .all(since_ts, limit) as Array<{ tool: string; count: number }>;
+  }
+
   /** First task-participant row for a session, used to verify auto-join
    *  fired within ~2s of SessionStart. */
   participantJoinFor(session_id: string): TaskParticipantRow | undefined {

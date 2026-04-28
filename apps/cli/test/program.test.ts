@@ -65,7 +65,7 @@ describe('Colony CLI program', () => {
                                    timeline
         observe [options]          Live dashboard of collaboration state. Run in a
                                    spare terminal during a session.
-        debrief [options]          End-of-day collaboration post-mortem: 5 structured
+        debrief [options]          End-of-day collaboration post-mortem: 6 structured
                                    sections over DB evidence.
         inbox [options]            Compact list of attention items for a session:
                                    pending handoffs, wakes, stalled lanes, recent

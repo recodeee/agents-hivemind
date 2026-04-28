@@ -149,14 +149,46 @@ function sectionHandoffs(ctx: DebriefContext): string[] {
 }
 
 /**
- * Section 5 — interleaved timeline.
+ * Section 5 — tool invocation distribution.
+ *
+ * Counts every `tool_use` observation grouped by tool name. The point is
+ * empirical: knowing that `mcp__colony__task_post` fired 8 times while
+ * `mcp__colony__task_propose` fired 0 lets the next round of build/cut
+ * decisions lean on real call counts instead of intuition. Built-in
+ * tools and MCP tools share one list — the `mcp__` prefix discriminates.
+ */
+function sectionToolDistribution(ctx: DebriefContext): string[] {
+  const lines = ['', kleur.bold('5. Tool invocation distribution')];
+  const rows = ctx.storage.toolInvocationDistribution(ctx.since, 20);
+  if (rows.length === 0) {
+    lines.push(kleur.dim('  No tool_use observations in window.'));
+    return lines;
+  }
+  const widest = rows.reduce((w, r) => Math.max(w, r.tool.length), 0);
+  const total = rows.reduce((sum, r) => sum + r.count, 0);
+  for (const r of rows) {
+    const pct = Math.round((r.count / total) * 100);
+    const isMcp = r.tool.startsWith('mcp__');
+    const name = isMcp ? kleur.cyan(r.tool.padEnd(widest)) : r.tool.padEnd(widest);
+    lines.push(`  ${name}  ${String(r.count).padStart(5)}  ${kleur.dim(`(${pct}%)`)}`);
+  }
+  lines.push(
+    kleur.dim(
+      `  Top ${rows.length} tools, ${total} invocations total. Cyan = MCP tool. Zero-call tools won't appear — grep code if you suspect a registered tool is unused.`,
+    ),
+  );
+  return lines;
+}
+
+/**
+ * Section 6 — interleaved timeline.
  *
  * No analysis, just chronology. Observer notes are colored magenta so
  * you can scan for moments where your note sits next to an agent event —
  * those are the coordination failures the numeric sections can't surface.
  */
 function sectionTimeline(ctx: DebriefContext): string[] {
-  const lines = ['', kleur.bold('5. Timeline (observer notes interleaved with agent activity)')];
+  const lines = ['', kleur.bold('6. Timeline (observer notes interleaved with agent activity)')];
   const events = ctx.storage.mixedTimeline(ctx.since, ctx.taskId);
   if (events.length === 0) {
     lines.push(kleur.dim('  No events.'));
@@ -176,7 +208,7 @@ function sectionTimeline(ctx: DebriefContext): string[] {
 export function registerDebriefCommand(program: Command): void {
   program
     .command('debrief')
-    .description('End-of-day collaboration post-mortem: 5 structured sections over DB evidence.')
+    .description('End-of-day collaboration post-mortem: 6 structured sections over DB evidence.')
     .option('--hours <n>', 'Window size in hours', String(DEFAULT_HOURS))
     .option('--task <id>', 'Narrow the timeline section to a specific task thread')
     .action(async (opts: { hours: string; task?: string }) => {
@@ -192,6 +224,7 @@ export function registerDebriefCommand(program: Command): void {
           sectionAutoJoin(ctx),
           sectionProactiveClaims(ctx),
           sectionHandoffs(ctx),
+          sectionToolDistribution(ctx),
           sectionTimeline(ctx),
         ];
         for (const s of sections) process.stdout.write(`${s.join('\n')}\n`);

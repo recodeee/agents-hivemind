@@ -298,4 +298,53 @@ describe('Storage', () => {
     // Idempotent: running again should not touch anything.
     expect(storage.backfillUnknownIde(mapper)).toEqual({ scanned: 1, updated: 0 });
   });
+
+  it('toolInvocationDistribution counts tool_use rows by metadata.tool, sorted desc, windowed', () => {
+    storage.createSession({
+      id: 'sess-tool-dist',
+      ide: 'claude-code',
+      cwd: null,
+      started_at: 1,
+      metadata: null,
+    });
+    const tools: Array<{ tool: string; count: number; ts: number }> = [
+      { tool: 'Bash', count: 5, ts: 2_000 },
+      { tool: 'Edit', count: 3, ts: 2_000 },
+      { tool: 'mcp__colony__task_post', count: 2, ts: 2_000 },
+      { tool: 'old-tool-out-of-window', count: 4, ts: 100 },
+    ];
+    for (const t of tools) {
+      for (let i = 0; i < t.count; i++) {
+        storage.insertObservation({
+          session_id: 'sess-tool-dist',
+          kind: 'tool_use',
+          content: `${t.tool} call ${i}`,
+          compressed: false,
+          intensity: null,
+          ts: t.ts,
+          metadata: { tool: t.tool },
+        });
+      }
+    }
+    storage.insertObservation({
+      session_id: 'sess-tool-dist',
+      kind: 'note',
+      content: 'not a tool_use, must be excluded',
+      compressed: false,
+      intensity: null,
+      ts: 2_000,
+      metadata: { tool: 'Bash' },
+    });
+
+    const rows = storage.toolInvocationDistribution(1_000);
+    expect(rows).toEqual([
+      { tool: 'Bash', count: 5 },
+      { tool: 'Edit', count: 3 },
+      { tool: 'mcp__colony__task_post', count: 2 },
+    ]);
+
+    const limited = storage.toolInvocationDistribution(1_000, 2);
+    expect(limited).toHaveLength(2);
+    expect(limited[0]?.tool).toBe('Bash');
+  });
 });
