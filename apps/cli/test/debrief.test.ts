@@ -121,6 +121,32 @@ describe('debrief --json', () => {
   });
 });
 
+describe('debrief output', () => {
+  it('explains mirror rows in the tool distribution section', async () => {
+    kleur.enabled = false;
+    const storage = fakeStorage(activity({ commits: 0, reads: 0 }), {
+      toolDistribution: [{ tool: 'TaskCreate', count: 1 }],
+    });
+    mocks.withStorage.mockImplementation(
+      async (_settings: unknown, run: (storage: unknown) => unknown) => run(storage),
+    );
+    const output: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: unknown) => {
+      output.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write);
+
+    const program = new Command();
+    registerDebriefCommand(program);
+
+    await program.parseAsync(['node', 'test', 'debrief'], { from: 'node' });
+
+    expect(output.join('')).toContain(
+      '*-mirror rows are passive copies of built-in TaskCreate/TaskUpdate calls attached to task threads.',
+    );
+  });
+});
+
 function renderSection(coordinationActivity: TestCoordinationActivity): string {
   return sectionCoordinationRatio({
     storage: fakeStorage(coordinationActivity),
@@ -128,7 +154,10 @@ function renderSection(coordinationActivity: TestCoordinationActivity): string {
   }).join('\n');
 }
 
-function fakeStorage(coordinationActivity: TestCoordinationActivity): never {
+function fakeStorage(
+  coordinationActivity: TestCoordinationActivity,
+  opts: { toolDistribution?: Array<{ tool: string; count: number }> } = {},
+): never {
   return {
     coordinationActivity: vi.fn(() => coordinationActivity),
     listSessions: vi.fn(() =>
@@ -157,7 +186,7 @@ function fakeStorage(coordinationActivity: TestCoordinationActivity): never {
     })),
     handoffAcceptLatencies: vi.fn(() => []),
     toolUsageBySession: vi.fn(() => []),
-    toolInvocationDistribution: vi.fn(() => []),
+    toolInvocationDistribution: vi.fn(() => opts.toolDistribution ?? []),
     mixedTimeline: vi.fn(() => []),
   } as never;
 }

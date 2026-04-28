@@ -54,6 +54,8 @@ const COMMIT_RATIO_COMMIT_EXAMPLES = [
   'task_message',
 ];
 const COMMIT_RATIO_READ_EXAMPLES = ['hivemind_context', 'task_list', 'attention_inbox'];
+const MIRROR_ROW_NOTE =
+  '*-mirror rows are passive copies of built-in TaskCreate/TaskUpdate calls attached to task threads.';
 
 /**
  * Section 1 — did agents use the task tools at all?
@@ -201,6 +203,7 @@ function sectionToolDistribution(ctx: DebriefContext): string[] {
   const rows = ctx.storage.toolInvocationDistribution(ctx.since, 20);
   if (rows.length === 0) {
     lines.push(kleur.dim('  No tool_use observations in window.'));
+    lines.push(kleur.dim(`  ${MIRROR_ROW_NOTE}`));
     return lines;
   }
   const widest = rows.reduce((w, r) => Math.max(w, r.tool.length), 0);
@@ -216,6 +219,7 @@ function sectionToolDistribution(ctx: DebriefContext): string[] {
       `  Top ${rows.length} tools, ${total} invocations total. Cyan = MCP tool. Zero-call tools won't appear — grep code if you suspect a registered tool is unused.`,
     ),
   );
+  lines.push(kleur.dim(`  ${MIRROR_ROW_NOTE}`));
   return lines;
 }
 
