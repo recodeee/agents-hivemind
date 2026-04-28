@@ -90,6 +90,51 @@ MCP workflow:
    sub-task completes and `auto_archive` is enabled, the parent plan archives
    automatically unless conflicts block it.
 
+## Queen orders work; agents claim work.
+
+Queen expresses order. It does not express ownership.
+
+When examples say "Agent 2", "Agent 3", or similar labels, those numbers are
+manual planning labels. They are not runtime identities. Queen does not look
+for a running Agent 2, start Agent 3, or send commands to any agent.
+
+Queen can publish capability hints such as `api_work`, `test_work`,
+`infra_work`, `ui_work`, or `doc_work`. These hints help the Colony ready queue
+rank available sub-tasks for the caller, but they do not reserve the work for a
+specific agent.
+
+The claim path stays pull-based:
+
+1. Queen publishes ordered, claimable sub-tasks.
+2. `task_ready_for_agent` decides which unblocked sub-tasks are available for
+   the caller.
+3. The caller chooses one ready item.
+4. `task_plan_claim_subtask` performs the claim and activates the sub-task file
+   scope.
+
+Example mapping:
+
+```text
+Manual assignment order
+  Agent 2: document the workflow
+  Agent 3: add tests
+  Agent 4: wire the UI after docs and tests
+
+Queen waves
+  wave-1: document the workflow, capability_hint=doc_work
+  wave-1: add tests, capability_hint=test_work
+  wave-2: wire the UI, depends_on=[wave-1 subtasks], capability_hint=ui_work
+
+Ready queue
+  task_ready_for_agent(caller) returns unblocked wave-1 work ranked for caller
+  caller picks one item
+  task_plan_claim_subtask(caller, subtask) records the claim
+  wave-2 appears only after wave-1 dependencies complete
+```
+
+This keeps Queen as a plan publisher. The queue decides availability for each
+caller, and the claim tool records who actually took the work.
+
 ## ordered waves
 
 Queen can describe an ordered plan as waves without creating a scheduler. A

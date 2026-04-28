@@ -171,6 +171,8 @@ If the ready item needs implementation context, call `search` with the task titl
 
 Queen is the deterministic plan publisher and sweeper behind this workflow. It is not an orchestrator and does not launch agents. It turns a clear goal into a bounded, claimable plan, then agents pull work through the normal Colony task-plan tools. The CLI `colony queen sweep` surfaces stalled claimed work, long-unclaimed available subtasks, and completed plans waiting on manual archive. See [Queen workflow](docs/QUEEN.md).
 
+Queen orders work; agents claim work. Agent numbers in examples are planning labels, not runtime identities. Queen may add capability hints, `task_ready_for_agent` shows what is available to a caller, and `task_plan_claim_subtask` records the actual claim.
+
 ### Spec-driven development
 
 | Tool | Use it for |
