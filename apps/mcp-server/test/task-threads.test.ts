@@ -22,17 +22,13 @@ async function call<T>(name: string, args: Record<string, unknown>): Promise<T> 
   return JSON.parse(text) as T;
 }
 
-async function callError(
-  name: string,
-  args: Record<string, unknown>,
-): Promise<{
-  code: string;
-  error: string;
-}> {
+async function callError<
+  T extends { code: string; error: string } = { code: string; error: string },
+>(name: string, args: Record<string, unknown>): Promise<T> {
   const res = await client.callTool({ name, arguments: args });
   expect(res.isError).toBe(true);
   const text = (res.content as Array<{ type: string; text: string }>)[0]?.text ?? '{}';
-  return JSON.parse(text) as { code: string; error: string };
+  return JSON.parse(text) as T;
 }
 
 /**
@@ -281,6 +277,98 @@ describe('task threads — handoff lifecycle', () => {
 
     const hits = await store.search('save current state', 10);
     expect(hits.some((hit) => hit.id === id)).toBe(true);
+  });
+
+  it('task_note_working posts a note to the only active task for the session', async () => {
+    const { task_id, sessionA } = seedTwoSessionTask();
+
+    const { observation_id, task_id: resolvedTaskId } = await call<{
+      observation_id: number;
+      task_id: number;
+    }>('task_note_working', {
+      session_id: sessionA,
+      content: 'working state: tests are green, unique-working-note-token before push',
+    });
+
+    expect(resolvedTaskId).toBe(task_id);
+    const row = store.storage.getObservation(observation_id);
+    expect(row).toMatchObject({
+      id: observation_id,
+      session_id: sessionA,
+      task_id,
+      kind: 'note',
+      compressed: 1,
+    });
+    const meta = JSON.parse(row?.metadata ?? '{}');
+    expect(meta).toMatchObject({
+      kind: 'note',
+      working_note: true,
+      resolved_by: 'task_note_working',
+    });
+
+    const hits = await store.search('unique-working-note-token', 10);
+    expect(hits.some((hit) => hit.id === observation_id)).toBe(true);
+  });
+
+  it('task_note_working resolves by repo_root and branch when the session has multiple tasks', async () => {
+    const { task_id, sessionA } = seedTwoSessionTask();
+    const other = TaskThread.open(store, {
+      repo_root: '/repo',
+      branch: 'feat/other',
+      session_id: sessionA,
+    });
+    other.join(sessionA, 'claude');
+
+    const { observation_id, task_id: resolvedTaskId } = await call<{
+      observation_id: number;
+      task_id: number;
+    }>('task_note_working', {
+      session_id: sessionA,
+      repo_root: '/repo',
+      branch: 'feat/handoff',
+      content: 'working state: stay on the handoff branch',
+    });
+
+    expect(resolvedTaskId).toBe(task_id);
+    expect(store.storage.getObservation(observation_id)?.task_id).toBe(task_id);
+  });
+
+  it('task_note_working returns compact candidates when active task resolution is ambiguous', async () => {
+    const { task_id, sessionA } = seedTwoSessionTask();
+    const other = TaskThread.open(store, {
+      repo_root: '/repo',
+      branch: 'feat/other',
+      session_id: sessionA,
+    });
+    other.join(sessionA, 'claude');
+
+    const err = await callError<{
+      code: string;
+      error: string;
+      candidates: Array<{ task_id: number; repo_root: string; branch: string; agent: string }>;
+    }>('task_note_working', {
+      session_id: sessionA,
+      repo_root: '/repo',
+      content: 'working state: should not be guessed',
+    });
+
+    expect(err.code).toBe('AMBIGUOUS_ACTIVE_TASK');
+    expect(err.candidates).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ task_id, repo_root: '/repo', branch: 'feat/handoff' }),
+        expect.objectContaining({
+          task_id: other.task_id,
+          repo_root: '/repo',
+          branch: 'feat/other',
+        }),
+      ]),
+    );
+    expect(store.storage.taskTimeline(task_id).some((row) => row.content.includes('guessed'))).toBe(
+      false,
+    );
+    expect(
+      store.storage.taskTimeline(other.task_id).some((row) => row.content.includes('guessed')),
+    ).toBe(false);
   });
 
   it('task_post stores negative warning kinds and search returns them compactly', async () => {

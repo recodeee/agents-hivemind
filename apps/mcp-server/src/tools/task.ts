@@ -103,6 +103,73 @@ export function register(server: McpServer, ctx: ToolContext): void {
   );
 
   server.tool(
+    'task_note_working',
+    'Save current working state to the active Colony task. Resolves the task from session_id plus optional repo_root/branch, posts kind=note, and returns compact candidates instead of guessing when ambiguous.',
+    {
+      session_id: z.string().min(1),
+      content: z.string().min(1),
+      repo_root: z.string().min(1).optional(),
+      branch: z.string().min(1).optional(),
+      candidate_limit: z.number().int().positive().max(50).optional(),
+    },
+    async ({ session_id, content, repo_root, branch, candidate_limit }) => {
+      const candidates = activeTaskCandidates(store, {
+        session_id,
+        ...(repo_root !== undefined ? { repo_root } : {}),
+        ...(branch !== undefined ? { branch } : {}),
+      });
+      const visibleCandidates = candidates.slice(0, candidate_limit ?? 10);
+
+      if (candidates.length !== 1) {
+        const code = candidates.length === 0 ? 'ACTIVE_TASK_NOT_FOUND' : 'AMBIGUOUS_ACTIVE_TASK';
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                code,
+                error:
+                  candidates.length === 0
+                    ? 'no active Colony task matched session/repo/branch'
+                    : 'multiple active Colony tasks matched session/repo/branch',
+                candidates: visibleCandidates,
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const candidate = candidates[0];
+      if (!candidate) throw new Error('working note task resolution lost its only candidate');
+      const thread = new TaskThread(store, candidate.task_id);
+      const observation_id = thread.post({
+        session_id,
+        kind: 'note',
+        content,
+        metadata: {
+          working_note: true,
+          resolved_by: 'task_note_working',
+          ...(repo_root !== undefined ? { requested_repo_root: repo_root } : {}),
+          ...(branch !== undefined ? { requested_branch: branch } : {}),
+        },
+      });
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              observation_id,
+              id: observation_id,
+              task_id: candidate.task_id,
+            }),
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
     'task_claim_file',
     'Claim a file before editing so other agents see ownership and overlap warnings. Use before editing to avoid conflict and make file ownership visible; claims are soft coordination and never block writes.',
     {
@@ -189,6 +256,41 @@ export function register(server: McpServer, ctx: ToolContext): void {
       return { content: [{ type: 'text', text: JSON.stringify(links) }] };
     },
   );
+}
+
+interface ActiveTaskCandidate {
+  task_id: number;
+  title: string;
+  repo_root: string;
+  branch: string;
+  status: string;
+  updated_at: number;
+  agent: string;
+}
+
+function activeTaskCandidates(
+  store: ToolContext['store'],
+  opts: { session_id: string; repo_root?: string; branch?: string },
+): ActiveTaskCandidate[] {
+  const candidates: ActiveTaskCandidate[] = [];
+  for (const task of store.storage.listTasks(2000)) {
+    if (opts.repo_root !== undefined && task.repo_root !== opts.repo_root) continue;
+    if (opts.branch !== undefined && task.branch !== opts.branch) continue;
+    const participant = store.storage
+      .listParticipants(task.id)
+      .find((row) => row.session_id === opts.session_id && row.left_at === null);
+    if (!participant) continue;
+    candidates.push({
+      task_id: task.id,
+      title: task.title,
+      repo_root: task.repo_root,
+      branch: task.branch,
+      status: task.status,
+      updated_at: task.updated_at,
+      agent: participant.agent,
+    });
+  }
+  return candidates.sort((a, b) => b.updated_at - a.updated_at);
 }
 
 function compactPlanTimelineMetadata(

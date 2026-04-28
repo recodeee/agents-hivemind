@@ -426,6 +426,24 @@ Use `failed_approach`, `blocked_path`, `conflict_warning`, or `reverted_solution
 
 `kind` ∈ `question | answer | decision | blocker | note | failed_approach | blocked_path | conflict_warning | reverted_solution`. Returns `{ id }`.
 
+## `task_note_working`
+
+Save current working state to the active Colony task without manually resolving `task_id`. This is the Colony-native replacement for ad hoc working notepad writes: the note is still task/session scoped and persists through `MemoryStore`.
+
+```json
+{
+  "name": "task_note_working",
+  "input": {
+    "session_id": "sess_abc",
+    "repo_root": "/abs/repo",
+    "branch": "agent/codex/current-work",
+    "content": "branch=...; task=...; blocker=none; next=run tests; evidence=..."
+  }
+}
+```
+
+`repo_root` and `branch` are optional filters. The tool scans active task participation for the session, posts `kind:"note"` when exactly one task matches, and returns `{ observation_id, id, task_id }`. If multiple tasks match, it returns `AMBIGUOUS_ACTIVE_TASK` plus compact candidates (`task_id`, `repo_root`, `branch`, `status`, `updated_at`, `agent`) instead of guessing. If none match, it returns `ACTIVE_TASK_NOT_FOUND`.
+
 ## `task_post` lifecycle
 
 - Working-state shortcut: write working note, save current state, remember progress, or log what I am doing by posting kind:'note'.

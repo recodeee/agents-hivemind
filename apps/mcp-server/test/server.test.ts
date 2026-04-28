@@ -83,6 +83,7 @@ describe('MCP server', () => {
       'task_message_mark_read',
       'task_message_retract',
       'task_messages',
+      'task_note_working',
       'task_plan_claim_subtask',
       'task_plan_complete_subtask',
       'task_plan_list',
@@ -107,6 +108,13 @@ describe('MCP server', () => {
       'Use for questions, answers, decisions, blockers, and general notes',
     );
     expect(taskPostDescription.length).toBeLessThanOrEqual(240);
+    const taskNoteWorkingDescription = byName.get('task_note_working')?.description ?? '';
+    expect(taskNoteWorkingDescription).toMatch(
+      /^Save current working state to the active Colony task\./,
+    );
+    expect(taskNoteWorkingDescription).toContain('repo_root/branch');
+    expect(taskNoteWorkingDescription).toContain('compact candidates');
+    expect(taskNoteWorkingDescription.length).toBeLessThanOrEqual(240);
     expect(byName.get('task_message')?.inputSchema.required).toEqual([
       'task_id',
       'session_id',
