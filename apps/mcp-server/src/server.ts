@@ -10,7 +10,7 @@ import * as attention from './tools/attention.js';
 import type { ToolContext } from './tools/context.js';
 import * as foraging from './tools/foraging.js';
 import * as handoff from './tools/handoff.js';
-import { installActiveSessionHeartbeat, wrapHandler } from './tools/heartbeat.js';
+import { createHeartbeatWrapper, installActiveSessionHeartbeat } from './tools/heartbeat.js';
 import * as hivemind from './tools/hivemind.js';
 import * as message from './tools/message.js';
 import * as planValidate from './tools/plan-validate.js';
@@ -49,7 +49,7 @@ export function buildServer(store: MemoryStore, settings: Settings): McpServer {
   // The stdio MCP server is spawned per client session, so env + cwd
   // identify the caller; upsertActiveSession merges with whatever a hook
   // writer may have produced and preserves richer task previews.
-  installActiveSessionHeartbeat(server);
+  installActiveSessionHeartbeat(server, store);
 
   // tri-state: undefined = not yet attempted; null = unavailable (provider=none or load failed)
   let embedder: Embedder | null | undefined = undefined;
@@ -66,7 +66,12 @@ export function buildServer(store: MemoryStore, settings: Settings): McpServer {
     return embedder;
   };
 
-  const ctx: ToolContext = { store, settings, resolveEmbedder, wrapHandler };
+  const ctx: ToolContext = {
+    store,
+    settings,
+    resolveEmbedder,
+    wrapHandler: createHeartbeatWrapper(store),
+  };
 
   // Registration order mirrors the pre-split monolithic server.ts so existing
   // MCP inspector fixtures and snapshot tests stay stable.

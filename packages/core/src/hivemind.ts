@@ -97,6 +97,17 @@ export function readHivemind(options: HivemindOptions = {}): HivemindSnapshot {
   };
 }
 
+export function readActiveOmxSessions(options: HivemindOptions = {}): HivemindSession[] {
+  const now = options.now ?? Date.now();
+  const sessions = resolveRepoRoots(options).flatMap((repoRoot) =>
+    readActiveSessionFiles(repoRoot, now),
+  );
+  const visibleSessions = options.includeStale
+    ? sessions
+    : sessions.filter((session) => session.activity !== 'dead');
+  return visibleSessions.sort(compareSessions);
+}
+
 function resolveRepoRoots(options: HivemindOptions): string[] {
   const explicitRoots = [options.repoRoot, ...(options.repoRoots ?? [])]
     .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
