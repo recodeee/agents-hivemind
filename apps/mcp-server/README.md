@@ -9,7 +9,7 @@ status details, and edge-case rules in the second sentence or later.
 | user types | tool that should win |
 | --- | --- |
 | send message, note to agent, tell another agent | `task_message` |
-| what needs my attention, pending, unread, blocking | `attention_inbox` |
+| what needs my attention, after hivemind_context, pending, unread, blocking | `attention_inbox` |
 | save current working state, active Colony task, no task id | `task_note_working` |
 | notepad replacement, remember progress, log what I am doing | `task_note_working` |
 | hud status, bridge status, compact coordination state | `bridge_status` |

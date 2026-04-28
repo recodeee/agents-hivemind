@@ -10,6 +10,19 @@ function readToolDescription(relativePath: string, toolName: string): string {
 }
 
 describe('ToolSearch descriptions', () => {
+  it('routes post-hivemind attention checks to attention_inbox', () => {
+    const description = readToolDescription('../src/tools/attention.ts', 'attention_inbox');
+    const leading = description.slice(0, 180).toLowerCase();
+
+    expect(description).toMatch(/^See what needs your attention/);
+    expect(leading).toContain('after hivemind_context');
+    expect(leading).toContain('handoffs');
+    expect(leading).toContain('unread messages');
+    expect(leading).toContain('blockers');
+    expect(leading).toContain('stalled lanes');
+    expect(leading).toContain('recent claims');
+  });
+
   it('routes work selection to task_ready_for_agent', () => {
     const description = readToolDescription('../src/tools/ready-queue.ts', 'task_ready_for_agent');
     const normalized = description.toLowerCase();

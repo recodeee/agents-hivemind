@@ -166,11 +166,15 @@ describe('MCP server', () => {
     );
     const attentionDescription = byName.get('attention_inbox')?.description ?? '';
     expect(attentionDescription).toMatch(
-      /^See what needs your attention: live pending handoffs, unread messages, blockers, stalled lanes, recent claims, stale claim cleanup signals, and decaying hot files\./,
+      /^See what needs your attention after hivemind_context: handoffs, unread messages, blockers, stalled lanes, recent claims, stale claim cleanup signals, and decaying hot files\./,
     );
-    expect(attentionDescription.slice(0, 80)).toContain('pending handoffs');
-    expect(attentionDescription.slice(0, 80)).toContain('unread messages');
-    expect(attentionDescription.slice(0, 80)).toContain('blockers');
+    const leadingAttention = attentionDescription.slice(0, 180).toLowerCase();
+    expect(leadingAttention).toContain('after hivemind_context');
+    expect(leadingAttention).toContain('handoffs');
+    expect(leadingAttention).toContain('unread messages');
+    expect(leadingAttention).toContain('blockers');
+    expect(leadingAttention).toContain('stalled lanes');
+    expect(leadingAttention).toContain('recent claims');
     expect(attentionDescription).toContain('Expired handoffs are not surfaced as pending');
     expect(attentionDescription).toContain('stale claim cleanup signals');
     expect(attentionDescription).toContain('decaying hot files');

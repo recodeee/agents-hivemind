@@ -18,6 +18,8 @@ Agent startup, resume, "what needs me?", and "what should I do next?" flows shou
 2. `attention_inbox` to see what needs your attention: handoffs, messages, wakes, stalled lanes, fresh claims, stale-claim cleanup signals, and decaying hot files.
 3. `task_ready_for_agent` to choose available work matched to the current agent.
 
+Do not choose work before attention_inbox.
+
 Codex-style MCP tool names include the server prefix:
 `mcp__colony__hivemind_context`,
 `mcp__colony__attention_inbox`, and
@@ -44,6 +46,8 @@ When the selected task needs implementation context, call `search` with the task
 For multi-agent runtime awareness, call `hivemind_context` first when you need ownership plus likely memory hits, or `hivemind` when you only need the runtime map. Both return compact active worktrees, branches, agents, and task previews from `.omx` proxy-runtime state without fetching observation bodies.
 
 After `hivemind_context`, call `attention_inbox` to check what needs you now: live pending handoffs, unread messages, blockers, stalled lanes, fresh claims, stale-claim cleanup signals, and decaying hot files. Review its compact IDs first; fetch full bodies with `get_observations` only after you pick the IDs worth reading.
+
+Do not choose work before attention_inbox.
 
 For choosing work to claim, the compact path is:
 

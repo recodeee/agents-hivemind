@@ -95,6 +95,8 @@ When an agent joins, resumes, asks "what needs me?", or needs the next task, cal
 2. `attention_inbox` to see what needs your attention: live handoffs, messages, wakes, stalled lanes, fresh claims, and stale-claim cleanup signals.
 3. `task_ready_for_agent` to choose available work matched to the current agent.
 
+Do not choose work before attention_inbox.
+
 Use `task_list` for browsing/debugging recent task threads. Use `task_ready_for_agent` for choosing what to work on next.
 
 Copy-paste startup:

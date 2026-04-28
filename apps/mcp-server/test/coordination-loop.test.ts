@@ -298,7 +298,14 @@ describe('coordination loop discovery', () => {
       {
         name: 'attention_inbox',
         startsWith: /^See what needs your attention/,
-        leadingPhrases: ['pending handoffs', 'unread messages', 'block'],
+        leadingPhrases: [
+          'after hivemind_context',
+          'handoffs',
+          'unread messages',
+          'blockers',
+          'stalled lanes',
+          'recent claims',
+        ],
       },
       {
         name: 'task_ready_for_agent',
@@ -318,11 +325,11 @@ describe('coordination loop discovery', () => {
       {
         name: 'task_note_working',
         startsWith: /^Save current working state/,
-        leadingPhrases: ['current working state', 'active colony task', 'task_id'],
+        leadingPhrases: ['current working state', 'active colony task', 'repo_root/branch'],
       },
       {
         name: 'task_post',
-        startsWith: /^Post a task-scoped question/,
+        startsWith: /^Post shared task notes/,
         leadingPhrases: ['question', 'decision', 'blocker'],
       },
     ];
@@ -345,6 +352,7 @@ describe('coordination loop discovery', () => {
       .map((line) => line.toLowerCase());
 
     const documentedMappings: Array<[string, string]> = [
+      ['after hivemind_context', 'attention_inbox'],
       ['pending, unread, blocking', 'attention_inbox'],
       ['pick next task', 'task_ready_for_agent'],
       ['active ownership', 'hivemind_context'],
