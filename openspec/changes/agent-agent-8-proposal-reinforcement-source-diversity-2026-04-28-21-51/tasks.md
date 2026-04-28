@@ -33,5 +33,10 @@
 
 ## 5. Completion
 
-- [ ] Commit, push, PR, merge.
-- [ ] Record final `MERGED` evidence and sandbox cleanup.
+- [x] Commit, push, PR, merge.
+  - PR: https://github.com/recodeee/colony/pull/155
+  - State: `MERGED` at `2026-04-28T20:06:43Z`
+  - Merge commit: `a6aa4fb11c90c753b886753f14039ce1254ca1fc`
+- [x] Record final `MERGED` evidence and sandbox cleanup.
+  - Implementation worktree pruned: `/home/deadpool/Documents/recodee/colony/.omx/agent-worktrees/colony__agent-8__proposal-reinforcement-source-diversity-2026-04-28-21-51` no longer exists.
+  - `origin/main` contains merge commit `a6aa4fb11c90c753b886753f14039ce1254ca1fc`.
