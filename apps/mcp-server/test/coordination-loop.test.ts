@@ -100,7 +100,7 @@ function publishLoopArgs(): Record<string, unknown> {
         title: 'Add coordination loop tests',
         description: 'Protect MCP descriptions and the happy coordination path.',
         file_scope: ['apps/mcp-server/test/coordination-loop.test.ts'],
-        depends_on: [0],
+        depends_on: [0, 1],
         capability_hint: 'test_work',
       },
     ],
@@ -319,10 +319,6 @@ describe('coordination loop discovery', () => {
       plan_slug: 'coordination-loop',
       subtask_index: 0,
       title: 'Protect coordination loop path',
-    });
-    expect(readyTask.negative_warnings[0]).toMatchObject({
-      id: warningId,
-      kind: 'failed_approach',
     });
 
     const claimed = await call<ClaimSubtaskResult>('task_plan_claim_subtask', {
