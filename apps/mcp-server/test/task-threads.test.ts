@@ -339,7 +339,7 @@ describe('task threads — handoff lifecycle', () => {
     });
 
     expect(hint).toBe(
-      'For directed coordination, use task_message. If you do not know task_id, use task_note_working.',
+      'For directed agent coordination, use task_message. If you do not know task_id, use task_note_working.',
     );
     const row = store.storage.getObservation(id);
     expect(row).toMatchObject({
@@ -347,6 +347,25 @@ describe('task threads — handoff lifecycle', () => {
       session_id: sessionA,
       task_id,
       kind: 'question',
+    });
+  });
+
+  it('task_post hints for directed agent action requests without blocking the post', async () => {
+    const { task_id, sessionA } = seedTwoSessionTask();
+
+    const { id, hint } = await call<{ id: number; hint?: string }>('task_post', {
+      task_id,
+      session_id: sessionA,
+      kind: 'note',
+      content: 'agent-15 please inspect the inbox routing before release.',
+    });
+
+    expect(hint).toBe(
+      'For directed agent coordination, use task_message. If you do not know task_id, use task_note_working.',
+    );
+    expect(store.storage.getObservation(id)).toMatchObject({
+      id,
+      kind: 'note',
     });
   });
 

@@ -366,17 +366,21 @@ function looksLikeDirectedCoordination(content: string): boolean {
   const mentionsAgent = /(^|[^a-z0-9_@])@?(claude|codex|agent[-_\s]?\d+)(?=$|[^a-z0-9_])/.test(
     normalized,
   );
-  const asksForReply =
+  const asksForActionOrReply =
     /(^|[^a-z])(reply|respond|answer|ack|confirm)(?=$|[^a-z])/.test(normalized) ||
     /\b(can|could|would)\s+you\b/.test(normalized) ||
+    /\b(please|pls)\b/.test(normalized) ||
+    /\b(review|take|claim|fix|run|check|look|finish|verify|handle|continue|update|send|post|mark|merge|open|close|re-?run|inspect|investigate)\b/.test(
+      normalized,
+    ) ||
     /\?/.test(normalized);
-  return mentionsAgent && asksForReply;
+  return mentionsAgent && asksForActionOrReply;
 }
 
 function taskPostHint(content: string): string {
   const fallback = 'If you do not know task_id, use task_note_working.';
   if (!looksLikeDirectedCoordination(content)) return fallback;
-  return `For directed coordination, use task_message. ${fallback}`;
+  return `For directed agent coordination, use task_message. ${fallback}`;
 }
 
 function compactPreviousClaim(

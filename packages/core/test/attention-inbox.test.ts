@@ -130,7 +130,18 @@ describe('buildAttentionInbox', () => {
     });
     const needsReply = inbox.unread_messages.find((m) => m.id === needsReplyId);
     expect(needsReply).toMatchObject({
+      reply_tool: 'task_message',
       reply_with_tool: 'task_message',
+      reply_args: {
+        task_id: thread.task_id,
+        session_id: 'codex',
+        agent: 'codex',
+        to_agent: 'any',
+        to_session_id: 'claude',
+        reply_to: needsReplyId,
+        urgency: 'fyi',
+        content: '...',
+      },
       reply_with_args: {
         task_id: thread.task_id,
         session_id: 'codex',
@@ -141,7 +152,12 @@ describe('buildAttentionInbox', () => {
         urgency: 'fyi',
         content: '...',
       },
+      mark_read_tool: 'task_message_mark_read',
       mark_read_with_tool: 'task_message_mark_read',
+      mark_read_args: {
+        message_observation_id: needsReplyId,
+        session_id: 'codex',
+      },
       mark_read_with_args: {
         message_observation_id: needsReplyId,
         session_id: 'codex',
@@ -150,7 +166,9 @@ describe('buildAttentionInbox', () => {
     expect(needsReply?.next_action).toMatch(/Reply with task_message/);
 
     const fyi = inbox.unread_messages.find((m) => m.id === fyiId);
+    expect(fyi?.reply_tool).toBe('task_message');
     expect(fyi?.reply_with_tool).toBe('task_message');
+    expect(fyi?.mark_read_tool).toBe('task_message_mark_read');
     expect(fyi?.mark_read_with_tool).toBe('task_message_mark_read');
     expect(fyi).not.toHaveProperty('next_action');
   });

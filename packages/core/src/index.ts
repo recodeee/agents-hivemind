@@ -75,7 +75,13 @@ export {
 } from './task-thread.js';
 export {
   listMessagesForAgent,
+  messageNextAction,
+  withMessageActionHints,
   type ListMessagesOptions,
+  type MessageActionOptions,
+  type MessageActionSummary,
+  type MessageMarkReadArgs,
+  type MessageReplyArgs,
   type MessageSummary,
 } from './messages.js';
 export {

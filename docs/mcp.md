@@ -594,7 +594,7 @@ Use `failed_approach`, `blocked_path`, `conflict_warning`, or `reverted_solution
 }
 ```
 
-`kind` ∈ `question | answer | decision | blocker | note | failed_approach | blocked_path | conflict_warning | reverted_solution`. Returns `{ id, hint }`; the hint points unknown-`task_id` working-state writes to `task_note_working`, and also points directed agent requests to `task_message` when detected.
+`kind` ∈ `question | answer | decision | blocker | note | failed_approach | blocked_path | conflict_warning | reverted_solution`. Returns `{ id, hint }`; the hint points unknown-`task_id` working-state writes to `task_note_working`, and also says `For directed agent coordination, use task_message.` when a post names an agent and asks for action or reply.
 
 ## `task_note_working`
 
@@ -787,7 +787,7 @@ Directed-message workflow: `task_message` -> `attention_inbox` / `task_messages`
 
 ## `task_messages`
 
-Read unread messages. Lists messages addressed to you across tasks you participate in (or scoped with `task_ids`). Compact shape — fetch full bodies via `get_observations`. Does **not** mark as read; call `task_message_mark_read` explicitly so an agent can peek at its inbox during planning without burning the "you have new mail" signal. Retracted messages and broadcasts already claimed by other agents are filtered out of every recipient's view.
+Read unread messages. Lists messages addressed to you across tasks you participate in (or scoped with `task_ids`). Compact shape includes `reply_tool` and `mark_read_tool` action hints; fetch full bodies via `get_observations`. Does **not** mark as read; call `task_message_mark_read` explicitly so an agent can peek at its inbox during planning without burning the "you have new mail" signal. Retracted messages and broadcasts already claimed by other agents are filtered out of every recipient's view.
 
 ```json
 {
@@ -930,6 +930,17 @@ Unread `task_message` entries include compact action hints so recipients do not 
   "id": 401,
   "task_id": 17,
   "urgency": "needs_reply",
+  "reply_tool": "task_message",
+  "reply_args": {
+    "task_id": 17,
+    "session_id": "sess_abc",
+    "agent": "claude",
+    "to_agent": "any",
+    "to_session_id": "sess_xyz",
+    "reply_to": 401,
+    "urgency": "fyi",
+    "content": "..."
+  },
   "reply_with_tool": "task_message",
   "reply_with_args": {
     "task_id": 17,
@@ -940,6 +951,11 @@ Unread `task_message` entries include compact action hints so recipients do not 
     "reply_to": 401,
     "urgency": "fyi",
     "content": "..."
+  },
+  "mark_read_tool": "task_message_mark_read",
+  "mark_read_args": {
+    "message_observation_id": 401,
+    "session_id": "sess_abc"
   },
   "mark_read_with_tool": "task_message_mark_read",
   "mark_read_with_args": {

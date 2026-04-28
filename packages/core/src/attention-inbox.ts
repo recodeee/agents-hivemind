@@ -8,7 +8,12 @@ import {
   readHivemind,
 } from './hivemind.js';
 import type { MemoryStore } from './memory-store.js';
-import { type MessageSummary, listMessagesForAgent } from './messages.js';
+import {
+  type MessageActionSummary,
+  type MessageSummary,
+  listMessagesForAgent,
+  withMessageActionHints,
+} from './messages.js';
 import {
   type HandoffMetadata,
   type HandoffTarget,
@@ -60,7 +65,7 @@ export interface InboxMessageMarkReadArgs {
   session_id: string;
 }
 
-export interface InboxMessage extends MessageSummary {
+export interface InboxMessage extends MessageActionSummary {
   reply_with_tool: 'task_message';
   reply_with_args: InboxMessageReplyArgs;
   mark_read_with_tool: 'task_message_mark_read';
@@ -536,38 +541,15 @@ function withInboxMessageActions(
   message: MessageSummary,
   opts: Pick<AttentionInboxOptions, 'session_id' | 'agent'>,
 ): InboxMessage {
+  const actionHints = withMessageActionHints(message, opts);
   const base = {
-    ...message,
-    reply_with_tool: 'task_message' as const,
-    reply_with_args: {
-      task_id: message.task_id,
-      session_id: opts.session_id,
-      agent: opts.agent,
-      to_agent: 'any' as const,
-      to_session_id: message.from_session_id,
-      reply_to: message.id,
-      urgency: 'fyi' as const,
-      content: '...',
-    },
-    mark_read_with_tool: 'task_message_mark_read' as const,
-    mark_read_with_args: {
-      message_observation_id: message.id,
-      session_id: opts.session_id,
-    },
+    ...actionHints,
+    reply_with_tool: actionHints.reply_tool,
+    reply_with_args: actionHints.reply_args,
+    mark_read_with_tool: actionHints.mark_read_tool,
+    mark_read_with_args: actionHints.mark_read_args,
   };
-  const nextAction = messageNextAction(message);
-  if (nextAction === null) return base;
-  return { ...base, next_action: nextAction };
-}
-
-function messageNextAction(message: MessageSummary): string | null {
-  if (message.urgency === 'blocking') {
-    return 'Reply with task_message using reply_to before unrelated work, or mark read if no reply is needed.';
-  }
-  if (message.urgency === 'needs_reply') {
-    return 'Reply with task_message using reply_to, or mark read after reading if no reply is needed.';
-  }
-  return null;
+  return base;
 }
 
 function compactClaim(

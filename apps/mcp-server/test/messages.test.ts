@@ -95,7 +95,17 @@ describe('task threads — direct messages', () => {
 
     // B's inbox surfaces the message with the right urgency.
     const bInbox = await call<
-      Array<{ id: number; urgency: string; status: string; from_agent: string }>
+      Array<{
+        id: number;
+        urgency: string;
+        status: string;
+        from_agent: string;
+        reply_tool: string;
+        mark_read_tool: string;
+        reply_args: { reply_to: number; to_session_id: string; content: string };
+        mark_read_args: { message_observation_id: number; session_id: string };
+        next_action?: string;
+      }>
     >('task_messages', {
       session_id: sessionB,
       agent: 'codex',
@@ -105,6 +115,18 @@ describe('task threads — direct messages', () => {
     expect(entry?.urgency).toBe('needs_reply');
     expect(entry?.status).toBe('unread');
     expect(entry?.from_agent).toBe('claude');
+    expect(entry?.reply_tool).toBe('task_message');
+    expect(entry?.reply_args).toMatchObject({
+      reply_to: message_observation_id,
+      to_session_id: sessionA,
+      content: '...',
+    });
+    expect(entry?.mark_read_tool).toBe('task_message_mark_read');
+    expect(entry?.mark_read_args).toEqual({
+      message_observation_id,
+      session_id: sessionB,
+    });
+    expect(entry?.next_action).toContain('Reply with task_message');
 
     // Marking read is idempotent — two calls converge on 'read'.
     const { status: afterRead } = await call<{ status: string }>('task_message_mark_read', {

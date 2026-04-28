@@ -36,6 +36,35 @@ export interface MessageSummary {
   claimed_by_agent: string | null;
 }
 
+export interface MessageReplyArgs {
+  task_id: number;
+  session_id: string;
+  agent: string;
+  to_agent: 'any';
+  to_session_id: string;
+  reply_to: number;
+  urgency: 'fyi';
+  content: string;
+}
+
+export interface MessageMarkReadArgs {
+  message_observation_id: number;
+  session_id: string;
+}
+
+export interface MessageActionSummary extends MessageSummary {
+  reply_tool: 'task_message';
+  reply_args: MessageReplyArgs;
+  mark_read_tool: 'task_message_mark_read';
+  mark_read_args: MessageMarkReadArgs;
+  next_action?: string;
+}
+
+export interface MessageActionOptions {
+  session_id: string;
+  agent: string;
+}
+
 export interface ListMessagesOptions {
   session_id: string;
   agent: string;
@@ -145,6 +174,44 @@ export function listMessagesForAgent(
     }
   }
   return out.sort((a, b) => b.ts - a.ts).slice(0, limit);
+}
+
+export function withMessageActionHints(
+  message: MessageSummary,
+  opts: MessageActionOptions,
+): MessageActionSummary {
+  const base = {
+    ...message,
+    reply_tool: 'task_message' as const,
+    reply_args: {
+      task_id: message.task_id,
+      session_id: opts.session_id,
+      agent: opts.agent,
+      to_agent: 'any' as const,
+      to_session_id: message.from_session_id,
+      reply_to: message.id,
+      urgency: 'fyi' as const,
+      content: '...',
+    },
+    mark_read_tool: 'task_message_mark_read' as const,
+    mark_read_args: {
+      message_observation_id: message.id,
+      session_id: opts.session_id,
+    },
+  };
+  const nextAction = messageNextAction(message);
+  if (nextAction === null) return base;
+  return { ...base, next_action: nextAction };
+}
+
+export function messageNextAction(message: Pick<MessageSummary, 'urgency'>): string | null {
+  if (message.urgency === 'blocking') {
+    return 'Reply with task_message using reply_to before unrelated work, or mark read if no reply is needed.';
+  }
+  if (message.urgency === 'needs_reply') {
+    return 'Reply with task_message using reply_to, or mark read after reading if no reply is needed.';
+  }
+  return null;
 }
 
 function participatingTaskIds(store: MemoryStore, session_id: string): number[] {

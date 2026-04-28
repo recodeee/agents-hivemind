@@ -1,4 +1,9 @@
-import { TASK_THREAD_ERROR_CODES, TaskThread, listMessagesForAgent } from '@colony/core';
+import {
+  TASK_THREAD_ERROR_CODES,
+  TaskThread,
+  listMessagesForAgent,
+  withMessageActionHints,
+} from '@colony/core';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { type ToolContext, defaultWrapHandler } from './context.js';
@@ -71,7 +76,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'task_messages',
-    'Read unread messages. Lists compact previews addressed to you across tasks; fetch full bodies via get_observations, then mark handled items with task_message_mark_read.',
+    'Read unread messages. Lists compact previews addressed to you across tasks with reply_tool and mark_read_tool hints; fetch full bodies via get_observations.',
     {
       session_id: z.string().min(1),
       agent: z.string().min(1),
@@ -88,7 +93,12 @@ export function register(server: McpServer, ctx: ToolContext): void {
         ...(args.task_ids !== undefined ? { task_ids: args.task_ids } : {}),
         ...(args.unread_only !== undefined ? { unread_only: args.unread_only } : {}),
         ...(args.limit !== undefined ? { limit: args.limit } : {}),
-      });
+      }).map((message) =>
+        withMessageActionHints(message, {
+          session_id: args.session_id,
+          agent: args.agent,
+        }),
+      );
       return { content: [{ type: 'text', text: JSON.stringify(messages) }] };
     }),
   );

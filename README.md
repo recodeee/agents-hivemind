@@ -151,7 +151,7 @@ If the ready item needs implementation context, call `search` with the task titl
 | `task_hand_off` | Transfer work and file claims to another agent; pending handoffs expire by default after 120 minutes. |
 | `task_accept_handoff` / `task_decline_handoff` | Accept or decline pending handoffs; expired handoffs return `HANDOFF_EXPIRED`. |
 
-`attention_inbox` unread message entries carry `reply_with_tool: "task_message"` and `mark_read_with_tool: "task_message_mark_read"` plus compact args. `blocking` and `needs_reply` entries also include `next_action`, so agents can reply or mark read without re-deriving the lifecycle.
+`attention_inbox` unread message entries carry `reply_tool: "task_message"` and `mark_read_tool: "task_message_mark_read"` plus compact args; legacy `reply_with_tool` / `mark_read_with_tool` aliases remain. `blocking` and `needs_reply` entries also include `next_action`, so agents can reply or mark read without re-deriving the lifecycle.
 
 If you do not know `task_id` but need to save current state, call `task_note_working` with `session_id`, optional `repo_root` / `branch`, and a compact `branch; task; blocker; next; evidence` note.
 
