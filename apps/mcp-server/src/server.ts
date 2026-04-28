@@ -19,6 +19,7 @@ import * as recall from './tools/recall.js';
 import * as relay from './tools/relay.js';
 import * as search from './tools/search.js';
 import * as spec from './tools/spec.js';
+import * as suggest from './tools/suggest.js';
 import * as task from './tools/task.js';
 import * as wake from './tools/wake.js';
 
@@ -79,6 +80,13 @@ export function buildServer(store: MemoryStore, settings: Settings): McpServer {
   relay.register(server, ctx);
   plan.register(server, ctx);
   recall.register(server, ctx);
+
+  // Predictive lane (@colony/core suggestion-payload). Adds
+  // task_suggest_approach — surfaces similar past tasks, file rankings,
+  // failure patterns, and resolution medians, or refuses with
+  // insufficient_data_reason when the corpus is too sparse to support
+  // a confident suggestion. Lazily uses the embedder for the query.
+  suggest.register(server, ctx);
 
   // Spec-driven dev lane (@colony/spec). Adds spec_read, spec_change_open,
   // spec_change_add_delta, spec_build_context, spec_build_record_failure,
