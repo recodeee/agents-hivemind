@@ -137,7 +137,7 @@ If the ready item needs implementation context, call `search` with the task titl
 
 | Tool | Use it for |
 | --- | --- |
-| `task_post` | Add a question, answer, decision, blocker, or note to a task; use `kind:"note"` to write working note, save current state, remember progress, or log what I am doing. |
+| `task_post` | Add a question, answer, decision, blocker, note, or explicit negative warning to a task; use `kind:"note"` to write working state. |
 | `task_message` | Send a directed or broadcast message to another agent. |
 | `task_messages` | Read compact message previews; expired rows only surface for audit-style listing. |
 | `task_message_mark_read` | Acknowledge a message and emit a read receipt; expired rows return `MESSAGE_EXPIRED`. |
@@ -146,6 +146,8 @@ If the ready item needs implementation context, call `search` with the task titl
 | `task_claim_file` | Claim a file before editing so file ownership is visible and overlaps warn, not lock. |
 | `task_hand_off` | Transfer work and file claims to another agent; pending handoffs expire by default after 120 minutes. |
 | `task_accept_handoff` / `task_decline_handoff` | Accept or decline pending handoffs; expired handoffs return `HANDOFF_EXPIRED`. |
+
+Negative warning kinds are `failed_approach`, `blocked_path`, `conflict_warning`, and `reverted_solution`. Use them only when another agent should avoid repeating a concrete path: failed paths, blocked approaches, reverted solutions, flaky routes, or do-not-touch warnings. `search`, `hivemind_context`, and `task_ready_for_agent` surface relevant warnings compactly before implementation; they do not penalize ready-work ranking or turn ordinary trial-and-error into blockers.
 
 ### Proposals, foraging, and examples
 

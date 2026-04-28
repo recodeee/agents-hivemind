@@ -22,9 +22,11 @@ export interface Session {
 export interface SearchResult {
   id: number;
   session_id: string;
+  kind: string;
   snippet: string;
   score: number;
   ts: number;
+  task_id: number | null;
 }
 
 export interface GetObservationsOptions {

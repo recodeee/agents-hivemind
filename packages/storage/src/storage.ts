@@ -634,7 +634,7 @@ export class Storage {
     const where = conditions.join(' AND ');
     const rows = this.db
       .prepare(
-        `SELECT o.id, o.session_id, o.ts,
+        `SELECT o.id, o.session_id, o.kind, o.ts, o.task_id,
                 snippet(observations_fts, 0, '[', ']', '…', 16) AS snippet,
                 bm25(observations_fts) AS score
          FROM observations_fts
@@ -646,17 +646,21 @@ export class Storage {
       .all(...params, limit) as Array<{
       id: number;
       session_id: string;
+      kind: string;
       ts: number;
+      task_id: number | null;
       snippet: string;
       score: number;
     }>;
     return rows.map((r) => ({
       id: r.id,
       session_id: r.session_id,
+      kind: r.kind,
       snippet: r.snippet,
       // FTS5 bm25 is "lower is better". Flip sign so higher = better downstream.
       score: -r.score,
       ts: r.ts,
+      task_id: r.task_id,
     }));
   }
 

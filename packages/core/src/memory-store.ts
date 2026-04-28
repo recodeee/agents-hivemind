@@ -160,8 +160,20 @@ export class MemoryStore {
       Array.from(merged, ([id, v]) => ({ id, ...v })),
       alpha,
     ).slice(0, cap);
-    const infoById = new Map<number, { session_id: string; snippet: string; ts: number }>(
-      keyword.map((k) => [k.id, { session_id: k.session_id, snippet: k.snippet, ts: k.ts }]),
+    const infoById = new Map<
+      number,
+      { session_id: string; kind: string; snippet: string; ts: number; task_id: number | null }
+    >(
+      keyword.map((k) => [
+        k.id,
+        {
+          session_id: k.session_id,
+          kind: k.kind,
+          snippet: k.snippet,
+          ts: k.ts,
+          task_id: k.task_id,
+        },
+      ]),
     );
     // For vector-only hits we still need snippet/session info; fetch them.
     const missing = ranked.filter((r) => !infoById.has(r.id)).map((r) => r.id);
@@ -169,8 +181,10 @@ export class MemoryStore {
       for (const row of this.storage.getObservations(missing)) {
         infoById.set(row.id, {
           session_id: row.session_id,
+          kind: row.kind,
           snippet: row.content.slice(0, 120),
           ts: row.ts,
+          task_id: row.task_id,
         });
       }
     }
@@ -179,9 +193,11 @@ export class MemoryStore {
       return {
         id: r.id,
         session_id: info?.session_id ?? '',
+        kind: info?.kind ?? '',
         snippet: info?.snippet ?? '',
         score: r.score,
         ts: info?.ts ?? 0,
+        task_id: info?.task_id ?? null,
       };
     });
   }

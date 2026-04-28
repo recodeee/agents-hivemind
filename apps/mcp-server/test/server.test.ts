@@ -654,7 +654,7 @@ describe('MCP server', () => {
     });
   });
 
-  it('search returns compact hits (id, snippet, score, ts)', async () => {
+  it('search returns compact hits (id, kind, snippet, score, task_id, ts)', async () => {
     await seed();
     const res = await client.callTool({ name: 'search', arguments: { query: 'cargo' } });
     const text = (res.content as Array<{ type: string; text: string }>)[0]?.text ?? '[]';
@@ -665,7 +665,15 @@ describe('MCP server', () => {
       expect(h).toHaveProperty('snippet');
       expect(h).toHaveProperty('score');
       // No full body leaks into the compact shape.
-      expect(Object.keys(h).sort()).toEqual(['id', 'score', 'session_id', 'snippet', 'ts']);
+      expect(Object.keys(h).sort()).toEqual([
+        'id',
+        'kind',
+        'score',
+        'session_id',
+        'snippet',
+        'task_id',
+        'ts',
+      ]);
     }
   });
 

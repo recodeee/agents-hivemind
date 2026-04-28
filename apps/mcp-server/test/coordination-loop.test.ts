@@ -25,9 +25,10 @@ interface PublishResult {
 }
 
 interface HivemindContextResult {
-  summary: { lane_count: number; memory_hit_count: number };
+  summary: { lane_count: number; memory_hit_count: number; negative_warning_count: number };
   lanes: Array<{ branch: string; task: string; owner: string }>;
   memory_hits: Array<{ id: number; snippet: string }>;
+  negative_warnings: Array<{ id: number; kind: string; snippet: string }>;
 }
 
 interface InboxResult {
@@ -41,6 +42,7 @@ interface ReadyResult {
     subtask_index: number;
     title: string;
     file_scope: string[];
+    negative_warnings: Array<{ id: number; kind: string; snippet: string }>;
   }>;
   total_available: number;
 }
@@ -68,17 +70,17 @@ function publishLoopArgs(): Record<string, unknown> {
     acceptance_criteria: ['The intended Colony coordination loop is protected by tests'],
     subtasks: [
       {
-        title: 'Add coordination loop tests',
-        description: 'Protect MCP descriptions and the happy coordination path.',
-        file_scope: ['apps/mcp-server/test/coordination-loop.test.ts'],
-        capability_hint: 'test_work',
-      },
-      {
         title: 'Review ToolSearch docs',
         description: 'Keep the docs fixture aligned with searchable phrases.',
         file_scope: ['apps/mcp-server/README.md'],
-        depends_on: [0],
         capability_hint: 'doc_work',
+      },
+      {
+        title: 'Add coordination loop tests',
+        description: 'Protect MCP descriptions and the happy coordination path.',
+        file_scope: ['apps/mcp-server/test/coordination-loop.test.ts'],
+        depends_on: [0],
+        capability_hint: 'test_work',
       },
     ],
   };
@@ -212,19 +214,33 @@ describe('coordination loop discovery', () => {
       kind: 'decision',
       content: 'Prior memory says coordination loop agents should read context before claiming.',
     });
+    const warningId = store.addObservation({
+      session_id: 'planner-session',
+      kind: 'failed_approach',
+      content:
+        'Failed approach: do not repeat manual polling for coordination loop ToolSearch docs in apps/mcp-server/README.md; use task_ready_for_agent.',
+    });
 
     const context = await call<HivemindContextResult>('hivemind_context', {
       repo_root: repoRoot,
-      query: 'coordination loop prior memory',
+      query: 'coordination loop',
       memory_limit: 1,
       limit: 5,
     });
     expect(context.summary.lane_count).toBe(1);
     expect(context.summary.memory_hit_count).toBeGreaterThan(0);
+    expect(context.summary.negative_warning_count).toBe(1);
     expect(context.lanes[0]?.branch).toBe('agent/other/active-loop');
     expect(context.memory_hits[0]?.snippet).toMatch(/coordination|loop/i);
+    expect(context.negative_warnings[0]).toMatchObject({
+      id: warningId,
+      kind: 'failed_approach',
+    });
 
     const published = await call<PublishResult>('task_plan_publish', publishLoopArgs());
+    if (!Array.isArray(published.subtasks)) {
+      throw new Error(`expected publish subtasks, got ${JSON.stringify(published)}`);
+    }
     const firstTask = published.subtasks[0];
     if (!firstTask) throw new Error('expected first published subtask');
     expect(firstTask?.branch).toBe('spec/coordination-loop/sub-0');
@@ -261,7 +277,11 @@ describe('coordination loop discovery', () => {
     expect(readyTask).toMatchObject({
       plan_slug: 'coordination-loop',
       subtask_index: 0,
-      title: 'Add coordination loop tests',
+      title: 'Review ToolSearch docs',
+    });
+    expect(readyTask.negative_warnings[0]).toMatchObject({
+      id: warningId,
+      kind: 'failed_approach',
     });
 
     const claimed = await call<ClaimSubtaskResult>('task_plan_claim_subtask', {
@@ -273,12 +293,11 @@ describe('coordination loop discovery', () => {
     expect(claimed).toMatchObject({
       task_id: firstTask.task_id,
       branch: 'spec/coordination-loop/sub-0',
-      file_scope: ['apps/mcp-server/test/coordination-loop.test.ts'],
+      file_scope: ['apps/mcp-server/README.md'],
     });
-    expect(
-      store.storage.getClaim(claimed.task_id, 'apps/mcp-server/test/coordination-loop.test.ts')
-        ?.session_id,
-    ).toBe('agent-session');
+    expect(store.storage.getClaim(claimed.task_id, 'apps/mcp-server/README.md')?.session_id).toBe(
+      'agent-session',
+    );
 
     const fileClaim = await call<{ observation_id: number }>('task_claim_file', {
       task_id: claimed.task_id,

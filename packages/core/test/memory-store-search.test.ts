@@ -94,7 +94,15 @@ describe('MemoryStore.search()', () => {
       expect(prev.score).toBeGreaterThanOrEqual(curr.score);
     }
     for (const h of hits) {
-      expect(Object.keys(h).sort()).toEqual(['id', 'score', 'session_id', 'snippet', 'ts']);
+      expect(Object.keys(h).sort()).toEqual([
+        'id',
+        'kind',
+        'score',
+        'session_id',
+        'snippet',
+        'task_id',
+        'ts',
+      ]);
     }
   });
 

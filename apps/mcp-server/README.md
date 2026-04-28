@@ -11,10 +11,11 @@ status details, and edge-case rules in the second sentence or later.
 | send message, note to agent, tell another agent | `task_message` |
 | what needs my attention, pending, unread, blocking | `attention_inbox` |
 | write working note, save current state, coordination note | `task_post` |
+| failed path, blocked approach, do not repeat, reverted solution | `task_post` |
 | what should I work on, pick next task, available work | `task_ready_for_agent` |
 | give my work to, transfer, pass to another agent | `task_hand_off` |
 | before editing, inspect ownership, active ownership, relevant memory | `hivemind_context` |
-| search prior memory, prior decisions, old errors, notes | `search` |
+| search prior memory, prior decisions, old errors, notes, negative warnings | `search` |
 | full observation body, read IDs | `get_observations` |
 | recent sessions, inspect session history | `list_sessions` |
 | task thread history, recent coordination | `task_timeline` |
@@ -34,5 +35,9 @@ Rules for future descriptions:
 - Keep the first 80 characters as an imperative verb plus use-case phrase.
 - Mention reply chains, urgency, broadcast versus directed, TTLs, and fallback
   rules in the second sentence.
+- For avoidance signals, route explicit `failed_approach`, `blocked_path`,
+  `conflict_warning`, or `reverted_solution` posts through `task_post`; retrieval
+  remains compact through `search`, `hivemind_context`, and
+  `task_ready_for_agent`.
 - Preserve stable tool names, schemas, and handler behavior when tuning search
   text.

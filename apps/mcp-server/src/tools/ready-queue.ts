@@ -13,6 +13,7 @@ import type { ObservationRow } from '@colony/storage';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { ToolContext } from './context.js';
+import { type CompactNegativeWarning, searchNegativeWarnings } from './shared.js';
 
 const DEFAULT_LIMIT = 5;
 const RELEASE_DENSITY_WINDOW_MS = 60 * 60 * 1000;
@@ -125,22 +126,86 @@ export function register(server: McpServer, ctx: ToolContext): void {
         currentClaims,
       );
 
+      const selected = ranked.slice(0, limit ?? DEFAULT_LIMIT);
+      const ready = await Promise.all(
+        selected.map(
+          async ({
+            created_at: _createdAt,
+            task_id: _taskId,
+            claim_ts: _claimTs,
+            current_claim: _currentClaim,
+            ...entry
+          }) => ({
+            ...entry,
+            negative_warnings: await readyNegativeWarnings(store, entry),
+          }),
+        ),
+      );
+
       return jsonReply({
-        ready: ranked
-          .slice(0, limit ?? DEFAULT_LIMIT)
-          .map(
-            ({
-              created_at: _createdAt,
-              task_id: _taskId,
-              claim_ts: _claimTs,
-              current_claim: _currentClaim,
-              ...entry
-            }) => entry,
-          ),
+        ready,
         total_available: available.length,
       });
     },
   );
+}
+
+async function readyNegativeWarnings(
+  store: MemoryStore,
+  entry: ReadySubtask,
+): Promise<CompactNegativeWarning[]> {
+  const seen = new Set<number>();
+  const warnings: CompactNegativeWarning[] = [];
+  for (const query of readyWarningQueries(entry)) {
+    const hits = await searchNegativeWarnings(store, query, 3);
+    for (const hit of hits) {
+      if (seen.has(hit.id)) continue;
+      seen.add(hit.id);
+      warnings.push(hit);
+      if (warnings.length >= 3) return warnings;
+    }
+  }
+  return warnings;
+}
+
+function readyWarningQueries(entry: ReadySubtask): string[] {
+  const queries = [
+    compactTitleQuery(entry.title),
+    ...entry.file_scope.map(fileTokenQuery),
+    entry.title,
+  ].filter((query) => query.length > 0);
+  return [...new Set(queries)].map((query) => query.slice(0, 800));
+}
+
+function compactTitleQuery(title: string): string {
+  const stop = new Set([
+    'add',
+    'review',
+    'update',
+    'implement',
+    'fix',
+    'create',
+    'protect',
+    'keep',
+    'the',
+    'a',
+    'an',
+    'and',
+    'to',
+    'for',
+  ]);
+  return title
+    .split(/\s+/)
+    .filter((token) => token && !stop.has(token.toLowerCase()))
+    .join(' ');
+}
+
+function fileTokenQuery(filePath: string): string {
+  return filePath
+    .split(/[^A-Za-z0-9_]+/)
+    .filter(Boolean)
+    .slice(-3)
+    .join(' ');
 }
 
 function rankSubtask(

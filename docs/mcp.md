@@ -14,7 +14,7 @@ Use `list_sessions` -> `timeline` when you need to navigate a known session inst
 
 Agent startup, resume, "what needs me?", and "what should I do next?" flows should call these first:
 
-1. `hivemind_context` to see active agents, owned branches, live lanes, and compact memory hits.
+1. `hivemind_context` to see active agents, owned branches, live lanes, compact memory hits, and relevant negative warnings.
 2. `attention_inbox` to see what needs your attention: handoffs, messages, wakes, stalled lanes, and recent claim activity.
 3. `task_ready_for_agent` to choose available work matched to the current agent.
 
@@ -38,7 +38,7 @@ When the selected task needs implementation context, call `search` with the task
 
 For multi-agent runtime awareness, call `hivemind_context` first when you need ownership plus likely memory hits, or `hivemind` when you only need the runtime map. Both return compact active worktrees, branches, agents, and task previews from `.omx` proxy-runtime state without fetching observation bodies.
 
-After `hivemind_context`, call `attention_inbox` to check what needs you now: pending handoffs, unread messages, blockers, stalled lanes, and recent claims. Review its compact IDs first; fetch full bodies with `get_observations` only after you pick the IDs worth reading.
+After `hivemind_context`, call `attention_inbox` to check what needs you now: live pending handoffs, unread messages, blockers, stalled lanes, and recent claims. Review its compact IDs first; fetch full bodies with `get_observations` only after you pick the IDs worth reading.
 
 For choosing work to claim, the compact path is:
 
@@ -85,6 +85,8 @@ Then hydrate only selected hits:
 ```
 
 Returns: `[ { id, session_id, snippet, score, ts } ]` - compact hits only, never full observation bodies. Use `get_observations` for the few IDs worth reading.
+
+Search hits include `kind` and `task_id` so agents can recognize advisory negative warnings such as `failed_approach` before hydrating the full body.
 
 Scoring is hybrid: keyword (FTS5 BM25) blended with vector similarity via `settings.search.alpha`. Missing fields fall back gracefully.
 
@@ -181,7 +183,7 @@ Use this from a Codex skill as the first context step when the skill needs to kn
 
 ## `hivemind_context`
 
-Return live lane ownership plus compact relevant memory hits in one request.
+Return live lane ownership plus compact relevant memory hits and negative warnings in one request.
 Before editing, inspect ownership, then claim touched files on the active task.
 
 ```json
@@ -204,8 +206,9 @@ Returns:
   "summary": {
     "lane_count": 1,
     "memory_hit_count": 3,
+    "negative_warning_count": 1,
     "needs_attention_count": 0,
-    "next_action": "Use lane ownership first, then fetch only the specific memory IDs needed."
+    "next_action": "Review compact negative warnings before repeating a known failed path; then use lane ownership."
   },
   "lanes": [
     {
@@ -217,7 +220,25 @@ Returns:
     }
   ],
   "memory_hits": [
-    { "id": 42, "session_id": "sess_abc", "snippet": "compact hit", "score": 1.2, "ts": 1710000000000 }
+    {
+      "id": 42,
+      "session_id": "sess_abc",
+      "kind": "decision",
+      "snippet": "compact hit",
+      "score": 1.2,
+      "ts": 1710000000000,
+      "task_id": 17
+    }
+  ],
+  "negative_warnings": [
+    {
+      "id": 43,
+      "session_id": "sess_def",
+      "kind": "failed_approach",
+      "snippet": "do not repeat manual polling",
+      "ts": 1710000001000,
+      "task_id": 17
+    }
   ]
 }
 ```
@@ -314,7 +335,7 @@ BM25-ranked search scoped to `kind = 'foraged-pattern'` observations, optionally
 }
 ```
 
-Returns compact hits: `[ { id, session_id, snippet, score, ts } ]`. Follow with `get_observations(ids[])` for full bodies. Vector re-rank is intentionally skipped when a filter is present — the embedding index has no kind column.
+Returns compact hits: `[ { id, session_id, kind, snippet, score, ts, task_id } ]`. Follow with `get_observations(ids[])` for full bodies. Vector re-rank is intentionally skipped when a filter is present — the embedding index has no kind column.
 
 ## `examples_integrate_plan`
 
@@ -388,6 +409,8 @@ Post a coordination message on a task thread. Use the dedicated tools (`task_cla
 
 Use `kind: "note"` when an agent needs to write working note, save current state, remember progress, or log what I am doing. The note lands on both the task thread and the posting session's memory through `MemoryStore`, so it stays compressed, timeline-visible, and searchable later.
 
+Use `failed_approach`, `blocked_path`, `conflict_warning`, or `reverted_solution` when another agent should not repeat a concrete bad path. Keep these warnings explicit and evidence-based: failed paths, blocked approaches, reverted solutions, flaky routes, or do-not-touch notes. They show up compactly in `search`, `hivemind_context`, and `task_ready_for_agent`, but they do not lower ready-work ranking.
+
 ```json
 {
   "name": "task_post",
@@ -401,7 +424,7 @@ Use `kind: "note"` when an agent needs to write working note, save current state
 }
 ```
 
-`kind` ∈ `question | answer | decision | blocker | note`. Returns `{ id }`.
+`kind` ∈ `question | answer | decision | blocker | note | failed_approach | blocked_path | conflict_warning | reverted_solution`. Returns `{ id }`.
 
 ## `task_post` lifecycle
 

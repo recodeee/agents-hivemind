@@ -8,7 +8,13 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { ToolContext } from './context.js';
 import { detectMcpClientIdentity } from './heartbeat.js';
-import { buildContextQuery, buildHivemindContext, toHivemindOptions } from './shared.js';
+import {
+  type CompactNegativeWarning,
+  buildContextQuery,
+  buildHivemindContext,
+  searchNegativeWarnings,
+  toHivemindOptions,
+} from './shared.js';
 
 const DEFAULT_CONTEXT_LANE_LIMIT = 8;
 const DEFAULT_CONTEXT_MEMORY_LIMIT = 3;
@@ -41,7 +47,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'hivemind_context',
-    'Before editing, inspect ownership, then claim touched files on the active task. Local situational awareness: repo-scoped active lanes, compact memory hits, nearby claims, hot files, attention counts, and observation IDs for get_observations hydration.',
+    'Before editing, inspect ownership, then claim touched files on the active task. Active ownership, relevant memory, negative warnings, nearby claims, hot files, attention counts, and observation IDs stay compact.',
     {
       repo_root: z.string().min(1).optional(),
       repo_roots: z.array(z.string().min(1)).max(20).optional(),
@@ -78,10 +84,16 @@ export function register(server: McpServer, ctx: ToolContext): void {
       const attentionLimit = attention_id_limit ?? DEFAULT_CONTEXT_ATTENTION_ID_LIMIT;
       const contextQuery = buildContextQuery(query, snapshot.sessions);
       let memoryHits: SearchResult[] = [];
+      let negativeWarnings: CompactNegativeWarning[] = [];
 
       if (contextQuery) {
         const e = (await resolveEmbedder()) ?? undefined;
         memoryHits = await store.search(contextQuery, memoryLimit, e);
+        negativeWarnings = await searchNegativeWarnings(
+          store,
+          contextQuery,
+          Math.min(memoryLimit, 3),
+        );
       }
 
       const attentionIdentity = resolveAttentionIdentity(session_id, agent);
@@ -100,7 +112,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
           {
             type: 'text',
             text: JSON.stringify(
-              buildHivemindContext(snapshot, memoryHits, contextQuery, {
+              buildHivemindContext(snapshot, memoryHits, negativeWarnings, contextQuery, {
                 maxClaims,
                 maxHotFiles,
                 attention: {

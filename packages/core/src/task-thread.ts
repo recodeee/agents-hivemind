@@ -22,6 +22,7 @@ export type CoordinationKind =
   | 'decline'
   | 'decision'
   | 'blocker'
+  | NegativeCoordinationKind
   | 'note'
   | 'wake_request'
   | 'wake_ack'
@@ -30,6 +31,19 @@ export type CoordinationKind =
   | 'message_read'
   | 'message_retract'
   | 'relay';
+
+export const NEGATIVE_COORDINATION_KINDS = [
+  'failed_approach',
+  'blocked_path',
+  'conflict_warning',
+  'reverted_solution',
+] as const;
+
+export type NegativeCoordinationKind = (typeof NEGATIVE_COORDINATION_KINDS)[number];
+
+export function isNegativeCoordinationKind(kind: string): kind is NegativeCoordinationKind {
+  return (NEGATIVE_COORDINATION_KINDS as readonly string[]).includes(kind);
+}
 
 export type HandoffStatus = 'pending' | 'accepted' | 'expired' | 'cancelled';
 export type HandoffTarget = 'claude' | 'codex' | 'any';

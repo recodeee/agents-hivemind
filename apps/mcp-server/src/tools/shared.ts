@@ -3,9 +3,15 @@ import type {
   HivemindOptions,
   HivemindSession,
   HivemindSnapshot,
+  MemoryStore,
   SearchResult,
 } from '@colony/core';
-import { TASK_THREAD_ERROR_CODES, TaskThreadError } from '@colony/core';
+import {
+  NEGATIVE_COORDINATION_KINDS,
+  TASK_THREAD_ERROR_CODES,
+  TaskThreadError,
+  isNegativeCoordinationKind,
+} from '@colony/core';
 import type { TaskThreadErrorCode } from '@colony/core';
 
 export interface HivemindToolOptions {
@@ -54,6 +60,7 @@ export interface HivemindContext {
     total_lane_count: number;
     lanes_truncated: boolean;
     memory_hit_count: number;
+    negative_warning_count: number;
     needs_attention_count: number;
     claim_count: number;
     hot_file_count: number;
@@ -65,6 +72,16 @@ export interface HivemindContext {
   ownership: HivemindContextOwnership;
   attention: HivemindContextAttention;
   memory_hits: SearchResult[];
+  negative_warnings: CompactNegativeWarning[];
+}
+
+export interface CompactNegativeWarning {
+  id: number;
+  kind: string;
+  session_id: string;
+  snippet: string;
+  ts: number;
+  task_id: number | null;
 }
 
 export interface HivemindContextClaim {
@@ -173,6 +190,7 @@ export function buildContextQuery(query: string | undefined, sessions: HivemindS
 export function buildHivemindContext(
   snapshot: HivemindSnapshot,
   memoryHits: SearchResult[],
+  negativeWarnings: CompactNegativeWarning[],
   query: string,
   options: HivemindContextBuildOptions = {},
 ): HivemindContext {
@@ -189,10 +207,11 @@ export function buildHivemindContext(
       total_lane_count: snapshot.session_count,
       lanes_truncated: snapshot.session_count > lanes.length,
       memory_hit_count: memoryHits.length,
+      negative_warning_count: negativeWarnings.length,
       needs_attention_count: needsAttentionCount,
       claim_count: ownership.claim_count,
       hot_file_count: ownership.hot_files.length,
-      next_action: nextAction(lanes, memoryHits, attention),
+      next_action: nextAction(lanes, memoryHits, negativeWarnings, attention),
     },
     counts: snapshot.counts,
     query,
@@ -200,7 +219,43 @@ export function buildHivemindContext(
     ownership,
     attention,
     memory_hits: memoryHits,
+    negative_warnings: negativeWarnings,
   };
+}
+
+export async function searchNegativeWarnings(
+  store: MemoryStore,
+  query: string,
+  limit = 3,
+): Promise<CompactNegativeWarning[]> {
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+  const results = await Promise.all(
+    NEGATIVE_COORDINATION_KINDS.map((kind) => store.search(trimmed, limit, undefined, { kind })),
+  );
+  const byId = new Map<number, SearchResult>();
+  for (const hit of results.flat()) {
+    if (!isNegativeCoordinationKind(hit.kind)) continue;
+    const current = byId.get(hit.id);
+    if (
+      !current ||
+      hit.score > current.score ||
+      (hit.score === current.score && hit.ts > current.ts)
+    ) {
+      byId.set(hit.id, hit);
+    }
+  }
+  return Array.from(byId.values())
+    .sort((a, b) => b.score - a.score || b.ts - a.ts)
+    .slice(0, limit)
+    .map((hit) => ({
+      id: hit.id,
+      kind: hit.kind,
+      session_id: hit.session_id,
+      snippet: hit.snippet,
+      ts: hit.ts,
+      task_id: hit.task_id,
+    }));
 }
 
 function toContextLane(session: HivemindSession): HivemindContextLane {
@@ -314,6 +369,7 @@ function buildAttention(
 function nextAction(
   lanes: HivemindContextLane[],
   memoryHits: SearchResult[],
+  negativeWarnings: CompactNegativeWarning[],
   attention: HivemindContextAttention,
 ): string {
   if (
@@ -325,6 +381,9 @@ function nextAction(
   }
   if (lanes.some((lane) => lane.needs_attention)) {
     return 'Inspect lanes with needs_attention before taking over or editing nearby files.';
+  }
+  if (negativeWarnings.length > 0) {
+    return 'Review compact negative warnings before repeating a known failed path; then use lane ownership.';
   }
   if (lanes.length > 0 && memoryHits.length > 0) {
     return 'Use lane ownership first, then fetch only the specific memory IDs needed.';

@@ -21,6 +21,7 @@ time, and claimed by agents that decide they are a good fit.
 | Agent profile plus ready-work ranking | Response threshold | Fit score that lets agents pull work when signal crosses their threshold. |
 | Queen | Plan publisher | Publishes structure; never commands workers. |
 | Blocking message or attention inbox item | Alarm pheromone | Urgent signal that interrupts normal local pull. |
+| Failed approach or do-not-touch warning | Negative pheromone | Compact avoidance signal for paths agents should not repeat blindly. |
 | Rescue, sweep, archive | Trail pruning | Cleanup of stale, stranded, or completed trails. |
 
 ## Requirements
@@ -118,6 +119,26 @@ ordinary ready-work selection.
   alarm signal
 - **AND** agents resolve, accept, decline, or relay the alarm before treating
   lower-priority ready work as the next action
+
+### Requirement: Negative Signals Warn Without Freezing Work
+
+Colony SHALL let agents record explicit avoidance signals for failed paths,
+blocked approaches, reverted solutions, flaky routes, and do-not-touch warnings.
+
+#### Scenario: agent records a failed path
+
+- **WHEN** an agent posts `failed_approach`, `blocked_path`,
+  `conflict_warning`, or `reverted_solution` on a task thread
+- **THEN** Colony persists it as a searchable observation
+- **AND** `search`, `hivemind_context`, and `task_ready_for_agent` can surface a
+  compact warning before another agent implements nearby work
+
+#### Scenario: warning stays advisory
+
+- **WHEN** a negative signal matches ready work
+- **THEN** Colony shows the warning without lowering the task's fit score
+- **AND** ordinary failed experiments are not promoted to avoidance signals
+  unless an agent records explicit do-not-repeat evidence
 
 ### Requirement: Queen Publishes Structure Only
 

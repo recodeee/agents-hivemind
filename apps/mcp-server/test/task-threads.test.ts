@@ -283,6 +283,32 @@ describe('task threads — handoff lifecycle', () => {
     expect(hits.some((hit) => hit.id === id)).toBe(true);
   });
 
+  it('task_post stores negative warning kinds and search returns them compactly', async () => {
+    const { task_id, sessionA } = seedTwoSessionTask();
+
+    const { id } = await call<{ id: number }>('task_post', {
+      task_id,
+      session_id: sessionA,
+      kind: 'failed_approach',
+      content:
+        'Failed approach: do not repeat naive mutex route in src/router.ts; it deadlocked retries.',
+    });
+
+    const row = store.storage.getObservation(id);
+    expect(row).toMatchObject({
+      id,
+      session_id: sessionA,
+      task_id,
+      kind: 'failed_approach',
+    });
+
+    const hits = await call<Array<{ id: number; kind: string; task_id: number | null }>>('search', {
+      query: 'do not repeat naive mutex route',
+      limit: 5,
+    });
+    expect(hits).toContainEqual(expect.objectContaining({ id, kind: 'failed_approach', task_id }));
+  });
+
   // Relay lifecycle. Different from handoff: relays assume the sender is
   // gone, so claims are *dropped* at emit time and re-claimed by the
   // receiver on accept (no third agent can grab a file in the gap). The

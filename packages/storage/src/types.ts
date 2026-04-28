@@ -182,9 +182,11 @@ export interface NewSummary {
 export interface SearchHit {
   id: number;
   session_id: string;
+  kind: string;
   snippet: string;
   score: number;
   ts: number;
+  task_id: number | null;
 }
 
 export type ExampleManifestKind = 'npm' | 'pypi' | 'cargo' | 'go' | 'unknown';
