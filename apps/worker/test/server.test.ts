@@ -628,7 +628,7 @@ describe('worker HTTP', () => {
     expect(body).toContain('Coordination behavior');
     expect(body.indexOf('Diagnostic')).toBeLessThan(body.indexOf('Coordination behavior'));
     expect(body.indexOf('Coordination behavior')).toBeLessThan(
-      body.indexOf('Recent claims heat-map'),
+      body.indexOf('File activity heat-map'),
     );
   });
 
@@ -661,7 +661,7 @@ describe('worker HTTP', () => {
     expect(res.status).toBe(200);
     const body = await res.text();
     const panelStart = body.indexOf('Coordination behavior');
-    const panel = body.slice(panelStart, body.indexOf('Recent claims heat-map'));
+    const panel = body.slice(panelStart, body.indexOf('File activity heat-map'));
 
     expect(panel).toContain('No coordination behavior report: not enough coordination data.');
     expect(panel).not.toContain('coordination-row');
@@ -687,7 +687,7 @@ describe('worker HTTP', () => {
     expect(coordinationRow(body, 'Proposals abandoned')).toContain('data-rate-level="yellow"');
   });
 
-  it('GET / renders the recent claims heat-map with file paths', async () => {
+  it('GET / renders the file activity heat-map with decayed heat', async () => {
     store.startSession({ id: 'claim-session', ide: 'codex', cwd: '/repo' });
     const thread = TaskThread.open(store, {
       repo_root: '/repo',
@@ -700,9 +700,9 @@ describe('worker HTTP', () => {
     const res = await app.request('/');
     expect(res.status).toBe(200);
     const body = await res.text();
-    expect(body).toContain('Recent claims heat-map');
+    expect(body).toContain('File activity heat-map');
     expect(body).toContain('apps/worker/src/viewer.ts');
-    expect(body).toContain('claim-session');
+    expect(body).toContain('heat 1.000');
   });
 
   it('GET /sessions/:id renders observation HTML', async () => {

@@ -28,6 +28,12 @@ export const SettingsSchema = z
       .enum(['debug', 'info', 'warn', 'error'])
       .default('info')
       .describe('Minimum log level emitted by the worker and hook handlers.'),
+    fileHeatHalfLifeMinutes: z
+      .number()
+      .int()
+      .positive()
+      .default(30)
+      .describe('Minutes for file activity heat to decay by half on read-side context surfaces.'),
     compression: z
       .object({
         intensity: CompressionIntensity.default('full').describe(

@@ -4,11 +4,11 @@ import { z } from 'zod';
 import type { ToolContext } from './context.js';
 
 export function register(server: McpServer, ctx: ToolContext): void {
-  const { store } = ctx;
+  const { store, settings } = ctx;
 
   server.tool(
     'attention_inbox',
-    'See what needs your attention: live pending handoffs, unread messages, blockers, stalled lanes, and recent claims. Expired handoffs are not surfaced as pending recruitment signals. This is the main surface where task_message items show up; post-hivemind_context attention check, review compact IDs first, then fetch full bodies with get_observations only when needed.',
+    'See what needs your attention: live pending handoffs, unread messages, blockers, stalled lanes, recent claims, and decaying hot files. Expired handoffs are not surfaced as pending recruitment signals. This is the main surface where task_message items show up; post-hivemind_context attention check, review compact IDs first, then fetch full bodies with get_observations only when needed.',
     {
       session_id: z.string().min(1),
       agent: z.string().min(1),
@@ -16,6 +16,9 @@ export function register(server: McpServer, ctx: ToolContext): void {
       repo_roots: z.array(z.string().min(1)).max(20).optional(),
       recent_claim_window_minutes: z.number().int().positive().max(1440).optional(),
       recent_claim_limit: z.number().int().positive().max(100).optional(),
+      file_heat_half_life_minutes: z.number().int().positive().max(1440).optional(),
+      file_heat_limit: z.number().int().positive().max(100).optional(),
+      file_heat_min_heat: z.number().positive().max(100).optional(),
       task_ids: z.array(z.number().int().positive()).max(100).optional(),
     },
     async (args) => {
@@ -30,6 +33,13 @@ export function register(server: McpServer, ctx: ToolContext): void {
       }
       if (args.recent_claim_limit !== undefined) {
         options.recent_claim_limit = args.recent_claim_limit;
+      }
+      const fileHeatHalfLifeMinutes =
+        args.file_heat_half_life_minutes ?? settings.fileHeatHalfLifeMinutes;
+      options.file_heat_half_life_ms = fileHeatHalfLifeMinutes * 60_000;
+      if (args.file_heat_limit !== undefined) options.file_heat_limit = args.file_heat_limit;
+      if (args.file_heat_min_heat !== undefined) {
+        options.file_heat_min_heat = args.file_heat_min_heat;
       }
       if (args.task_ids !== undefined) options.task_ids = args.task_ids;
       const inbox = buildAttentionInbox(store, options);

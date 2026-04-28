@@ -89,11 +89,65 @@ describe('buildAttentionInbox', () => {
 
     expect(inbox.recent_other_claims.some((c) => c.file_path === 'src/viewer.tsx')).toBe(true);
     expect(inbox.recent_other_claims.every((c) => c.by_session_id !== 'codex')).toBe(true);
+    expect(inbox.file_heat.some((file) => file.file_path === 'src/viewer.tsx')).toBe(true);
 
     expect(inbox.summary.pending_handoff_count).toBe(1);
     expect(inbox.summary.pending_wake_count).toBe(1);
     expect(inbox.summary.unread_message_count).toBe(2);
+    expect(inbox.summary.hot_file_count).toBeGreaterThan(0);
     expect(inbox.summary.next_action).toMatch(/blocking task messages/i);
+  });
+
+  it('surfaces compact decaying file heat for participating tasks', () => {
+    seed('claude', 'codex');
+    const now = Date.parse('2026-04-28T12:00:00.000Z');
+    const thread = TaskThread.open(store, {
+      repo_root: '/r',
+      branch: 'feat/inbox-heat',
+      session_id: 'claude',
+    });
+    thread.join('claude', 'claude');
+    thread.join('codex', 'codex');
+    store.storage.insertObservation({
+      session_id: 'claude',
+      kind: 'tool_use',
+      content: 'edit hot file',
+      compressed: false,
+      intensity: null,
+      task_id: thread.task_id,
+      ts: now - 10 * 60_000,
+      metadata: { tool: 'Edit', file_path: 'src/hot.ts' },
+    });
+    store.storage.insertObservation({
+      session_id: 'claude',
+      kind: 'tool_use',
+      content: 'edit stale file',
+      compressed: false,
+      intensity: null,
+      task_id: thread.task_id,
+      ts: now - 90 * 60_000,
+      metadata: { tool: 'Edit', file_path: 'src/stale.ts' },
+    });
+
+    const inbox = buildAttentionInbox(store, {
+      session_id: 'codex',
+      agent: 'codex',
+      task_ids: [thread.task_id],
+      now,
+      file_heat_half_life_ms: 10 * 60_000,
+      file_heat_min_heat: 0.01,
+    });
+
+    expect(inbox.file_heat).toEqual([
+      {
+        task_id: thread.task_id,
+        file_path: 'src/hot.ts',
+        heat: 0.5,
+        last_activity_ts: now - 10 * 60_000,
+        event_count: 1,
+      },
+    ]);
+    expect(inbox.summary.hot_file_count).toBe(1);
   });
 
   it("omits the requesting session's own claims and own handoffs", () => {

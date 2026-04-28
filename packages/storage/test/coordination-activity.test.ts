@@ -153,6 +153,90 @@ describe('colony health read queries', () => {
   });
 });
 
+describe('fileHeat', () => {
+  it('halves heat after one half-life with fixed timestamps', () => {
+    const now = Date.parse('2026-04-28T12:00:00.000Z');
+    session('codex@heat', now - 60_000);
+    const task = storage.findOrCreateTask({
+      title: 'heat',
+      repo_root: '/repo',
+      branch: 'agent/heat',
+      created_by: 'codex@heat',
+    });
+    storage.insertObservation({
+      session_id: 'codex@heat',
+      kind: 'tool_use',
+      content: 'edit src/hot.ts',
+      compressed: false,
+      intensity: null,
+      ts: now - 10 * 60_000,
+      task_id: task.id,
+      metadata: { tool: 'Edit', file_path: 'src/hot.ts' },
+    });
+
+    const rows = storage.fileHeat({
+      task_ids: [task.id],
+      now,
+      half_life_minutes: 10,
+      min_heat: 0.001,
+    });
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      task_id: task.id,
+      file_path: 'src/hot.ts',
+      last_activity_ts: now - 10 * 60_000,
+      event_count: 1,
+    });
+    expect(rows[0]?.heat).toBeCloseTo(0.5, 6);
+  });
+
+  it('uses claims and task metadata arrays without keeping old files permanently hot', () => {
+    const now = Date.parse('2026-04-28T12:00:00.000Z');
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    session('codex@heat', now - 60_000);
+    const task = storage.findOrCreateTask({
+      title: 'heat',
+      repo_root: '/repo',
+      branch: 'agent/heat',
+      created_by: 'codex@heat',
+    });
+
+    storage.claimFile({ task_id: task.id, file_path: 'src/claimed.ts', session_id: 'codex@heat' });
+    storage.insertObservation({
+      session_id: 'codex@heat',
+      kind: 'handoff',
+      content: 'handoff scope',
+      compressed: false,
+      intensity: null,
+      ts: now - 10 * 60_000,
+      task_id: task.id,
+      metadata: { transferred_files: ['src/handoff.ts'] },
+    });
+    for (let i = 0; i < 20; i++) {
+      storage.insertObservation({
+        session_id: 'codex@heat',
+        kind: 'file-op',
+        content: 'old edit src/old.ts',
+        compressed: false,
+        intensity: null,
+        ts: now - 9 * 10 * 60_000 - i,
+        task_id: task.id,
+        metadata: { file_paths: ['src/old.ts'] },
+      });
+    }
+
+    const rows = storage.fileHeat({ task_ids: [task.id], now, half_life_minutes: 10 });
+    const byPath = new Map(rows.map((row) => [row.file_path, row]));
+
+    expect(rows.map((row) => row.file_path)).toEqual(['src/claimed.ts', 'src/handoff.ts']);
+    expect(byPath.get('src/claimed.ts')?.heat).toBeCloseTo(1, 6);
+    expect(byPath.get('src/handoff.ts')?.heat).toBeCloseTo(0.25, 6);
+    expect(byPath.has('src/old.ts')).toBe(false);
+  });
+});
+
 describe('sessionsEndedWithoutHandoff', () => {
   it('reports quiet sessions with active claims and whether they handed off', () => {
     const now = new Date('2026-04-28T12:00:00.000Z');

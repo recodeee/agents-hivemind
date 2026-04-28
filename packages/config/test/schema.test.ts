@@ -9,6 +9,7 @@ describe('SettingsSchema', () => {
     expect(parsed.foraging.proposalHalfLifeMinutes).toBe(60);
     expect(parsed.foraging.proposalNoiseFloor).toBe(0.3);
     expect(parsed.foraging.promotionThreshold).toBe(2.5);
+    expect(parsed.fileHeatHalfLifeMinutes).toBe(30);
   });
 
   it('rejects invalid intensity', () => {
@@ -21,6 +22,7 @@ describe('SettingsSchema', () => {
     expect(defaultSettings.foraging.proposalHalfLifeMinutes).toBe(60);
     expect(defaultSettings.foraging.proposalNoiseFloor).toBe(0.3);
     expect(defaultSettings.foraging.promotionThreshold).toBe(2.5);
+    expect(defaultSettings.fileHeatHalfLifeMinutes).toBe(30);
   });
 
   it('uses COLONY_HOME for default settings location and data dir', () => {

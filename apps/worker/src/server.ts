@@ -33,6 +33,7 @@ export interface WorkerAppOptions {
   hivemindRepoRoots?: string[];
   discrepancyReportBuilder?: BuildDiscrepancyReport;
   rescueLoop?: RescueLoopHandle;
+  fileHeatHalfLifeMinutes?: number;
 }
 
 export function buildApp(
@@ -242,6 +243,7 @@ export function buildApp(
         store,
         readStrandedSessionsForPlansPage(store),
         reportBuilder,
+        options.fileHeatHalfLifeMinutes,
       ),
     ),
   );
@@ -471,7 +473,10 @@ export async function start(): Promise<void> {
     log: (line) => process.stderr.write(`${line}\n`),
   });
 
-  const app = buildApp(store, loop, { rescueLoop: handles.rescueLoop });
+  const app = buildApp(store, loop, {
+    rescueLoop: handles.rescueLoop,
+    fileHeatHalfLifeMinutes: settings.fileHeatHalfLifeMinutes,
+  });
   servers.push(serve({ fetch: app.fetch, port: settings.workerPort, hostname: '127.0.0.1' }));
   process.stderr.write(
     `[colony worker] listening on http://127.0.0.1:${settings.workerPort} (pid ${process.pid})\n`,

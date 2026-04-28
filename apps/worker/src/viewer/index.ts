@@ -12,9 +12,11 @@ import {
   renderCoordinationBehavior,
 } from './sections/coordination-behavior.js';
 import { renderDiagnostic, renderToolUsageHistogram } from './sections/diagnostic.js';
-import { renderRecentClaimsHeatMap } from './sections/heat-map.js';
+import { renderFileHeatMap } from './sections/heat-map.js';
 import { renderHivemindDashboard } from './sections/hivemind.js';
 import { type StrandedSessionSummary, renderStrandedSessions } from './sections/stranded.js';
+
+const DEFAULT_FILE_HEAT_HALF_LIFE_MINUTES = 30;
 
 export type ClaimCoverageSnapshot = ReturnType<MemoryStore['storage']['claimCoverageSnapshot']>;
 export type { StrandedSessionSummary };
@@ -32,10 +34,11 @@ export function renderIndex(
   store: MemoryStore,
   strandedSessions: StrandedSessionSummary[] = [],
   reportBuilder: BuildDiscrepancyReport = buildDiscrepancyReport,
+  fileHeatHalfLifeMinutes = DEFAULT_FILE_HEAT_HALF_LIFE_MINUTES,
 ): string {
   const stranded = renderStrandedSessions(strandedSessions);
   const dashboard = snapshot ? renderHivemindDashboard(snapshot) : '';
-  const colonyState = renderColonyState(store, reportBuilder);
+  const colonyState = renderColonyState(store, reportBuilder, fileHeatHalfLifeMinutes);
   if (sessions.length === 0) {
     return layout(
       'agents-hivemind',
@@ -85,7 +88,11 @@ export function renderSession(
   );
 }
 
-function renderColonyState(store: MemoryStore, reportBuilder: BuildDiscrepancyReport): string {
+function renderColonyState(
+  store: MemoryStore,
+  reportBuilder: BuildDiscrepancyReport,
+  fileHeatHalfLifeMinutes: number,
+): string {
   const storage = store.storage;
   const tasks = storage.listTasks(200).filter((task) => task.status === 'open');
   return html`
@@ -95,7 +102,7 @@ function renderColonyState(store: MemoryStore, reportBuilder: BuildDiscrepancyRe
         <div class="viewer-main">
           ${raw(renderDiagnostic(store))}
           ${raw(renderCoordinationBehavior(store, reportBuilder))}
-          ${raw(renderRecentClaimsHeatMap(storage, tasks))}
+          ${raw(renderFileHeatMap(storage, tasks, fileHeatHalfLifeMinutes))}
           ${raw(renderToolUsageHistogram())}
         </div>
         ${raw(renderAttentionSidebar(tasks))}

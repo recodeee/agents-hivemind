@@ -68,6 +68,7 @@ export {
   type AttentionInboxOptions,
   type CoalescedMessageGroup,
   type InboxHandoff,
+  type InboxFileHeat,
   type InboxLane,
   type InboxMessage,
   type InboxRecentClaim,

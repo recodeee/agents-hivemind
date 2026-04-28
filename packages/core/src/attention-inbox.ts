@@ -1,5 +1,5 @@
 import { resolve } from 'node:path';
-import type { TaskClaimRow } from '@colony/storage';
+import type { FileHeatRow, TaskClaimRow } from '@colony/storage';
 import {
   type HivemindActivity,
   type HivemindOptions,
@@ -63,6 +63,14 @@ export interface InboxRecentClaim {
   claimed_at: number;
 }
 
+export interface InboxFileHeat {
+  task_id: number;
+  file_path: string;
+  heat: number;
+  last_activity_ts: number;
+  event_count: number;
+}
+
 /**
  * Coalesced view: a group of inbox messages that share `(task_id,
  * from_session_id, urgency)`. Lets the preface render "B sent 4 fyi
@@ -112,6 +120,7 @@ export interface AttentionInbox {
     unread_message_count: number;
     stalled_lane_count: number;
     recent_other_claim_count: number;
+    hot_file_count: number;
     /**
      * True iff at least one unread message is `urgency='blocking'`. The
      * preface renderer should use this to gate non-message sections —
@@ -132,6 +141,7 @@ export interface AttentionInbox {
   read_receipts: ReadReceipt[];
   stalled_lanes: InboxLane[];
   recent_other_claims: InboxRecentClaim[];
+  file_heat: InboxFileHeat[];
 }
 
 export interface AttentionInboxOptions {
@@ -153,6 +163,10 @@ export interface AttentionInboxOptions {
   unread_message_limit?: number;
   /** Defaults true; hooks can disable filesystem hivemind reads for hot paths. */
   include_stalled_lanes?: boolean;
+  /** Half-life for decaying file heat. Defaults 30m; MCP passes settings. */
+  file_heat_half_life_ms?: number;
+  file_heat_limit?: number;
+  file_heat_min_heat?: number;
   /** Window (ms) for read-receipt surfacing. Receipts older than this drop
    *  out so a long-running session doesn't accumulate stale "B read your
    *  message 3 days ago" hints. Default 6h. */
@@ -171,6 +185,8 @@ export interface AttentionInboxOptions {
 
 const DEFAULT_RECENT_CLAIM_WINDOW_MS = 15 * 60_000;
 const DEFAULT_RECENT_CLAIM_LIMIT = 20;
+const DEFAULT_FILE_HEAT_HALF_LIFE_MS = 30 * 60_000;
+const DEFAULT_FILE_HEAT_LIMIT = 10;
 const DEFAULT_READ_RECEIPT_WINDOW_MS = 6 * 60 * 60_000;
 const DEFAULT_READ_RECEIPT_MIN_AGE_MS = 5 * 60_000;
 const DEFAULT_READ_RECEIPT_LIMIT = 20;
@@ -223,6 +239,7 @@ export function buildAttentionInbox(
   }
 
   const stalled_lanes = opts.include_stalled_lanes === false ? [] : collectStalledLanes(opts);
+  const file_heat = collectFileHeat(store, opts, taskIds, now);
 
   const read_receipts = collectReadReceipts(store, opts, taskIds, now);
   const coalesced_messages = coalesceMessages(unread_messages);
@@ -234,6 +251,7 @@ export function buildAttentionInbox(
     unread_message_count: unread_messages.length,
     stalled_lane_count: stalled_lanes.length,
     recent_other_claim_count: recent_other_claims.length,
+    hot_file_count: file_heat.length,
     blocked,
     next_action: deriveNextAction({
       pending_handoffs,
@@ -241,6 +259,7 @@ export function buildAttentionInbox(
       unread_messages,
       stalled_lanes,
       recent_other_claims,
+      file_heat,
       read_receipts,
     }),
   };
@@ -257,6 +276,7 @@ export function buildAttentionInbox(
     read_receipts,
     stalled_lanes,
     recent_other_claims,
+    file_heat,
   };
 }
 
@@ -449,6 +469,34 @@ function compactClaim(row: TaskClaimRow): InboxRecentClaim {
   };
 }
 
+function collectFileHeat(
+  store: MemoryStore,
+  opts: AttentionInboxOptions,
+  taskIds: number[],
+  now: number,
+): InboxFileHeat[] {
+  if (taskIds.length === 0) return [];
+  const halfLifeMs = opts.file_heat_half_life_ms ?? DEFAULT_FILE_HEAT_HALF_LIFE_MS;
+  const rows = store.storage.fileHeat({
+    task_ids: taskIds,
+    now,
+    half_life_minutes: halfLifeMs / 60_000,
+    ...(opts.file_heat_limit !== undefined ? { limit: opts.file_heat_limit } : {}),
+    ...(opts.file_heat_min_heat !== undefined ? { min_heat: opts.file_heat_min_heat } : {}),
+  });
+  return rows.slice(0, opts.file_heat_limit ?? DEFAULT_FILE_HEAT_LIMIT).map(compactFileHeat);
+}
+
+function compactFileHeat(row: FileHeatRow): InboxFileHeat {
+  return {
+    task_id: row.task_id,
+    file_path: row.file_path,
+    heat: Number(row.heat.toFixed(3)),
+    last_activity_ts: row.last_activity_ts,
+    event_count: row.event_count,
+  };
+}
+
 function collectStalledLanes(opts: AttentionInboxOptions): InboxLane[] {
   const options: HivemindOptions = { includeStale: true };
   if (opts.repo_root !== undefined) options.repoRoot = opts.repo_root;
@@ -488,6 +536,7 @@ function deriveNextAction(parts: {
   unread_messages: InboxMessage[];
   stalled_lanes: InboxLane[];
   recent_other_claims: InboxRecentClaim[];
+  file_heat: InboxFileHeat[];
   read_receipts: ReadReceipt[];
 }): string {
   if (parts.unread_messages.some((m) => m.urgency === 'blocking')) {

@@ -23,7 +23,7 @@ export function registerInboxCommand(program: Command): void {
   program
     .command('inbox')
     .description(
-      'Compact list of attention items for a session: pending handoffs, wakes, stalled lanes, recent claims',
+      'Compact list of attention items for a session: pending handoffs, wakes, stalled lanes, recent claims, hot files',
     )
     .option(
       '--session <id>',
@@ -58,6 +58,7 @@ export function registerInboxCommand(program: Command): void {
           const inbox = buildAttentionInbox(store, {
             session_id: session,
             agent,
+            file_heat_half_life_ms: settings.fileHeatHalfLifeMinutes * 60_000,
             ...(opts.repoRoot !== undefined ? { repo_root: opts.repoRoot } : {}),
           });
 
@@ -71,7 +72,7 @@ export function registerInboxCommand(program: Command): void {
             kleur.bold(`Inbox for ${agent}@${session.slice(0, 8)} — ${inbox.summary.next_action}`),
           );
           lines.push(
-            `  messages: ${inbox.summary.unread_message_count}  handoffs: ${inbox.summary.pending_handoff_count}  wakes: ${inbox.summary.pending_wake_count}  stalled lanes: ${inbox.summary.stalled_lane_count}  recent other claims: ${inbox.summary.recent_other_claim_count}`,
+            `  messages: ${inbox.summary.unread_message_count}  handoffs: ${inbox.summary.pending_handoff_count}  wakes: ${inbox.summary.pending_wake_count}  stalled lanes: ${inbox.summary.stalled_lane_count}  recent other claims: ${inbox.summary.recent_other_claim_count}  hot files: ${inbox.summary.hot_file_count}`,
           );
 
           const blockingMessages = inbox.unread_messages.filter((m) => m.urgency === 'blocking');
@@ -137,6 +138,15 @@ export function registerInboxCommand(program: Command): void {
             lines.push(kleur.gray('Recent other-session claims:'));
             for (const c of inbox.recent_other_claims) {
               lines.push(`  task ${c.task_id}  ${c.file_path}  by ${c.by_session_id.slice(0, 8)}`);
+            }
+          }
+          if (inbox.file_heat.length > 0) {
+            lines.push('');
+            lines.push(kleur.gray('Hot files:'));
+            for (const file of inbox.file_heat) {
+              lines.push(
+                `  task ${file.task_id}  ${file.file_path}  heat ${file.heat.toFixed(3)}  events ${file.event_count}`,
+              );
             }
           }
 

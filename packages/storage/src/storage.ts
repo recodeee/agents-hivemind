@@ -79,6 +79,22 @@ export interface BashCoordinationVolume {
   top_files_by_file_op: Array<{ file_path: string; count: number }>;
 }
 
+export interface FileHeatRow {
+  task_id: number;
+  file_path: string;
+  heat: number;
+  last_activity_ts: number;
+  event_count: number;
+}
+
+export interface FileHeatOptions {
+  task_ids?: number[];
+  now?: number;
+  half_life_minutes: number;
+  limit?: number;
+  min_heat?: number;
+}
+
 export interface EditsWithoutClaimsRow {
   session_id: string;
   file_path: string;
@@ -121,11 +137,15 @@ export interface ClaimCoverageSnapshot {
 const DEFAULT_STRANDED_AFTER_MS = 10 * 60_000;
 const DEFAULT_CLAIM_WINDOW_MS = 5 * 60_000;
 const DEFAULT_IDLE_WINDOW_MS = 30 * 60_000;
+const DEFAULT_FILE_HEAT_LIMIT = 10;
+const DEFAULT_FILE_HEAT_MIN_HEAT = 0.05;
+const FILE_HEAT_LOOKBACK_HALF_LIVES = 8;
 const COORDINATION_COMMIT_TOOLS_JSON = JSON.stringify(Array.from(COORDINATION_COMMIT_TOOLS));
 const COORDINATION_READ_TOOLS_JSON = JSON.stringify(Array.from(COORDINATION_READ_TOOLS));
 const FILE_EDIT_TOOLS_JSON = JSON.stringify(Array.from(FILE_EDIT_TOOLS));
 const EXPLICIT_CLAIM_KINDS = ['claim'];
 const AUTO_CLAIM_KINDS = ['auto-claim'];
+type JsonRecord = Record<string, unknown>;
 
 export class Storage {
   private db: Database.Database;
@@ -1605,6 +1625,86 @@ export class Storage {
     };
   }
 
+  /**
+   * Decaying file activity heat for task context surfaces. Heat is computed
+   * from durable observations plus current claim rows, so no background job
+   * or cleanup pass is needed: old activity fades at read time.
+   */
+  fileHeat(opts: FileHeatOptions): FileHeatRow[] {
+    const now = opts.now ?? Date.now();
+    const halfLifeMinutes = Number.isFinite(opts.half_life_minutes) ? opts.half_life_minutes : 30;
+    const halfLifeMs = Math.max(1, halfLifeMinutes) * 60_000;
+    const since = now - halfLifeMs * FILE_HEAT_LOOKBACK_HALF_LIVES;
+    const minHeat = opts.min_heat ?? DEFAULT_FILE_HEAT_MIN_HEAT;
+    const limit = Math.max(1, Math.min(opts.limit ?? DEFAULT_FILE_HEAT_LIMIT, 100));
+    const taskIds = normalizeTaskIds(opts.task_ids);
+    const taskFilter = buildTaskFilter('task_id', taskIds);
+
+    const observations = this.db
+      .prepare(
+        `SELECT task_id, kind, ts, metadata
+         FROM observations
+         WHERE task_id IS NOT NULL
+           AND ts >= ?
+           AND metadata IS NOT NULL
+           ${taskFilter.sql}
+         ORDER BY ts DESC`,
+      )
+      .all(since, ...taskFilter.params) as Array<{
+      task_id: number;
+      kind: string;
+      ts: number;
+      metadata: string;
+    }>;
+
+    const claims = this.db
+      .prepare(
+        `SELECT task_id, file_path, claimed_at
+         FROM task_claims
+         WHERE claimed_at >= ?
+           ${taskFilter.sql}
+         ORDER BY claimed_at DESC`,
+      )
+      .all(since, ...taskFilter.params) as Array<{
+      task_id: number;
+      file_path: string;
+      claimed_at: number;
+    }>;
+
+    const byFile = new Map<string, FileHeatRow>();
+    for (const row of observations) {
+      const meta = parseMetadata(row.metadata);
+      if (!meta) continue;
+      const weight = fileHeatWeight(row.kind);
+      for (const filePath of extractHeatFilePaths(meta)) {
+        addHeat(byFile, {
+          task_id: row.task_id,
+          file_path: filePath,
+          ts: row.ts,
+          heat: decayedFileHeat(weight, row.ts, now, halfLifeMs),
+        });
+      }
+    }
+    for (const claim of claims) {
+      addHeat(byFile, {
+        task_id: claim.task_id,
+        file_path: claim.file_path,
+        ts: claim.claimed_at,
+        heat: decayedFileHeat(1, claim.claimed_at, now, halfLifeMs),
+      });
+    }
+
+    return Array.from(byFile.values())
+      .filter((row) => row.heat >= minHeat)
+      .sort(
+        (a, b) =>
+          b.heat - a.heat ||
+          b.last_activity_ts - a.last_activity_ts ||
+          a.file_path.localeCompare(b.file_path),
+      )
+      .slice(0, limit);
+  }
+
   /** Count of handoffs by final status in the window. */
   handoffStatusDistribution(since_ts: number): {
     accepted: number;
@@ -1672,6 +1772,98 @@ function kindCountsWithZeroes(kinds: string[], rows: KindCount[]): KindCount[] {
 
 function sumKindCounts(rows: KindCount[]): number {
   return rows.reduce((sum, row) => sum + row.count, 0);
+}
+
+function normalizeTaskIds(taskIds: number[] | undefined): number[] {
+  if (!taskIds) return [];
+  return [...new Set(taskIds.filter((id) => Number.isInteger(id) && id > 0))];
+}
+
+function buildTaskFilter(column: string, taskIds: number[]): { sql: string; params: number[] } {
+  if (taskIds.length === 0) return { sql: '', params: [] };
+  return {
+    sql: `AND ${column} IN (${taskIds.map(() => '?').join(', ')})`,
+    params: taskIds,
+  };
+}
+
+function parseMetadata(raw: string): JsonRecord | null {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is JsonRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function extractHeatFilePaths(meta: JsonRecord): string[] {
+  const out = new Set<string>();
+  for (const key of [
+    'file_path',
+    'file_paths',
+    'file_scope',
+    'transferred_files',
+    'released_files',
+    'touches_files',
+  ]) {
+    collectFilePaths(meta[key], out);
+  }
+  return Array.from(out);
+}
+
+function collectFilePaths(value: unknown, out: Set<string>): void {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed) out.add(trimmed);
+    return;
+  }
+  if (!Array.isArray(value)) return;
+  for (const entry of value) {
+    if (typeof entry !== 'string') continue;
+    const trimmed = entry.trim();
+    if (trimmed) out.add(trimmed);
+  }
+}
+
+function fileHeatWeight(kind: string): number {
+  if (kind === 'tool_use' || kind === 'file-op') return 1;
+  // Active claim rows are folded in separately. Ignore claim observations
+  // here so a fresh claim is one signal, not double-counted bookkeeping.
+  if (kind === 'claim' || kind === 'auto-claim') return 0;
+  if (kind === 'claim-conflict') return 1;
+  if (kind === 'handoff' || kind === 'relay' || kind.startsWith('plan-')) return 0.5;
+  return 0.25;
+}
+
+function decayedFileHeat(weight: number, ts: number, now: number, halfLifeMs: number): number {
+  const age = Math.max(0, now - ts);
+  return weight * 0.5 ** (age / halfLifeMs);
+}
+
+function addHeat(
+  byFile: Map<string, FileHeatRow>,
+  event: { task_id: number; file_path: string; ts: number; heat: number },
+): void {
+  if (!event.file_path || event.heat <= 0 || !Number.isFinite(event.heat)) return;
+  const key = `${event.task_id}\0${event.file_path}`;
+  const current = byFile.get(key);
+  if (!current) {
+    byFile.set(key, {
+      task_id: event.task_id,
+      file_path: event.file_path,
+      heat: event.heat,
+      last_activity_ts: event.ts,
+      event_count: 1,
+    });
+    return;
+  }
+  current.heat += event.heat;
+  current.last_activity_ts = Math.max(current.last_activity_ts, event.ts);
+  current.event_count += 1;
 }
 
 function sanitizeMatch(q: string): string {

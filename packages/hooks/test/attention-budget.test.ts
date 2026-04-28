@@ -50,6 +50,7 @@ function baseInbox(overrides: Partial<AttentionInbox> = {}): AttentionInbox {
       unread_message_count: 0,
       stalled_lane_count: 0,
       recent_other_claim_count: 0,
+      hot_file_count: 0,
       blocked: false,
       next_action: 'quiet',
     },
@@ -60,6 +61,7 @@ function baseInbox(overrides: Partial<AttentionInbox> = {}): AttentionInbox {
     read_receipts: [],
     stalled_lanes: [],
     recent_other_claims: [],
+    file_heat: [],
     ...overrides,
   };
 }

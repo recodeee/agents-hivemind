@@ -15,7 +15,7 @@ Use `list_sessions` -> `timeline` when you need to navigate a known session inst
 Agent startup, resume, "what needs me?", and "what should I do next?" flows should call these first:
 
 1. `hivemind_context` to see active agents, owned branches, live lanes, compact memory hits, and relevant negative warnings.
-2. `attention_inbox` to see what needs your attention: handoffs, messages, wakes, stalled lanes, and recent claim activity.
+2. `attention_inbox` to see what needs your attention: handoffs, messages, wakes, stalled lanes, recent claim activity, and decaying hot files.
 3. `task_ready_for_agent` to choose available work matched to the current agent.
 
 Use `task_list` for browsing recent task threads. Use `task_ready_for_agent` for choosing what to work on next.
@@ -38,7 +38,7 @@ When the selected task needs implementation context, call `search` with the task
 
 For multi-agent runtime awareness, call `hivemind_context` first when you need ownership plus likely memory hits, or `hivemind` when you only need the runtime map. Both return compact active worktrees, branches, agents, and task previews from `.omx` proxy-runtime state without fetching observation bodies.
 
-After `hivemind_context`, call `attention_inbox` to check what needs you now: live pending handoffs, unread messages, blockers, stalled lanes, and recent claims. Review its compact IDs first; fetch full bodies with `get_observations` only after you pick the IDs worth reading.
+After `hivemind_context`, call `attention_inbox` to check what needs you now: live pending handoffs, unread messages, blockers, stalled lanes, recent claims, and decaying hot files. Review its compact IDs first; fetch full bodies with `get_observations` only after you pick the IDs worth reading.
 
 For choosing work to claim, the compact path is:
 
@@ -659,7 +659,7 @@ Errors include `{ "code": "SESSION_NOT_FOUND", "error": "..." }` when either `ta
 
 ## `attention_inbox`
 
-Compact post-`hivemind_context` attention check for live pending handoffs, unread messages, blockers, stalled lanes, pending wakes, and recent other-session file claims. Expired handoffs are hidden from the pending bucket; the original observations remain available via timeline/search for audit. This is the main surface where live `task_message` items show up: expired unread messages are hidden, read/replied messages stop triggering attention, and blocking messages remain prominent until read, replied, retracted, or expired. Use `task_messages` for a focused message-only inbox. Review compact IDs first, then fetch full bodies via `get_observations` only for the entries you need.
+Compact post-`hivemind_context` attention check for live pending handoffs, unread messages, blockers, stalled lanes, pending wakes, recent other-session file claims, and decaying hot files. Expired handoffs are hidden from the pending bucket; the original observations remain available via timeline/search for audit. This is the main surface where live `task_message` items show up: expired unread messages are hidden, read/replied messages stop triggering attention, and blocking messages remain prominent until read, replied, retracted, or expired. Use `task_messages` for a focused message-only inbox. Review compact IDs first, then fetch full bodies via `get_observations` only for the entries you need.
 
 ```json
 {
@@ -669,7 +669,9 @@ Compact post-`hivemind_context` attention check for live pending handoffs, unrea
     "agent": "claude",
     "repo_roots": ["/abs/repo-a", "/abs/repo-b"],
     "recent_claim_window_minutes": 30,
-    "recent_claim_limit": 20
+    "recent_claim_limit": 20,
+    "file_heat_half_life_minutes": 30,
+    "file_heat_limit": 10
   }
 }
 ```
@@ -678,10 +680,10 @@ Example workflow:
 
 1. Call `hivemind_context` for active lanes plus compact memory hits.
 2. Call `attention_inbox` with your `session_id`, `agent`, and repo scope.
-3. Review compact item IDs for handoffs, unread messages, blockers, stalled lanes, and claims.
+3. Review compact item IDs for handoffs, unread messages, blockers, stalled lanes, claims, and hot files.
 4. Call `get_observations` only for the selected IDs that need full bodies.
 
-Either `repo_root` or `repo_roots` scopes the inbox. `task_ids` can narrow further. Returns a structured payload with attention buckets; each entry carries the IDs to hydrate on demand.
+Either `repo_root` or `repo_roots` scopes the inbox. `task_ids` can narrow further. `file_heat` is computed at read time from observations and active claims with `fileHeatHalfLifeMinutes` decay, so stale activity fades without a cleanup job. Returns a structured payload with attention buckets; each entry carries the IDs to hydrate on demand.
 
 ## `task_propose`
 

@@ -11,6 +11,8 @@ export type {
   ClaimCoverageStats,
   CoordinationActivity,
   EditsWithoutClaimsRow,
+  FileHeatOptions,
+  FileHeatRow,
   KindCount,
   SessionsEndedWithoutHandoffRow,
   ToolCallRow,
