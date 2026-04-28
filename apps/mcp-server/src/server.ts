@@ -16,6 +16,7 @@ import * as planValidate from './tools/plan-validate.js';
 import * as plan from './tools/plan.js';
 import * as profile from './tools/profile.js';
 import * as proposal from './tools/proposal.js';
+import * as readyQueue from './tools/ready-queue.js';
 import * as recall from './tools/recall.js';
 import * as relay from './tools/relay.js';
 import * as search from './tools/search.js';
@@ -81,6 +82,7 @@ export function buildServer(store: MemoryStore, settings: Settings): McpServer {
   relay.register(server, ctx);
   plan.register(server, ctx);
   planValidate.register(server, ctx);
+  readyQueue.register(server, ctx);
   recall.register(server, ctx);
   suggest.register(server, ctx);
 

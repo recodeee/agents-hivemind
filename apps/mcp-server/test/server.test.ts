@@ -89,6 +89,7 @@ describe('MCP server', () => {
       'task_plan_validate',
       'task_post',
       'task_propose',
+      'task_ready_for_agent',
       'task_reinforce',
       'task_relay',
       'task_suggest_approach',
