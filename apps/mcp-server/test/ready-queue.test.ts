@@ -510,10 +510,7 @@ describe('task_ready_for_agent', () => {
     });
 
     expect(result.total_available).toBe(1);
-    expect(result.ready.map((entry) => entry.title)).toEqual([
-      'Continue API',
-      'New UI signal',
-    ]);
+    expect(result.ready.map((entry) => entry.title)).toEqual(['Continue API', 'New UI signal']);
     expect(result.ready[0]).toMatchObject({
       title: 'Continue API',
       reason: 'continue_current_task',
@@ -564,10 +561,7 @@ describe('task_ready_for_agent', () => {
       limit: 10,
     });
 
-    expect(result.ready.map((entry) => entry.title)).toEqual([
-      'Urgent UI signal',
-      'Continue API',
-    ]);
+    expect(result.ready.map((entry) => entry.title)).toEqual(['Urgent UI signal', 'Continue API']);
     expect(result.ready[0]).toMatchObject({
       title: 'Urgent UI signal',
       reason: 'urgent_override',

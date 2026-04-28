@@ -20,6 +20,6 @@
 
 ## 4. Completion
 
-- [ ] Run focused tests and spec validation.
+- [x] Run focused tests and spec validation.
 - [ ] Commit, push, PR, merge.
 - [ ] Record final `MERGED` evidence and sandbox cleanup.

@@ -80,21 +80,20 @@ export function register(server: McpServer, ctx: ToolContext): void {
           .listTasks(2000)
           .map((t) => [t.id, { created_at: t.created_at, created_by: t.created_by }]),
       );
-      const available = plans
-        .flatMap((plan) =>
-          plan.next_available.map((subtask) =>
-            rankSubtask(store, {
-              plan_slug: plan.plan_slug,
-              subtask,
-              session_id,
-              profile,
-              parent_plan_created_by: tasksById.get(plan.spec_task_id)?.created_by ?? null,
-              created_at: tasksById.get(subtask.task_id)?.created_at ?? plan.created_at,
-              reason: 'ready_high_score',
-              current_claim: false,
-            }),
-          ),
-        );
+      const available = plans.flatMap((plan) =>
+        plan.next_available.map((subtask) =>
+          rankSubtask(store, {
+            plan_slug: plan.plan_slug,
+            subtask,
+            session_id,
+            profile,
+            parent_plan_created_by: tasksById.get(plan.spec_task_id)?.created_by ?? null,
+            created_at: tasksById.get(subtask.task_id)?.created_at ?? plan.created_at,
+            reason: 'ready_high_score',
+            current_claim: false,
+          }),
+        ),
+      );
       const currentClaims = plans.flatMap((plan) =>
         plan.subtasks
           .filter(
@@ -129,7 +128,15 @@ export function register(server: McpServer, ctx: ToolContext): void {
       return jsonReply({
         ready: ranked
           .slice(0, limit ?? DEFAULT_LIMIT)
-          .map(({ created_at: _createdAt, task_id: _taskId, claim_ts: _claimTs, current_claim: _currentClaim, ...entry }) => entry),
+          .map(
+            ({
+              created_at: _createdAt,
+              task_id: _taskId,
+              claim_ts: _claimTs,
+              current_claim: _currentClaim,
+              ...entry
+            }) => entry,
+          ),
         total_available: available.length,
       });
     },
@@ -164,7 +171,7 @@ function rankSubtask(
     subtask_index: args.subtask.subtask_index,
     wave_index: args.subtask.wave_index,
     wave_name: args.subtask.wave_name,
-    blocked_by_count: args.subtask.blocked_by_count,
+    blocked_by_count: args.subtask.depends_on.length,
     title: args.subtask.title,
     capability_hint: args.subtask.capability_hint,
     file_scope: args.subtask.file_scope,
@@ -197,7 +204,8 @@ function rankForSelection(
   }
 
   const switchMargin =
-    activeCurrent.claim_ts !== null && Date.now() - activeCurrent.claim_ts < RECENT_CLAIM_COOLDOWN_MS
+    activeCurrent.claim_ts !== null &&
+    Date.now() - activeCurrent.claim_ts < RECENT_CLAIM_COOLDOWN_MS
       ? CURRENT_TASK_SWITCH_MARGIN + RECENT_CLAIM_COOLDOWN_MARGIN
       : CURRENT_TASK_SWITCH_MARGIN;
   const highScoreThreshold = activeCurrent.fit_score + switchMargin;
