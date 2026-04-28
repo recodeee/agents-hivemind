@@ -14,6 +14,7 @@ describe('Colony CLI program', () => {
       'mcp',
       'note',
       'observe',
+      'plan',
       'queen',
       'reindex',
       'search',
@@ -71,6 +72,8 @@ describe('Colony CLI program', () => {
                                             the memory timeline
         observe [options]                   Live dashboard of collaboration state.
                                             Run in a spare terminal during a session.
+        plan                                Create and operate OpenSpec-like Colony
+                                            plan workspaces
         debrief [options]                   End-of-day collaboration post-mortem over
                                             structured DB evidence.
         inbox [options]                     Compact list of attention items for a
@@ -138,5 +141,17 @@ describe('Colony CLI program', () => {
     expect(sweep).toBeDefined();
     expect(sweep?.options.find((o) => o.long === '--dry-run')).toBeDefined();
     expect(sweep?.options.find((o) => o.long === '--auto-message')).toBeDefined();
+  });
+
+  it('exposes plan create/status/publish/close subcommands', () => {
+    const program = createProgram();
+    const plan = program.commands.find((c) => c.name() === 'plan');
+    expect(plan).toBeDefined();
+    expect(plan?.commands.map((c) => c.name()).sort()).toEqual([
+      'close',
+      'create',
+      'publish',
+      'status',
+    ]);
   });
 });

@@ -24,3 +24,28 @@ export {
 } from './backprop.js';
 export { resolveTaskContext, type ResolvedContext } from './context.js';
 export { SPEC_OBSERVATION_KINDS, SPEC_TASK_METADATA_KEY } from './constants.js';
+export {
+  PLAN_WORKSPACE_DIR,
+  PLAN_WORKSPACE_ROLES,
+  createPlanWorkspace,
+  listPlanWorkspaces,
+  planTaskCounts,
+  planWorkspacePath,
+  readPlanWorkspace,
+  syncPlanWorkspaceTasks,
+  type CreatePlanWorkspaceInput,
+  type PlanCapabilityHint,
+  type PlanTaskStatus,
+  type PlanWorkspaceManifest,
+  type PlanWorkspaceRole,
+  type PlanWorkspaceSummary,
+  type PlanWorkspaceTask,
+  type PlanWorkspaceTaskInput,
+} from './plan-workspace.js';
+export {
+  PublishPlanError,
+  publishPlan,
+  type PublishPlanInput,
+  type PublishPlanResult,
+  type PublishPlanSubtaskInput,
+} from './plan-publish.js';

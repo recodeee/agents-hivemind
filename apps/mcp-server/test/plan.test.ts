@@ -17,6 +17,7 @@ interface PublishResult {
   plan_slug: string;
   spec_task_id: number;
   spec_change_path: string;
+  plan_workspace_path: string;
   subtasks: Array<{ subtask_index: number; branch: string; task_id: number; title: string }>;
 }
 
@@ -149,6 +150,11 @@ describe('task_plan_publish', () => {
     expect(result.subtasks[0]?.branch).toBe('spec/add-widget-page/sub-0');
     expect(result.subtasks[1]?.branch).toBe('spec/add-widget-page/sub-1');
     expect(result.spec_change_path).toContain('openspec/changes/add-widget-page/CHANGE.md');
+    expect(result.plan_workspace_path).toContain('openspec/plans/add-widget-page');
+    expect(existsSync(join(repoRoot, 'openspec/plans/add-widget-page/plan.md'))).toBe(true);
+    expect(
+      readFileSync(join(repoRoot, 'openspec/plans/add-widget-page/tasks.md'), 'utf8'),
+    ).toContain('Build widget API');
   });
 
   it('rejects overlapping file scopes between independent sub-tasks', async () => {
@@ -352,6 +358,9 @@ describe('task_plan_complete_subtask', () => {
     const plans = await call<PlanRollup[]>('task_plan_list', {});
     expect(plans[0]?.next_available.map((s) => s.subtask_index)).toEqual([1]);
     expect(plans[0]?.subtask_counts.completed).toBe(1);
+    expect(
+      readFileSync(join(repoRoot, 'openspec/plans/add-widget-page/checkpoints.md'), 'utf8'),
+    ).toContain('- [x] sub-0 Build widget API [completed] (codex)');
   });
 
   it('rejects completion when called by a non-owning session', async () => {

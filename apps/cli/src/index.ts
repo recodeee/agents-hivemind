@@ -16,6 +16,7 @@ import { registerLifecycleCommands } from './commands/lifecycle.js';
 import { registerMcpCommand } from './commands/mcp.js';
 import { registerNoteCommand } from './commands/note.js';
 import { registerObserveCommand } from './commands/observe.js';
+import { registerPlanCommand } from './commands/plan.js';
 import { registerQueenCommand } from './commands/queen.js';
 import { registerReindexCommand } from './commands/reindex.js';
 import { registerSearchCommand } from './commands/search.js';
@@ -49,6 +50,7 @@ export function createProgram(): Command {
   registerBackfillCommand(program);
   registerNoteCommand(program);
   registerObserveCommand(program);
+  registerPlanCommand(program);
   registerDebriefCommand(program);
   registerInboxCommand(program);
   registerForagingCommand(program);

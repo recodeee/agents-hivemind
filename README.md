@@ -70,6 +70,10 @@ Colony requires Node 20 or newer. The CLI package is `@imdeadpool/colony-cli`; t
 | `colony search "<query>"` | Search prior observations and session memory. |
 | `colony timeline <session-id>` | Inspect one session chronologically. |
 | `colony observe` | Watch task threads and coordination state. |
+| `colony plan create <slug>` | Create an OpenSpec-like local plan workspace under `openspec/plans/<slug>`. |
+| `colony plan status [slug]` | Inspect local plan tasks, checkpoints, and rollup counts. |
+| `colony plan publish <slug>` | Publish a local plan workspace into Colony task threads and `openspec/changes`. |
+| `colony plan close <slug>` | Archive a completed published plan change. |
 | `colony viewer` | Open the local read-only web viewer. |
 | `colony debrief` | Summarize recent work and surface follow-ups. |
 | `colony config show` | Print settings and documented defaults. |
@@ -257,6 +261,20 @@ bash scripts/e2e-publish.sh
 - MCP transport is stdio-based, so an IDE/runtime restart can close the server process; the next installed tool call should reconnect.
 - The viewer is useful for inspection, but the primary workflow is still terminal and agent driven.
 - Spec-driven development and queen planning are active lanes. They use the existing Colony substrate instead of parallel infrastructure, but some niceties are still intentionally thin while the core loop proves itself.
+
+## Demo App
+
+`apps/hivemind-demo` is a private pedagogical artifact. It models a deterministic multi-agent loop in-process so coordination ideas can be tested without launching real IDE agents.
+
+## Roadmap
+
+- Finish release hygiene for the renamed `colony` package.
+- Expand task-thread views in the local viewer.
+- Tune pheromone half-life and proposal promotion thresholds from real work.
+- Add richer routing profiles for handoffs between Claude, Codex, Cursor, and other agents.
+- Improve debrief output so useful follow-ups become proposals instead of chat-only notes.
+- Harden migration from older installs into `~/.colony` and the `colony` MCP namespace.
+- Expand `colony plan` from local planning workspaces into richer viewer and handoff flows.
 
 ## Contributing
 

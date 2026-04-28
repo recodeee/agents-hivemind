@@ -8,7 +8,17 @@ import {
   listPlans,
   readSubtaskByBranch,
 } from '@colony/core';
-import { type Spec, SpecRepository, SyncEngine, parseSpec, serializeSpec } from '@colony/spec';
+import {
+  type PlanWorkspaceTaskInput,
+  PublishPlanError,
+  type Spec,
+  SpecRepository,
+  SyncEngine,
+  parseSpec,
+  publishPlan,
+  serializeSpec,
+  syncPlanWorkspaceTasks,
+} from '@colony/spec';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { ToolContext } from './context.js';
@@ -24,8 +34,6 @@ const SubtaskInputSchema = z.object({
     .enum(['ui_work', 'api_work', 'test_work', 'infra_work', 'doc_work'])
     .optional(),
 });
-
-type SubtaskInput = z.infer<typeof SubtaskInputSchema>;
 
 interface CodedError extends Error {
   __code?: string;
@@ -71,97 +79,26 @@ export function register(server: McpServer, ctx: ToolContext): void {
         ),
     },
     async (args) => {
-      for (let i = 0; i < args.subtasks.length; i++) {
-        const subtask = args.subtasks[i];
-        if (!subtask) continue;
-        for (const dep of subtask.depends_on ?? []) {
-          if (dep >= i) {
-            return mcpErrorResponse(
-              'PLAN_INVALID_DEPENDENCY',
-              `sub-task ${i} depends on ${dep}; dependencies must point to earlier indices (no cycles)`,
-            );
-          }
-        }
-      }
-
-      const overlap = detectScopeOverlap(args.subtasks);
-      if (overlap) {
-        return mcpErrorResponse(
-          'PLAN_SCOPE_OVERLAP',
-          `sub-tasks ${overlap.a} and ${overlap.b} share files [${overlap.shared.join(', ')}] without a depends_on edge between them`,
-        );
-      }
-
-      const repo = new SpecRepository({ repoRoot: args.repo_root, store });
-      const proposal = renderProposal(args);
-      const opened = repo.openChange({
-        slug: args.slug,
-        session_id: args.session_id,
-        agent: args.agent,
-        proposal,
-      });
-
-      // Stamp plan-level config on the parent spec task. Read back at
-      // completion time to decide whether to auto-archive. A separate
-      // observation (rather than encoding the flag on every sub-task)
-      // means lifecycle policy lives in one place and can grow more
-      // fields later without touching sub-task metadata.
-      store.addObservation({
-        session_id: args.session_id,
-        task_id: opened.task_id,
-        kind: 'plan-config',
-        content: `plan ${args.slug} config: auto_archive=${args.auto_archive ?? false}`,
-        metadata: {
-          plan_slug: args.slug,
-          auto_archive: args.auto_archive ?? false,
-        },
-      });
-
-      const subtaskThreads = args.subtasks.map((subtask, index) => {
-        const branch = `spec/${args.slug}/sub-${index}`;
-        const thread = TaskThread.open(store, {
+      try {
+        const result = publishPlan({
+          store,
           repo_root: args.repo_root,
-          branch,
+          slug: args.slug,
           session_id: args.session_id,
+          agent: args.agent,
+          title: args.title,
+          problem: args.problem,
+          acceptance_criteria: args.acceptance_criteria,
+          subtasks: args.subtasks,
+          auto_archive: args.auto_archive ?? false,
         });
-        store.addObservation({
-          session_id: args.session_id,
-          task_id: thread.task_id,
-          kind: 'plan-subtask',
-          content: `${subtask.title}\n\n${subtask.description}`,
-          metadata: {
-            parent_plan_slug: args.slug,
-            parent_plan_title: args.title,
-            parent_spec_task_id: opened.task_id,
-            subtask_index: index,
-            file_scope: subtask.file_scope,
-            depends_on: subtask.depends_on ?? [],
-            spec_row_id: subtask.spec_row_id ?? null,
-            capability_hint: subtask.capability_hint ?? null,
-            status: 'available',
-          },
-        });
-        return {
-          subtask_index: index,
-          branch,
-          task_id: thread.task_id,
-          title: subtask.title,
-        };
-      });
-
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              plan_slug: args.slug,
-              spec_task_id: opened.task_id,
-              spec_change_path: opened.path,
-              subtasks: subtaskThreads,
-            }),
-          },
-        ],
-      };
+        return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      } catch (err) {
+        if (err instanceof PublishPlanError) {
+          return mcpErrorResponse(err.code, err.message);
+        }
+        throw err;
+      }
     },
   );
 
@@ -350,6 +287,22 @@ export function register(server: McpServer, ctx: ToolContext): void {
           });
         }
       });
+
+      const parentTask = store.storage
+        .listTasks(2000)
+        .find((task) => task.id === located.info.parent_spec_task_id);
+      if (parentTask) {
+        syncPlanWorkspaceTasks({
+          repoRoot: parentTask.repo_root,
+          slug: args.plan_slug,
+          tasks: readPlanSubtasks(store, args.plan_slug).map((subtask) =>
+            subtaskInfoToWorkspaceTask(subtask, {
+              completedSubtaskIndex: args.subtask_index,
+              summary: args.summary,
+            }),
+          ),
+        });
+      }
 
       // Auto-archive: when this completion was the last outstanding sub-task
       // and the plan opted in at publish time, three-way-merge the change
@@ -616,52 +569,6 @@ function readPlanConfig(
   }
 }
 
-function detectScopeOverlap(
-  subtasks: SubtaskInput[],
-): { a: number; b: number; shared: string[] } | null {
-  for (let i = 0; i < subtasks.length; i++) {
-    for (let j = i + 1; j < subtasks.length; j++) {
-      const a = subtasks[i];
-      const b = subtasks[j];
-      if (!a || !b) continue;
-      if (isDependentChain(subtasks, i, j) || isDependentChain(subtasks, j, i)) continue;
-      const shared = a.file_scope.filter((f) => b.file_scope.includes(f));
-      if (shared.length > 0) return { a: i, b: j, shared };
-    }
-  }
-  return null;
-}
-
-function isDependentChain(subtasks: SubtaskInput[], from: number, to: number): boolean {
-  const visited = new Set<number>();
-  const stack = [from];
-  while (stack.length > 0) {
-    const cur = stack.pop();
-    if (cur === undefined || visited.has(cur)) continue;
-    visited.add(cur);
-    const deps = subtasks[cur]?.depends_on ?? [];
-    if (deps.includes(to)) return true;
-    stack.push(...deps);
-  }
-  return false;
-}
-
-function renderProposal(args: {
-  title: string;
-  problem: string;
-  acceptance_criteria: string[];
-  subtasks: SubtaskInput[];
-}): string {
-  const subtaskBlocks = args.subtasks
-    .map((s, i) => {
-      const deps = s.depends_on?.length ? ` (depends on: ${s.depends_on.join(', ')})` : '';
-      return `### Sub-task ${i}: ${s.title}${deps}\n\n${s.description}\n\nFile scope: ${s.file_scope.join(', ')}`;
-    })
-    .join('\n\n');
-  const criteria = args.acceptance_criteria.map((c) => `- ${c}`).join('\n');
-  return `# ${args.title}\n\n## Problem\n\n${args.problem}\n\n## Acceptance criteria\n\n${criteria}\n\n## Sub-tasks\n\n${subtaskBlocks}\n`;
-}
-
 function parseRowMeta(raw: string | null): Record<string, unknown> {
   if (!raw) return {};
   try {
@@ -670,4 +577,48 @@ function parseRowMeta(raw: string | null): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function readPlanSubtasks(store: MemoryStore, planSlug: string): SubtaskInfo[] {
+  return store.storage
+    .listTasks(2000)
+    .filter((t) => {
+      const m = t.branch.match(/^spec\/([a-z0-9-]+)\/sub-(\d+)$/);
+      return Boolean(m && m[1] === planSlug);
+    })
+    .map((t) => readSubtaskByBranch(store, t.branch))
+    .filter((s): s is SubtaskLookup => s !== null)
+    .map((s) => s.info)
+    .sort((a, b) => a.subtask_index - b.subtask_index);
+}
+
+function subtaskInfoToWorkspaceTask(
+  subtask: SubtaskInfo,
+  completion?: { completedSubtaskIndex: number; summary: string },
+): PlanWorkspaceTaskInput {
+  return {
+    title: subtask.title,
+    description: subtask.description,
+    file_scope: subtask.file_scope,
+    depends_on: subtask.depends_on,
+    spec_row_id: subtask.spec_row_id,
+    capability_hint: isPlanCapabilityHint(subtask.capability_hint) ? subtask.capability_hint : null,
+    status: subtask.status,
+    claimed_by_session_id: subtask.claimed_by_session_id,
+    claimed_by_agent: subtask.claimed_by_agent,
+    completed_summary:
+      subtask.subtask_index === completion?.completedSubtaskIndex ? completion.summary : null,
+  };
+}
+
+function isPlanCapabilityHint(
+  value: string | null,
+): value is NonNullable<PlanWorkspaceTaskInput['capability_hint']> {
+  return (
+    value === 'ui_work' ||
+    value === 'api_work' ||
+    value === 'test_work' ||
+    value === 'infra_work' ||
+    value === 'doc_work'
+  );
 }
