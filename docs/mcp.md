@@ -55,6 +55,12 @@ The OMX-Colony bridge contract lives in `openspec/specs/omx-colony-bridge/spec.m
 OMX runs agents, Colony coordinates agents, OMX displays Colony state, and
 Colony consumes OMX telemetry. Use Colony first for coordination; use OMX state
 or notepad only when Colony is unavailable or missing the required surface.
+For current working state, call `task_note_working` before any OMX notepad
+write. A successful Colony working note must not duplicate the full content into
+`.omx/notepad.md`; only `bridge.writeOmxNotepadPointer=true` may append the tiny
+pointer fields `branch`, `task`, `blocker`, `next`, `evidence`, and
+`colony_observation_id`. If no active task matches, callers may opt into
+`allow_omx_notepad_fallback=true` to write that same tiny pointer.
 
 ## `search`
 
@@ -630,9 +636,23 @@ Filtered when one session participates in multiple active tasks:
 
 `repo_root` and `branch` are optional filters. The tool scans active task participation for the session, posts `kind:"note"` when exactly one task matches, and returns `{ observation_id, id, task_id }`. If multiple tasks match, it returns `AMBIGUOUS_ACTIVE_TASK` plus compact candidates (`task_id`, `repo_root`, `branch`, `status`, `updated_at`, `agent`) instead of guessing. If none match, it returns `ACTIVE_TASK_NOT_FOUND`.
 
+`task_note_working` is the first write path for working state. On success it
+keeps the full note in Colony and skips `.omx/notepad.md` unless
+`bridge.writeOmxNotepadPointer=true`. When the pointer bridge is enabled, OMX
+receives only:
+
+```text
+branch=<branch>; task=<task>; blocker=<blocker>; next=<next>; evidence=<path|command|PR|spec>; colony_observation_id=<id>
+```
+
+When no active Colony task matches, pass `allow_omx_notepad_fallback=true` only
+if a transition-era OMX resume pointer is still needed. Ambiguous task
+resolution never writes the fallback pointer; choose a task by `repo_root` and
+`branch` first.
+
 ## `task_post` lifecycle
 
-- Working-state shortcut: write working note, save current state, remember progress, or log what I am doing by posting kind:'note'.
+- Current working state starts with `task_note_working`; use `task_post kind:'note'` when the task id is already known and the note is not the current working-state handoff.
 - Routing note: use task_message for directed agent-to-agent coordination; keep task_post for shared kind:'note'|'blocker'|'question'|'answer'|'decision' thread state.
 - Use specific tools for claim / hand_off / accept.
 - Fallback when task_relay is unavailable in your client tool surface: post a note or blocker containing reason, one_line, base_branch, fetch_files_at if known, touched files, and whether the named source branch/worktree is missing.

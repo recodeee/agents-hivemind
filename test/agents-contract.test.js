@@ -64,6 +64,21 @@ describe('agent instruction contract', () => {
       'AGENTS.md must keep OMX as fallback coordination state',
     );
     assert.match(
+      AGENTS_TEXT,
+      /Use `task_note_working` first for current working state/i,
+      'AGENTS.md must make task_note_working the first working-state write path',
+    );
+    assert.match(
+      AGENTS_TEXT,
+      /bridge\.writeOmxNotepadPointer=true/,
+      'AGENTS.md must document the optional tiny OMX pointer bridge',
+    );
+    assert.match(
+      AGENTS_TEXT,
+      /colony_observation_id=<id>/,
+      'AGENTS.md must include the Colony observation id in the pointer shape',
+    );
+    assert.match(
       AGENTS_NORMALIZED,
       /do not embed stale memory dumps/,
       'AGENTS.md must forbid stale memory dumps',
@@ -97,6 +112,9 @@ describe('agent instruction contract', () => {
     for (const required of [
       /use colony first for coordination/,
       /use omx state or notepad only when colony is unavailable or missing the required surface/,
+      /call `task_note_working` before any omx notepad write/,
+      /a successful colony working note must not duplicate the full content/,
+      /allow_omx_notepad_fallback=true/,
     ]) {
       assert.match(DOCS_MCP_NORMALIZED, required);
     }

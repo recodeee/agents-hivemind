@@ -78,7 +78,7 @@ Rules:
 - Use `task_list` only for browsing/debugging. Do not use `task_list` as the normal work picker.
 - If an agent reaches for `task_list` repeatedly while choosing work, stop and call `task_ready_for_agent` instead. `task_list` is an inventory tool, not a scheduler.
 - Before editing files on an active task, call `task_claim_file` for each touched file.
-- Use `task_post` for task-thread notes, decisions, blockers, and working-state updates.
+- Use `task_note_working` first for current working state; use `task_post` for task-thread notes, decisions, blockers, questions, and answers.
 - Use `task_message` / `task_messages` for directed agent-to-agent communication.
 - Use `get_observations` only after compact Colony tools return IDs worth hydrating.
 
@@ -96,10 +96,12 @@ Colony is preferred over generic notepad state.
 
 A working-state note should be task-scoped, searchable, and useful to another agent resuming the lane.
 
-When saving progress, use a task-scoped Colony note when possible:
+When saving progress, try `task_note_working` first. It resolves the active task
+from `session_id` plus optional `repo_root` / `branch` and stores the full
+working note in Colony.
 
 ```text
-task_post kind=note
+task_note_working
 content="branch=<branch>; task=<task>; blocker=<blocker>; next=<next>; evidence=<path|command|PR|spec>"
 ```
 
@@ -110,6 +112,19 @@ Use exactly these fields for handoff-style notes:
 - `blocker`
 - `next`
 - `evidence`
+
+If `task_note_working` succeeds, do not write the full content to
+`.omx/notepad.md`. If `bridge.writeOmxNotepadPointer=true`, the transition
+bridge may append only a tiny pointer:
+
+```text
+branch=<branch>; task=<task>; blocker=<blocker>; next=<next>; evidence=<path|command|PR|spec>; colony_observation_id=<id>
+```
+
+If `task_note_working` returns `ACTIVE_TASK_NOT_FOUND`, an agent may pass
+`allow_omx_notepad_fallback=true` to write that same tiny OMX pointer. If the
+task id is already known and the update is not current working state, use
+`task_post kind=note`.
 
 Do not store long proof dumps, stale narrative, or full logs in notepads. Put bulky proof in OpenSpec artifacts, PRs, or command output.
 
