@@ -1,4 +1,5 @@
 import {
+  type Embedder,
   type InboxMessage,
   type MemoryStore,
   ProposalSystem,
@@ -9,7 +10,72 @@ import {
 import { spawnNodeScript } from '@colony/process';
 import type { HookInput } from '../types.js';
 
-export async function sessionStart(store: MemoryStore, input: HookInput): Promise<string> {
+export interface SuggestionPrefaceDeps {
+  resolveEmbedder?: (store: MemoryStore) => Promise<Embedder | null>;
+  loadCore?: () => Promise<SuggestionCore | null>;
+}
+
+interface SuggestionThresholds {
+  SIMILARITY_FLOOR: number;
+  PREFACE_INCLUSION_THRESHOLD: number;
+  PREFACE_FILE_CONFIDENCE_THRESHOLD: number;
+  MIN_SIMILAR_TASKS_FOR_SUGGESTION: number;
+}
+
+interface SimilarTask {
+  task_id: number;
+  similarity: number;
+  branch: string;
+  repo_root: string;
+  status: string;
+  observation_count: number;
+}
+
+interface SuggestionFileRanking {
+  file_path: string;
+  confidence: number;
+}
+
+interface SuggestionPattern {
+  description: string;
+}
+
+interface SuggestionResolutionHints {
+  median_elapsed_minutes: number;
+  median_handoff_count: number;
+}
+
+interface SuggestionPayload {
+  similar_tasks: SimilarTask[];
+  first_files_likely_claimed: SuggestionFileRanking[];
+  patterns_to_watch: SuggestionPattern[];
+  resolution_hints: SuggestionResolutionHints | null;
+  insufficient_data_reason: string | null;
+}
+
+interface SuggestionCore {
+  SUGGESTION_THRESHOLDS: SuggestionThresholds;
+  findSimilarTasks: (
+    store: MemoryStore,
+    embedder: Embedder,
+    query_embedding: Float32Array,
+    options?: {
+      repo_root?: string;
+      min_similarity?: number;
+      limit?: number;
+      exclude_task_ids?: number[];
+    },
+  ) => SimilarTask[];
+  buildSuggestionPayload: (store: MemoryStore, similar_tasks: SimilarTask[]) => SuggestionPayload;
+}
+
+let cachedSuggestionEmbedder: Embedder | null | undefined;
+
+export async function sessionStart(
+  store: MemoryStore,
+  input: HookInput,
+  deps: SuggestionPrefaceDeps = {},
+): Promise<string> {
   // Idempotent: Claude Code re-fires SessionStart on resume/clear/compact with
   // the same session_id. We must not blow up on the duplicate.
   store.startSession({
@@ -22,10 +88,13 @@ export async function sessionStart(store: MemoryStore, input: HookInput): Promis
 
   const priorPreface = buildPriorPreface(store, input);
   const taskPreface = buildTaskPreface(store, input);
+  const suggestionPreface = await buildSuggestionPreface(store, input, deps);
   const proposalPreface = buildProposalPreface(store, input);
   const foragingPreface = buildForagingPreface(store, input);
 
-  return [priorPreface, taskPreface, proposalPreface, foragingPreface].filter(Boolean).join('\n\n');
+  return [priorPreface, taskPreface, suggestionPreface, proposalPreface, foragingPreface]
+    .filter(Boolean)
+    .join('\n\n');
 }
 
 /**
@@ -193,6 +262,221 @@ export function buildTaskPreface(
     );
   }
   return lines.join('\n');
+}
+
+export async function buildSuggestionPreface(
+  store: MemoryStore,
+  input: Pick<HookInput, 'session_id' | 'cwd' | 'ide' | 'prompt' | 'metadata'>,
+  deps: SuggestionPrefaceDeps = {},
+): Promise<string> {
+  const cwd = input.cwd;
+  if (!cwd) return '';
+  const detected = detectRepoBranch(cwd);
+  if (!detected) return '';
+
+  const agent = deriveAgent(input.ide, detected.branch);
+  const thread = TaskThread.open(store, {
+    repo_root: detected.repo_root,
+    branch: detected.branch,
+    session_id: input.session_id,
+  });
+  thread.join(input.session_id, agent);
+
+  const core = await (deps.loadCore ?? loadSuggestionCore)();
+  if (!core) return '';
+
+  const embedder = await (deps.resolveEmbedder ?? resolveSuggestionEmbedder)(store);
+  if (!embedder) return '';
+
+  let queryEmbedding: Float32Array;
+  try {
+    queryEmbedding = await embedder.embed(suggestionQuery(input, detected.branch));
+  } catch {
+    return '';
+  }
+
+  const thresholds = core.SUGGESTION_THRESHOLDS;
+  let similarTasks: SimilarTask[];
+  try {
+    similarTasks = core.findSimilarTasks(store, embedder, queryEmbedding, {
+      repo_root: detected.repo_root,
+      exclude_task_ids: [thread.task_id],
+      min_similarity: thresholds.SIMILARITY_FLOOR,
+    });
+  } catch {
+    return '';
+  }
+  const top = similarTasks[0];
+  if (!top) return '';
+
+  let payload: unknown;
+  try {
+    payload = core.buildSuggestionPayload(store, similarTasks);
+  } catch {
+    return '';
+  }
+  if (!isSuggestionPayload(payload)) return '';
+
+  if (
+    top.similarity >= thresholds.SIMILARITY_FLOOR &&
+    top.similarity <= thresholds.PREFACE_INCLUSION_THRESHOLD
+  ) {
+    logSuggestionDebrief(store, {
+      task_id: thread.task_id,
+      session_id: input.session_id,
+      query: suggestionQuery(input, detected.branch),
+      payload,
+      top_similarity: top.similarity,
+      thresholds,
+    });
+    return '';
+  }
+
+  const confidentFiles = payload.first_files_likely_claimed
+    .filter((f) => f.confidence > thresholds.PREFACE_FILE_CONFIDENCE_THRESHOLD)
+    .slice(0, 3);
+  if (
+    payload.insufficient_data_reason ||
+    payload.similar_tasks.length < thresholds.MIN_SIMILAR_TASKS_FOR_SUGGESTION ||
+    top.similarity <= thresholds.PREFACE_INCLUSION_THRESHOLD ||
+    confidentFiles.length === 0
+  ) {
+    return '';
+  }
+
+  return renderSuggestionPreface(payload, confidentFiles);
+}
+
+function isSuggestionPayload(payload: unknown): payload is SuggestionPayload {
+  if (!payload || typeof payload !== 'object') return false;
+  const maybe = payload as Partial<SuggestionPayload>;
+  return (
+    Array.isArray(maybe.similar_tasks) &&
+    Array.isArray(maybe.first_files_likely_claimed) &&
+    Array.isArray(maybe.patterns_to_watch)
+  );
+}
+
+function renderSuggestionPreface(
+  payload: SuggestionPayload,
+  confidentFiles: SuggestionFileRanking[],
+): string {
+  const lines = [
+    `Suggested approach (based on ${payload.similar_tasks.length} similar past tasks):`,
+  ];
+  lines.push(`  - Files agents typically claimed first: ${formatConfidentFiles(confidentFiles)}`);
+  if (payload.resolution_hints) {
+    lines.push(
+      `  - Median similar task completed in ${Math.round(
+        payload.resolution_hints.median_elapsed_minutes,
+      )}m with ${Math.round(payload.resolution_hints.median_handoff_count)} handoffs`,
+    );
+  } else {
+    lines.push('  - Median similar task completion metrics unavailable');
+  }
+  const pattern = payload.patterns_to_watch[0];
+  if (pattern?.description) {
+    lines.push(`  - Watch for: ${pattern.description}`);
+  }
+  lines.push('  - Run task_suggest_approach for the full pattern report.');
+  return lines.join('\n');
+}
+
+function formatConfidentFiles(files: SuggestionFileRanking[]): string {
+  return files.map((f) => `${f.file_path} (${f.confidence.toFixed(2)})`).join(', ');
+}
+
+function logSuggestionDebrief(
+  store: MemoryStore,
+  p: {
+    task_id: number;
+    session_id: string;
+    query: string;
+    payload: SuggestionPayload;
+    top_similarity: number;
+    thresholds: SuggestionThresholds;
+  },
+): void {
+  const alreadyLogged = store.storage
+    .taskObservationsByKind(p.task_id, 'suggestion-debrief', 50)
+    .some((o) => o.session_id === p.session_id);
+  if (alreadyLogged) return;
+
+  store.addObservation({
+    session_id: p.session_id,
+    task_id: p.task_id,
+    kind: 'suggestion-debrief',
+    content: `suggestion withheld from SessionStart preface: top similarity ${p.top_similarity.toFixed(
+      3,
+    )} below preface threshold ${p.thresholds.PREFACE_INCLUSION_THRESHOLD}`,
+    metadata: {
+      query: p.query,
+      top_similarity: p.top_similarity,
+      similarity_floor: p.thresholds.SIMILARITY_FLOOR,
+      preface_inclusion_threshold: p.thresholds.PREFACE_INCLUSION_THRESHOLD,
+      payload: p.payload,
+    },
+  });
+}
+
+function suggestionQuery(input: Pick<HookInput, 'prompt' | 'metadata'>, branch: string): string {
+  const metadata = input.metadata ?? {};
+  const candidates = [
+    input.prompt,
+    metadata.task_description,
+    metadata.taskDescription,
+    metadata.description,
+    metadata.title,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') continue;
+    const compact = candidate.replace(/\s+/g, ' ').trim();
+    if (compact) return compact;
+  }
+  return branch;
+}
+
+async function resolveSuggestionEmbedder(store: MemoryStore): Promise<Embedder | null> {
+  if (cachedSuggestionEmbedder !== undefined) return cachedSuggestionEmbedder;
+  try {
+    const embeddingPackage = '@colony/embedding' as string;
+    const embeddingModule = (await import(embeddingPackage)) as {
+      createEmbedder?: (
+        settings: MemoryStore['settings'],
+        opts?: { log?: (line: string) => void },
+      ) => Promise<Embedder | null>;
+    };
+    if (typeof embeddingModule.createEmbedder !== 'function') {
+      cachedSuggestionEmbedder = null;
+      return cachedSuggestionEmbedder;
+    }
+    cachedSuggestionEmbedder = await embeddingModule.createEmbedder(store.settings, {
+      log: () => {},
+    });
+  } catch {
+    cachedSuggestionEmbedder = null;
+  }
+  return cachedSuggestionEmbedder;
+}
+
+async function loadSuggestionCore(): Promise<SuggestionCore | null> {
+  try {
+    const core = (await import('@colony/core')) as Partial<SuggestionCore>;
+    if (
+      !core.SUGGESTION_THRESHOLDS ||
+      typeof core.findSimilarTasks !== 'function' ||
+      typeof core.buildSuggestionPayload !== 'function'
+    ) {
+      return null;
+    }
+    return {
+      SUGGESTION_THRESHOLDS: core.SUGGESTION_THRESHOLDS,
+      findSimilarTasks: core.findSimilarTasks,
+      buildSuggestionPayload: core.buildSuggestionPayload,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function appendMessagePreface(
