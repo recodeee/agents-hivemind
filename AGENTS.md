@@ -78,7 +78,7 @@ Rules:
 - Use `task_list` only for browsing/debugging. Do not use `task_list` as the normal work picker.
 - If an agent reaches for `task_list` repeatedly while choosing work, stop and call `task_ready_for_agent` instead. `task_list` is an inventory tool, not a scheduler.
 - Before editing files on an active task, call `task_claim_file` for each touched file.
-- Use `task_note_working` as the first write path for current working state.
+- Use `task_note_working` first for current working state.
 - Use `task_post` for task-thread notes, decisions, blockers, and explicit `task_id` updates.
 - Use `task_message` / `task_messages` for directed agent-to-agent communication.
 - Use `get_observations` only after compact Colony tools return IDs worth hydrating.
