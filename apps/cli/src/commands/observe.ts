@@ -11,118 +11,73 @@ import kleur from 'kleur';
  */
 const REFRESH_MS = 3000;
 
-/**
- * "Recent" window for the unclaimed-edits diagnostic. Five minutes
- * matches the conflict-warning window used by `UserPromptSubmit` —
- * keeping them aligned makes the mental math on both tools align.
- */
-const RECENT_WINDOW_MS = 5 * 60_000;
+const OBSERVATION_LIMIT = 50;
 
-function fmtAgo(ts: number): string {
-  const ms = Date.now() - ts;
-  if (ms < 60_000) return `${Math.round(ms / 1000)}s ago`;
-  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
-  return `${Math.round(ms / 3_600_000)}h ago`;
+interface RecentObservationRow {
+  id: number;
+  session_id: string;
+  kind: string;
+  content: string;
+  ts: number;
 }
 
-/**
- * Paint one frame. Extracted so the setInterval loop stays one line
- * and so the renderer is easy to invoke from a snapshot test. Exported
- * so the test in apps/cli/test/observe.test.ts can pin the dashboard
- * shape against metadata field renames or safeJson regressions —
- * the dashboard is the load-bearing diagnostic for proactive-claim
- * behaviour and shouldn't fail silently.
- */
 export function renderFrame(storage: Storage): string {
-  const lines: string[] = [];
-  const now = new Date().toISOString().slice(11, 19);
-  lines.push(`${kleur.bold('colony observe')}  ${kleur.dim(now)}`);
-  lines.push(kleur.dim('─'.repeat(60)));
-
-  const tasks = storage.listTasks(5);
-  if (tasks.length === 0) {
-    lines.push(kleur.dim('No tasks yet. Start a session in a git repo to auto-create one.'));
-    return lines.join('\n');
-  }
-
-  for (const task of tasks) {
-    lines.push('');
-    lines.push(
-      `${kleur.cyan(`task #${task.id}`)} ${kleur.bold(task.branch)}  ${kleur.dim(task.repo_root)}`,
-    );
-
-    const participants = storage.listParticipants(task.id);
-    const participantLine = participants
-      .map((p) => `${p.agent} (${fmtAgo(p.joined_at)})`)
-      .join(', ');
-    lines.push(`  ${kleur.dim('participants:')} ${participantLine || 'none'}`);
-
-    const claims = storage.recentClaims(task.id, Date.now() - RECENT_WINDOW_MS);
-    if (claims.length > 0) {
-      lines.push(`  ${kleur.dim('claims:')}`);
-      for (const c of claims) {
-        lines.push(
-          `    ${c.file_path.padEnd(40)} ${kleur.yellow(c.session_id.padEnd(10))} ${fmtAgo(c.claimed_at)}`,
-        );
-      }
-    }
-
-    const pending = storage.pendingHandoffs(task.id);
-    if (pending.length > 0) {
-      lines.push(`  ${kleur.dim('pending handoffs:')}`);
-      for (const h of pending) {
-        const meta = safeJson(h.metadata) as {
-          from_agent?: string;
-          to_agent?: string;
-          summary?: string;
-        };
-        const summary = (meta.summary ?? '').slice(0, 50);
-        lines.push(`    #${h.id} ${meta.from_agent ?? '?'} → ${meta.to_agent ?? '?'}: ${summary}`);
-      }
-    }
-
-    const recent = storage.taskTimeline(task.id, 6);
-    if (recent.length > 0) {
-      lines.push(`  ${kleur.dim('recent:')}`);
-      // taskTimeline is DESC — reverse so the most recent line is last,
-      // matching "read top-down as a chronological stream".
-      for (const r of [...recent].reverse()) {
-        const ts = new Date(r.ts).toISOString().slice(11, 19);
-        const kindColor = r.kind === 'observer-note' ? kleur.magenta : kleur.cyan;
-        lines.push(
-          `    ${kleur.dim(ts)}  ${kindColor(r.kind.padEnd(15))} ${r.content.slice(0, 48)}`,
-        );
-      }
-    }
-  }
-
-  // Diagnostic footer — the single most valuable piece of the dashboard,
-  // placed last where it doesn't scroll off. Only counts edits that lack
-  // an explicit `claim`-kind observation; the auto-claim side effect is
-  // deliberately not credited here, because the point of this diagnostic
-  // is to measure *proactive* behaviour.
-  lines.push('');
-  const unclaimed = storage.recentEditsWithoutClaims(Date.now() - RECENT_WINDOW_MS);
-  if (unclaimed.length === 0) {
-    lines.push(kleur.green('edits without proactive claims (last 5m): none'));
-  } else {
-    lines.push(kleur.yellow(`edits without proactive claims (last 5m): ${unclaimed.length}`));
-    for (const e of unclaimed.slice(0, 10)) {
-      lines.push(`  ${e.file_path}  ${kleur.dim(`(${e.session_id}, ${fmtAgo(e.ts)})`)}`);
-    }
-  }
-
-  return lines.join('\n');
+  return readRecentObservations(storage, OBSERVATION_LIMIT)
+    .map((row) => {
+      const ts = new Date(row.ts).toISOString().slice(11, 19);
+      const session = colorSession(row.session_id)(row.session_id.slice(0, 8).padEnd(8));
+      const kind = row.kind.padEnd(15);
+      const snippet = row.content.replace(/\s+/g, ' ').trim().slice(0, 50);
+      return `${kleur.dim(ts)}  ${session}  ${kind} ${snippet}`;
+    })
+    .join('\n');
 }
 
-function safeJson(s: string | null): Record<string, unknown> {
-  if (!s) return {};
-  try {
-    const v = JSON.parse(s) as unknown;
-    return v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
-  } catch {
-    return {};
+function readRecentObservations(storage: Storage, limit: number): RecentObservationRow[] {
+  const storageWithMethod = storage as Storage & {
+    recentObservations?: (limit?: number) => RecentObservationRow[];
+  };
+  if (typeof storageWithMethod.recentObservations === 'function') {
+    return storageWithMethod.recentObservations(limit);
   }
+
+  const rawDb = (
+    storage as unknown as {
+      db?: { prepare: (sql: string) => { all: (...params: unknown[]) => unknown[] } };
+    }
+  ).db;
+  if (!rawDb) return [];
+  return rawDb
+    .prepare(
+      `SELECT o.id, o.session_id, o.kind, o.content, o.ts
+       FROM observations o
+       JOIN sessions s ON s.id = o.session_id
+       ORDER BY o.ts DESC, o.id DESC
+       LIMIT ?`,
+    )
+    .all(limit)
+    .filter(isRecentObservationRow);
+}
+
+function isRecentObservationRow(row: unknown): row is RecentObservationRow {
+  if (!row || typeof row !== 'object') return false;
+  const r = row as Record<string, unknown>;
+  return (
+    typeof r.id === 'number' &&
+    typeof r.session_id === 'string' &&
+    typeof r.kind === 'string' &&
+    typeof r.content === 'string' &&
+    typeof r.ts === 'number'
+  );
+}
+
+function colorSession(sessionId: string): (value: string) => string {
+  const palette = [kleur.cyan, kleur.magenta, kleur.yellow, kleur.green, kleur.blue, kleur.red];
+  let hash = 0;
+  for (let i = 0; i < sessionId.length; i++) {
+    hash = (hash * 31 + sessionId.charCodeAt(i)) >>> 0;
+  }
+  return palette[hash % palette.length] ?? kleur.white;
 }
 
 export function registerObserveCommand(program: Command): void {

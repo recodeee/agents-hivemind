@@ -107,6 +107,29 @@ export function buildApp(
           };
         })
         .filter((w) => w.status === 'pending' && (w.expires_at == null || w.expires_at > now)),
+      pending_broadcasts: recent
+        .filter((r) => r.kind === 'message')
+        .map((r) => {
+          const meta = safeJsonObject(r.metadata);
+          return {
+            id: r.id,
+            ts: r.ts,
+            from_agent: (meta.from_agent as string | undefined) ?? null,
+            from_session_id: (meta.from_session_id as string | undefined) ?? r.session_id,
+            status: (meta.status as string | undefined) ?? 'unread',
+            to_agent: (meta.to_agent as string | undefined) ?? null,
+            preview: r.content.slice(0, 120),
+            expires_at: (meta.expires_at as number | undefined) ?? null,
+            claimed_by_session_id: (meta.claimed_by_session_id as string | undefined) ?? null,
+          };
+        })
+        .filter(
+          (m) =>
+            m.to_agent === 'any' &&
+            m.status === 'unread' &&
+            m.claimed_by_session_id == null &&
+            (m.expires_at == null || m.expires_at > now),
+        ),
       recent: recent.slice(0, 10).map((r) => ({
         id: r.id,
         kind: r.kind,
@@ -157,7 +180,9 @@ export function buildApp(
     return c.json(await store.search(q, limit));
   });
 
-  app.get('/', (c) => c.html(renderIndex(store.storage.listSessions(50), readCachedHivemind())));
+  app.get('/', (c) =>
+    c.html(renderIndex(store.storage.listSessions(50), readCachedHivemind(), store.storage)),
+  );
   app.get('/sessions/:id', (c) => {
     const id = c.req.param('id');
     const session = store.storage.getSession(id);

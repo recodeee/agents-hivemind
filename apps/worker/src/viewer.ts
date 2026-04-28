@@ -1,10 +1,13 @@
 import { type HivemindSession, type HivemindSnapshot, inferIdeFromSessionId } from '@colony/core';
-import type { SessionRow } from '@colony/storage';
+import type { SessionRow, Storage, TaskClaimRow, TaskRow } from '@colony/storage';
+
+const RECENT_EDIT_WINDOW_MS = 5 * 60_000;
+const RECENT_CLAIM_WINDOW_MS = 60 * 60_000;
 
 const style = `
   body { font: 14px/1.5 -apple-system, system-ui, sans-serif; margin: 0; background: #0b0d10; color: #e6e6e6; }
   header { padding: 16px 24px; border-bottom: 1px solid #222; }
-  main { padding: 24px; max-width: 960px; margin: 0 auto; }
+  main { padding: 24px; max-width: 1100px; margin: 0 auto; }
   a { color: #7aa2ff; text-decoration: none; }
   a:hover { text-decoration: underline; }
   .card { background: #13161b; border: 1px solid #222; border-radius: 8px; padding: 12px 16px; margin-bottom: 10px; }
@@ -25,6 +28,18 @@ const style = `
   .owner[data-owner="claude-code"] { background: #2a2238; color: #c8b1ff; }
   .owner[data-owner="unknown"] { background: #2a1f1f; color: #e48a8a; }
   .owner[data-derived="true"] { font-style: italic; opacity: 0.85; }
+  .viewer-grid { display: grid; gap: 12px; grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr); align-items: start; margin-bottom: 18px; }
+  .viewer-main { display: grid; gap: 10px; }
+  .attention { position: sticky; top: 12px; }
+  .count { font-size: 28px; line-height: 1; color: #f2f5f8; margin-right: 8px; }
+  .path-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+  .path-list li { display: grid; gap: 2px; }
+  .heat-map { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+  .claim-tile { min-height: 58px; border: 1px solid #31405a; border-radius: 6px; padding: 8px; overflow: hidden; }
+  .claim-tile code { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: transparent; padding: 0; }
+  .attention-item { border-top: 1px solid #222; padding-top: 8px; margin-top: 8px; }
+  .attention-item:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
+  @media (max-width: 860px) { .viewer-grid { grid-template-columns: 1fr; } .attention { position: static; } }
 `;
 
 interface SafeHtml {
@@ -81,10 +96,18 @@ function ownerChip(ide: string, derived: boolean): string {
   return html`<span class="owner" data-owner="${ide}" data-derived="${String(derived)}">${label}</span>`;
 }
 
-export function renderIndex(sessions: SessionRow[], snapshot?: HivemindSnapshot): string {
+export function renderIndex(
+  sessions: SessionRow[],
+  snapshot: HivemindSnapshot | undefined,
+  storage: Storage,
+): string {
   const dashboard = snapshot ? renderHivemindDashboard(snapshot) : '';
+  const colonyState = renderColonyState(storage);
   if (sessions.length === 0) {
-    return layout('agents-hivemind', html`${raw(dashboard)}<p>No memory sessions yet.</p>`);
+    return layout(
+      'agents-hivemind',
+      html`${raw(dashboard)}${raw(colonyState)}<p>No memory sessions yet.</p>`,
+    );
   }
   const ownerCounts = new Map<string, number>();
   const items = sessions
@@ -105,8 +128,99 @@ export function renderIndex(sessions: SessionRow[], snapshot?: HivemindSnapshot)
     .join(' ');
   return layout(
     'agents-hivemind · sessions',
-    html`${raw(dashboard)}<h2>Recent memory sessions</h2><p class="meta">${raw(summary)}</p>${raw(items)}`,
+    html`${raw(dashboard)}${raw(colonyState)}<h2>Recent memory sessions</h2><p class="meta">${raw(summary)}</p>${raw(items)}`,
   );
+}
+
+function renderColonyState(storage: Storage): string {
+  const tasks = storage.listTasks(200).filter((task) => task.status === 'open');
+  return html`
+    <section>
+      <h2>Canonical colony state</h2>
+      <div class="viewer-grid">
+        <div class="viewer-main">
+          ${raw(renderDiagnostic(storage))}
+          ${raw(renderRecentClaimsHeatMap(storage, tasks))}
+          ${raw(renderToolUsageHistogram())}
+        </div>
+        ${raw(renderAttentionSidebar(tasks))}
+      </div>
+    </section>`;
+}
+
+function renderDiagnostic(storage: Storage): string {
+  const unclaimed = storage.recentEditsWithoutClaims(Date.now() - RECENT_EDIT_WINDOW_MS);
+  const rows =
+    unclaimed.length > 0
+      ? html`<ul class="path-list">${unclaimed.slice(0, 10).map((edit) => {
+          const task = edit.task_id === null ? 'no task' : `task #${edit.task_id}`;
+          return html`<li><code>${edit.file_path}</code><span class="meta">${edit.session_id} · ${task} · ${formatAgo(edit.ts)}</span></li>`;
+        })}</ul>`
+      : '<p class="meta">No unclaimed write-tool edits in the last 5 minutes.</p>';
+
+  return html`
+    <div class="card">
+      <h2>Diagnostic</h2>
+      <p><span class="count">${unclaimed.length}</span><span class="meta">edits without proactive claims (last 5m)</span></p>
+      ${raw(rows)}
+    </div>`;
+}
+
+function renderRecentClaimsHeatMap(storage: Storage, tasks: TaskRow[]): string {
+  const since = Date.now() - RECENT_CLAIM_WINDOW_MS;
+  const claims = tasks.flatMap((task) =>
+    storage.recentClaims(task.id, since, 100).map((claim) => ({ task, claim })),
+  );
+  if (claims.length === 0) {
+    return html`
+      <div class="card">
+        <h2>Recent claims heat-map</h2>
+        <p class="meta">No recent claims across active tasks.</p>
+      </div>`;
+  }
+
+  return html`
+    <div class="card">
+      <h2>Recent claims heat-map</h2>
+      <div class="heat-map">
+        ${claims.map(({ task, claim }) => renderClaimTile(task, claim))}
+      </div>
+    </div>`;
+}
+
+function renderClaimTile(task: TaskRow, claim: TaskClaimRow): string {
+  const title = `${claim.file_path} · held by ${claim.session_id} · ${task.branch} · ${formatAgo(
+    claim.claimed_at,
+  )}`;
+  return html`
+    <div class="claim-tile" title="${title}" style="${raw(claimHeatStyle(claim.claimed_at))}">
+      <code>${claim.file_path}</code>
+      <div class="meta">${claim.session_id}</div>
+      <div class="meta">${task.branch} · ${formatAgo(claim.claimed_at)}</div>
+    </div>`;
+}
+
+function renderAttentionSidebar(tasks: TaskRow[]): string {
+  const taskIds = tasks.map((task) => task.id);
+  const taskIdJson = JSON.stringify(taskIds);
+  const empty = tasks.length === 0 ? 'No active tasks.' : 'Loading attention items...';
+  return html`
+    <aside class="card attention" id="attention-sidebar" data-task-ids="${raw(esc(taskIdJson))}">
+      <h2>Pending handoffs / wakes / broadcasts</h2>
+      <div id="attention-items" class="meta">${empty}</div>
+    </aside>
+    <script>
+${raw(attentionRefreshScript(taskIdJson))}
+    </script>`;
+}
+
+function renderToolUsageHistogram(): string {
+  return html`
+    <div class="card">
+      <h2>Tool usage histogram</h2>
+      ${raw('<!-- Deferred: tool_usage_counters storage migration is not present yet. -->')}
+      <p class="meta">Waiting for tool_usage_counters storage migration.</p>
+    </div>`;
 }
 
 export function renderSession(
@@ -190,4 +304,57 @@ function laneOwnerIde(session: HivemindSession): string {
 
 function laneNeedsAttention(session: HivemindSession): boolean {
   return ['dead', 'stalled', 'unknown'].includes(session.activity);
+}
+
+function formatAgo(ts: number): string {
+  const ms = Math.max(0, Date.now() - ts);
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s ago`;
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`;
+  return `${Math.round(ms / 3_600_000)}h ago`;
+}
+
+function claimHeatStyle(ts: number): string {
+  const ratio = Math.max(0, Math.min(1, (Date.now() - ts) / RECENT_CLAIM_WINDOW_MS));
+  const hue = Math.round(145 - ratio * 110);
+  const light = Math.round(21 - ratio * 5);
+  const borderLight = Math.round(47 - ratio * 14);
+  return `background: hsl(${hue} 42% ${light}%); border-color: hsl(${hue} 58% ${borderLight}%);`;
+}
+
+function attentionRefreshScript(taskIdJson: string): string {
+  return `
+(() => {
+  const ids = ${taskIdJson};
+  const root = document.getElementById('attention-items');
+  if (!root || !Array.isArray(ids) || ids.length === 0) return;
+  const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[ch]);
+  const item = (label, taskId, text, meta) =>
+    '<div class="attention-item"><strong>' + esc(label) + '</strong> <span class="meta">task #' +
+    esc(taskId) + '</span><div>' + esc(text) + '</div><div class="meta">' + esc(meta) + '</div></div>';
+  async function refreshAttention() {
+    const groups = await Promise.all(ids.map(async (id) => {
+      const res = await fetch('/api/colony/tasks/' + encodeURIComponent(id) + '/attention');
+      return { id, body: await res.json() };
+    }));
+    const rows = [];
+    for (const group of groups) {
+      for (const handoff of group.body.pending_handoffs ?? []) {
+        rows.push(item('handoff', group.id, handoff.summary, (handoff.from_agent ?? '?') + ' -> ' + (handoff.to_agent ?? '?')));
+      }
+      for (const wake of group.body.pending_wakes ?? []) {
+        rows.push(item('wake', group.id, wake.reason, 'to ' + (wake.to_agent ?? '?')));
+      }
+      for (const broadcast of group.body.pending_broadcasts ?? []) {
+        rows.push(item('broadcast', group.id, broadcast.preview, broadcast.from_agent ?? '?'));
+      }
+    }
+    root.className = rows.length === 0 ? 'meta' : '';
+    root.innerHTML = rows.length === 0 ? 'No pending attention items.' : rows.join('');
+  }
+  refreshAttention().catch(() => { root.textContent = 'Attention feed unavailable.'; });
+  setInterval(() => refreshAttention().catch(() => {}), 3000);
+})();
+`;
 }

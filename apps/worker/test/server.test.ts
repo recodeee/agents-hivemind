@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultSettings } from '@colony/config';
-import { MemoryStore } from '@colony/core';
+import { MemoryStore, TaskThread } from '@colony/core';
 import type { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../src/server.js';
@@ -238,6 +238,49 @@ describe('worker HTTP', () => {
     expect(body).toContain('Hivemind runtime');
     expect(body).toContain('Render active lanes in worker viewer');
     expect(body).toContain('runtime clean');
+  });
+
+  it('GET / renders unclaimed-edit diagnostics', async () => {
+    store.startSession({ id: 'diag-session', ide: 'codex', cwd: '/repo' });
+    const task = store.storage.findOrCreateTask({
+      title: 'diagnostic-task',
+      repo_root: '/repo',
+      branch: 'agent/codex/diagnostic-task',
+      created_by: 'diag-session',
+    });
+    store.addObservation({
+      session_id: 'diag-session',
+      kind: 'tool_use',
+      content: 'Edit src/orphan.ts',
+      task_id: task.id,
+      metadata: { tool: 'Edit', file_path: 'src/orphan.ts' },
+    });
+
+    const res = await app.request('/');
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('Diagnostic');
+    expect(body).toContain('edits without proactive claims (last 5m)');
+    expect(body).toContain('<span class="count">1</span>');
+    expect(body).toContain('src/orphan.ts');
+  });
+
+  it('GET / renders the recent claims heat-map with file paths', async () => {
+    store.startSession({ id: 'claim-session', ide: 'codex', cwd: '/repo' });
+    const thread = TaskThread.open(store, {
+      repo_root: '/repo',
+      branch: 'agent/codex/claim-task',
+      session_id: 'claim-session',
+    });
+    thread.join('claim-session', 'codex');
+    thread.claimFile({ session_id: 'claim-session', file_path: 'apps/worker/src/viewer.ts' });
+
+    const res = await app.request('/');
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain('Recent claims heat-map');
+    expect(body).toContain('apps/worker/src/viewer.ts');
+    expect(body).toContain('claim-session');
   });
 
   it('GET /sessions/:id renders observation HTML', async () => {
