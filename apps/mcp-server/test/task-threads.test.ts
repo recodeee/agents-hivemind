@@ -221,6 +221,36 @@ describe('task threads — handoff lifecycle', () => {
     expect(updatesForB.some((row) => row.session_id === sessionA)).toBe(true);
   });
 
+  it('task_post notes serve as searchable working state without a duplicate notepad', async () => {
+    const { task_id, sessionA } = seedTwoSessionTask();
+
+    const { id } = await call<{ id: number }>('task_post', {
+      task_id,
+      session_id: sessionA,
+      kind: 'note',
+      content:
+        'write working note: save current state; remember progress; log what I am doing before verification',
+    });
+
+    const row = store.storage.getObservation(id);
+    expect(row).toMatchObject({
+      id,
+      session_id: sessionA,
+      task_id,
+      kind: 'note',
+      compressed: 1,
+    });
+
+    const taskTimeline = await call<Array<{ id: number }>>('task_timeline', { task_id });
+    expect(taskTimeline.some((entry) => entry.id === id)).toBe(true);
+
+    const sessionTimeline = store.timeline(sessionA, undefined, 10);
+    expect(sessionTimeline.some((entry) => entry.id === id)).toBe(true);
+
+    const hits = await store.search('save current state', 10);
+    expect(hits.some((hit) => hit.id === id)).toBe(true);
+  });
+
   // Relay lifecycle. Different from handoff: relays assume the sender is
   // gone, so claims are *dropped* at emit time and re-claimed by the
   // receiver on accept (no third agent can grab a file in the gap). The

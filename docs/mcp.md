@@ -386,6 +386,8 @@ Returns: `[ { id, kind, session_id, ts } ]`.
 
 Post a coordination message on a task thread. Use the dedicated tools (`task_claim_file`, `task_hand_off`, `task_accept_handoff`) for structured actions; `task_post` is for free-form notes tagged with a `kind`.
 
+Use `kind: "note"` when an agent needs to write working note, save current state, remember progress, or log what I am doing. The note lands on both the task thread and the posting session's memory through `MemoryStore`, so it stays compressed, timeline-visible, and searchable later.
+
 ```json
 {
   "name": "task_post",

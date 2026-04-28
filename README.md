@@ -137,7 +137,7 @@ If the ready item needs implementation context, call `search` with the task titl
 
 | Tool | Use it for |
 | --- | --- |
-| `task_post` | Add a question, answer, decision, blocker, or note to a task. |
+| `task_post` | Add a question, answer, decision, blocker, or note to a task; use `kind:"note"` to write working note, save current state, remember progress, or log what I am doing. |
 | `task_message` | Send a directed or broadcast message to another agent. |
 | `task_messages` | Read messages addressed to the current agent/session. |
 | `task_message_mark_read` | Acknowledge a message and emit a read receipt. |

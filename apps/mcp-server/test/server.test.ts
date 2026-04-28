@@ -106,6 +106,10 @@ describe('MCP server', () => {
     expect(byName.get('task_post')?.description).toContain(
       'use task_message for non-broadcast agent-to-agent coordination',
     );
+    expect(byName.get('task_post')?.description).toContain('write working note');
+    expect(byName.get('task_post')?.description).toContain('save current state');
+    expect(byName.get('task_post')?.description).toContain('remember progress');
+    expect(byName.get('task_post')?.description).toContain('log what I am doing');
     expect(byName.get('task_message')?.inputSchema.required).toEqual([
       'task_id',
       'session_id',
