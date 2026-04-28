@@ -183,6 +183,7 @@ export {
   type BlockedDownstreamTaskSignal,
   type ClaimCleanupAction,
   type ClaimSignal,
+  type ClaimWeakReason,
   type CoordinationSweepOptions,
   type CoordinationSweepResult,
   type DecayedProposalSignal,

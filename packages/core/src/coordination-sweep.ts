@@ -1,4 +1,6 @@
+import { resolve } from 'node:path';
 import type { ObservationRow, PheromoneRow, ProposalRow, TaskRow } from '@colony/storage';
+import { type ClaimAgeClass, type ClaimOwnershipStrength, classifyClaimAge } from './claim-age.js';
 import type { MemoryStore } from './memory-store.js';
 import { PheromoneSystem } from './pheromone.js';
 import { type SubtaskInfo, listPlans } from './plan.js';
@@ -11,6 +13,7 @@ const DEFAULT_HANDOFF_TTL_MS = 2 * 60 * 60 * 1000;
 
 export interface CoordinationSweepOptions {
   repo_root?: string;
+  repo_roots?: string[];
   now?: number;
   stale_claim_minutes?: number;
   hot_file_noise_floor?: number;
@@ -27,6 +30,8 @@ export interface CoordinationSweepResult {
     proposal_noise_floor: number;
   };
   summary: {
+    active_claim_count: number;
+    /** Backward-compatible alias for active_claim_count. */
     fresh_claim_count: number;
     stale_claim_count: number;
     expired_weak_claim_count: number;
@@ -36,10 +41,14 @@ export interface CoordinationSweepResult {
     stale_hot_file_count: number;
     blocked_downstream_task_count: number;
   };
+  active_claims: FreshClaimSignal[];
+  /** Backward-compatible alias for active_claims. */
   fresh_claims: FreshClaimSignal[];
   stale_claims: StaleClaimSignal[];
   expired_weak_claims: ExpiredWeakClaimSignal[];
   top_stale_branches: StaleClaimBranchSummary[];
+  recommended_action: string;
+  /** Backward-compatible alias for recommended_action. */
   suggested_cleanup_action: string;
   expired_handoffs: ExpiredHandoffSignal[];
   expired_messages: ExpiredMessageSignal[];
@@ -49,6 +58,7 @@ export interface CoordinationSweepResult {
 }
 
 export type ClaimCleanupAction = 'keep_fresh' | 'review_stale_claim' | 'expire_weak_claim';
+export type ClaimWeakReason = 'expired_age' | 'pheromone_below_noise_floor';
 
 export interface ClaimSignal {
   task_id: number;
@@ -59,10 +69,13 @@ export interface ClaimSignal {
   session_id: string;
   claimed_at: number;
   age_minutes: number;
+  age_class: ClaimAgeClass;
+  ownership_strength: ClaimOwnershipStrength;
   original_strength: number;
   current_strength: number;
   latest_deposited_at: number | null;
   cleanup_action: ClaimCleanupAction;
+  weak_reason: ClaimWeakReason | null;
   cleanup_summary: string;
 }
 
@@ -177,22 +190,25 @@ export function buildCoordinationSweep(
       opts.stale_hot_file_min_original_strength ?? STALE_HOT_FILE_MIN_ORIGINAL_STRENGTH,
     proposal_noise_floor: proposalSystem.noiseFloor,
   };
+  const repoRoots = normalizedRepoRoots(opts);
   const tasks = store.storage
     .listTasks(2_000)
-    .filter((task) => opts.repo_root === undefined || task.repo_root === opts.repo_root);
+    .filter((task) => repoRoots === null || repoRoots.has(resolve(task.repo_root)));
 
   const claimBuckets = collectClaimBuckets(store, tasks, now, thresholds);
   const expired_handoffs = collectExpiredHandoffs(store, tasks, now);
   const expired_messages = collectExpiredMessages(store, tasks, now);
-  const decayed_proposals = collectDecayedProposals(store, proposalSystem, opts.repo_root, now);
+  const decayed_proposals = collectDecayedProposals(store, proposalSystem, repoRoots, now);
   const stale_hot_files = collectStaleHotFiles(store, tasks, now, thresholds);
-  const blocked_downstream_tasks = collectBlockedDownstreamTasks(store, opts.repo_root);
+  const blocked_downstream_tasks = collectBlockedDownstreamTasks(store, repoRoots);
+  const recommended_action = suggestClaimCleanup(claimBuckets);
 
   return {
     generated_at: now,
     repo_root: opts.repo_root ?? null,
     thresholds,
     summary: {
+      active_claim_count: claimBuckets.active_claims.length,
       fresh_claim_count: claimBuckets.fresh_claims.length,
       stale_claim_count: claimBuckets.stale_claims.length,
       expired_weak_claim_count: claimBuckets.expired_weak_claims.length,
@@ -202,11 +218,13 @@ export function buildCoordinationSweep(
       stale_hot_file_count: stale_hot_files.length,
       blocked_downstream_task_count: blocked_downstream_tasks.length,
     },
+    active_claims: claimBuckets.active_claims,
     fresh_claims: claimBuckets.fresh_claims,
     stale_claims: claimBuckets.stale_claims,
     expired_weak_claims: claimBuckets.expired_weak_claims,
     top_stale_branches: claimBuckets.top_stale_branches,
-    suggested_cleanup_action: suggestClaimCleanup(claimBuckets),
+    recommended_action,
+    suggested_cleanup_action: recommended_action,
     expired_handoffs,
     expired_messages,
     decayed_proposals,
@@ -215,19 +233,27 @@ export function buildCoordinationSweep(
   };
 }
 
+function normalizedRepoRoots(opts: CoordinationSweepOptions): Set<string> | null {
+  const roots = [opts.repo_root, ...(opts.repo_roots ?? [])].filter(
+    (root): root is string => typeof root === 'string' && root.length > 0,
+  );
+  if (roots.length === 0) return null;
+  return new Set(roots.map((root) => resolve(root)));
+}
+
 function collectClaimBuckets(
   store: MemoryStore,
   tasks: TaskRow[],
   now: number,
   thresholds: CoordinationSweepResult['thresholds'],
 ): {
+  active_claims: FreshClaimSignal[];
   fresh_claims: FreshClaimSignal[];
   stale_claims: StaleClaimSignal[];
   expired_weak_claims: ExpiredWeakClaimSignal[];
   top_stale_branches: StaleClaimBranchSummary[];
 } {
-  const staleAfterMs = thresholds.stale_claim_minutes * 60_000;
-  const fresh_claims: FreshClaimSignal[] = [];
+  const active_claims: FreshClaimSignal[] = [];
   const stale_claims: StaleClaimSignal[] = [];
   const expired_weak_claims: ExpiredWeakClaimSignal[] = [];
   for (const task of tasks) {
@@ -240,8 +266,12 @@ function collectClaimBuckets(
         now,
       );
       const ageMinutes = elapsedMinutes(now, claim.claimed_at);
-      if (now - claim.claimed_at < staleAfterMs) {
-        fresh_claims.push({
+      const classification = classifyClaimAge(claim.claimed_at, {
+        now,
+        claim_stale_minutes: thresholds.stale_claim_minutes,
+      });
+      if (classification.ownership_strength === 'strong') {
+        active_claims.push({
           task_id: task.id,
           task_title: task.title,
           repo_root: task.repo_root,
@@ -250,14 +280,18 @@ function collectClaimBuckets(
           session_id: claim.session_id,
           claimed_at: claim.claimed_at,
           age_minutes: ageMinutes,
+          age_class: classification.age_class,
+          ownership_strength: classification.ownership_strength,
           ...strength,
           cleanup_action: 'keep_fresh',
+          weak_reason: null,
           cleanup_summary: 'keep active; claim is inside the fresh window',
         });
         continue;
       }
 
-      const isExpiredWeak = strength.current_strength < thresholds.hot_file_noise_floor;
+      const weakReason = claimWeakReason(classification.age_class, strength, thresholds);
+      const isExpiredWeak = weakReason !== null;
       const signal: StaleClaimSignal = {
         task_id: task.id,
         task_title: task.title,
@@ -267,18 +301,19 @@ function collectClaimBuckets(
         session_id: claim.session_id,
         claimed_at: claim.claimed_at,
         age_minutes: ageMinutes,
+        age_class: classification.age_class,
+        ownership_strength: classification.ownership_strength,
         ...strength,
         cleanup_action: isExpiredWeak ? 'expire_weak_claim' : 'review_stale_claim',
-        cleanup_summary: isExpiredWeak
-          ? 'would expire advisory claim; audit observations stay intact'
-          : 'review owner activity, then release or hand off if inactive',
+        weak_reason: weakReason,
+        cleanup_summary: claimCleanupSummary(weakReason),
       };
       stale_claims.push(signal);
       if (isExpiredWeak) expired_weak_claims.push(signal as ExpiredWeakClaimSignal);
     }
   }
 
-  fresh_claims.sort(
+  active_claims.sort(
     (a, b) => b.age_minutes - a.age_minutes || a.file_path.localeCompare(b.file_path),
   );
   stale_claims.sort(
@@ -289,7 +324,8 @@ function collectClaimBuckets(
   );
 
   return {
-    fresh_claims,
+    active_claims,
+    fresh_claims: active_claims,
     stale_claims,
     expired_weak_claims,
     top_stale_branches: topStaleBranches(stale_claims),
@@ -314,6 +350,31 @@ function claimPheromoneStrength(
   };
 }
 
+function claimWeakReason(
+  ageClass: ClaimAgeClass,
+  strength: Pick<ClaimSignal, 'current_strength' | 'latest_deposited_at'>,
+  thresholds: CoordinationSweepResult['thresholds'],
+): ClaimWeakReason | null {
+  if (ageClass === 'expired/weak') return 'expired_age';
+  if (
+    strength.latest_deposited_at !== null &&
+    strength.current_strength < thresholds.hot_file_noise_floor
+  ) {
+    return 'pheromone_below_noise_floor';
+  }
+  return null;
+}
+
+function claimCleanupSummary(reason: ClaimWeakReason | null): string {
+  if (reason === 'expired_age') {
+    return 'would release expired/weak advisory claim; audit observations stay intact';
+  }
+  if (reason === 'pheromone_below_noise_floor') {
+    return 'would release pheromone-weak advisory claim; audit observations stay intact';
+  }
+  return 'review owner activity, then release or hand off if inactive';
+}
+
 function topStaleBranches(staleClaims: StaleClaimSignal[]): StaleClaimBranchSummary[] {
   const byBranch = new Map<string, StaleClaimBranchSummary>();
   for (const claim of staleClaims) {
@@ -336,7 +397,7 @@ function topStaleBranches(staleClaims: StaleClaimSignal[]): StaleClaimBranchSumm
     );
     summary.suggested_cleanup_action =
       summary.expired_weak_claim_count > 0
-        ? `expire ${summary.expired_weak_claim_count} weak advisory claim(s); keep audit observations`
+        ? `release ${summary.expired_weak_claim_count} expired/weak advisory claim(s); keep audit observations`
         : `review ${summary.stale_claim_count} stale advisory claim(s)`;
     byBranch.set(key, summary);
   }
@@ -357,7 +418,7 @@ function suggestClaimCleanup(args: {
   expired_weak_claims: ExpiredWeakClaimSignal[];
 }): string {
   if (args.expired_weak_claims.length > 0) {
-    return `dry-run: ${args.expired_weak_claims.length} expired/weak advisory claim(s) would be released; audit observations stay intact`;
+    return `dry-run: release ${args.expired_weak_claims.length} expired/weak advisory claim(s) after owner/rescue review; audit observations stay intact`;
   }
   if (args.stale_claims.length > 0) {
     return `dry-run: review ${args.stale_claims.length} stale advisory claim(s) for owner activity before release or handoff`;
@@ -438,10 +499,13 @@ function collectExpiredMessages(
 function collectDecayedProposals(
   store: MemoryStore,
   proposals: ProposalSystem,
-  repoRoot: string | undefined,
+  repoRoots: Set<string> | null,
   now: number,
 ): DecayedProposalSignal[] {
-  const rows = store.storage.listProposals(repoRoot);
+  const rows =
+    repoRoots === null
+      ? store.storage.listProposals(undefined)
+      : dedupeById([...repoRoots].flatMap((repoRoot) => store.storage.listProposals(repoRoot)));
   return rows
     .filter((proposal) => proposal.status === 'pending')
     .map((proposal) => {
@@ -450,6 +514,17 @@ function collectDecayedProposals(
     })
     .filter((signal): signal is DecayedProposalSignal => signal !== null)
     .sort((a, b) => a.strength - b.strength || b.age_minutes - a.age_minutes);
+}
+
+function dedupeById<T extends { id: number }>(rows: T[]): T[] {
+  const seen = new Set<number>();
+  const out: T[] = [];
+  for (const row of rows) {
+    if (seen.has(row.id)) continue;
+    seen.add(row.id);
+    out.push(row);
+  }
+  return out;
 }
 
 function proposalSignal(
@@ -515,13 +590,14 @@ function collectStaleHotFiles(
 
 function collectBlockedDownstreamTasks(
   store: MemoryStore,
-  repoRoot: string | undefined,
+  repoRoots: Set<string> | null,
 ): BlockedDownstreamTaskSignal[] {
   const out: BlockedDownstreamTaskSignal[] = [];
-  for (const plan of listPlans(store, {
-    ...(repoRoot !== undefined ? { repo_root: repoRoot } : {}),
-    limit: 2_000,
-  })) {
+  const plans =
+    repoRoots === null
+      ? listPlans(store, { limit: 2_000 })
+      : [...repoRoots].flatMap((repo_root) => listPlans(store, { repo_root, limit: 2_000 }));
+  for (const plan of plans) {
     for (const subtask of plan.subtasks) {
       if (subtask.status === 'completed' || subtask.blocked_by_count === 0) continue;
       out.push({

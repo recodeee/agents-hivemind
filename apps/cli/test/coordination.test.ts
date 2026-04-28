@@ -1,6 +1,7 @@
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { loadSettings } from '@colony/config';
 import { type MemoryStore, ProposalSystem, TaskThread } from '@colony/core';
 import kleur from 'kleur';
@@ -12,6 +13,7 @@ const MINUTE_MS = 60_000;
 const NOW = Date.UTC(2026, 3, 28, 12, 0, 0);
 
 let repoRoot: string;
+let storedRepoRoot: string;
 let dataDir: string;
 let output: string;
 let originalColonyHome: string | undefined;
@@ -21,6 +23,17 @@ beforeEach(() => {
   vi.setSystemTime(NOW);
   kleur.enabled = false;
   repoRoot = mkdtempSync(join(tmpdir(), 'colony-cli-coordination-repo-'));
+  const legacyRepoName = `legacy-${basename(repoRoot)}`;
+  storedRepoRoot = join(dirname(repoRoot), legacyRepoName);
+  execFileSync('git', ['init'], { cwd: repoRoot, stdio: 'ignore' });
+  execFileSync(
+    'git',
+    ['remote', 'add', 'origin', `https://github.com/recodeee/${legacyRepoName}.git`],
+    {
+      cwd: repoRoot,
+      stdio: 'ignore',
+    },
+  );
   dataDir = mkdtempSync(join(tmpdir(), 'colony-cli-coordination-data-'));
   originalColonyHome = process.env.COLONY_HOME;
   process.env.COLONY_HOME = dataDir;
@@ -73,11 +86,19 @@ describe('colony coordination CLI', () => {
     const json = JSON.parse(output) as {
       dry_run: boolean;
       summary: Record<string, number>;
+      active_claims: Array<{ file_path: string; age_minutes: number; cleanup_action: string }>;
       fresh_claims: Array<{ file_path: string; age_minutes: number; cleanup_action: string }>;
-      stale_claims: Array<{ file_path: string; age_minutes: number; current_strength: number }>;
+      stale_claims: Array<{
+        file_path: string;
+        age_minutes: number;
+        current_strength: number;
+        cleanup_action: string;
+        weak_reason: string | null;
+      }>;
       expired_weak_claims: Array<{
         file_path: string;
         cleanup_action: string;
+        weak_reason: string;
         cleanup_summary: string;
       }>;
       top_stale_branches: Array<{
@@ -86,6 +107,7 @@ describe('colony coordination CLI', () => {
         expired_weak_claim_count: number;
       }>;
       suggested_cleanup_action: string;
+      recommended_action: string;
       expired_handoffs: Array<{ summary: string; expired_minutes: number }>;
       expired_messages: Array<{ preview: string; urgency: string }>;
       decayed_proposals: Array<{ summary: string; strength: number; noise_floor: number }>;
@@ -95,8 +117,9 @@ describe('colony coordination CLI', () => {
 
     expect(json.dry_run).toBe(true);
     expect(json.summary).toMatchObject({
+      active_claim_count: 1,
       fresh_claim_count: 1,
-      stale_claim_count: 2,
+      stale_claim_count: 3,
       expired_weak_claim_count: 1,
       expired_handoff_count: 1,
       expired_message_count: 1,
@@ -104,25 +127,35 @@ describe('colony coordination CLI', () => {
       stale_hot_file_count: 1,
       blocked_downstream_task_count: 1,
     });
+    expect(json.active_claims[0]).toMatchObject({
+      file_path: 'src/fresh.ts',
+      cleanup_action: 'keep_fresh',
+    });
     expect(json.fresh_claims[0]).toMatchObject({
       file_path: 'src/fresh.ts',
       cleanup_action: 'keep_fresh',
     });
     expect(json.stale_claims.map((claim) => claim.file_path)).toContain('src/stale.ts');
     expect(json.stale_claims.map((claim) => claim.file_path)).toContain('src/stale-active.ts');
+    expect(json.stale_claims.find((claim) => claim.file_path === 'src/stale.ts')).toMatchObject({
+      cleanup_action: 'review_stale_claim',
+      weak_reason: null,
+    });
     expect(json.expired_weak_claims[0]).toMatchObject({
-      file_path: 'src/stale.ts',
+      file_path: 'src/expired.ts',
       cleanup_action: 'expire_weak_claim',
+      weak_reason: 'expired_age',
     });
     expect(json.expired_weak_claims[0]?.cleanup_summary).toContain(
       'audit observations stay intact',
     );
     expect(json.top_stale_branches[0]).toMatchObject({
       branch: 'main',
-      stale_claim_count: 2,
+      stale_claim_count: 3,
       expired_weak_claim_count: 1,
     });
-    expect(json.suggested_cleanup_action).toContain('1 expired/weak advisory claim');
+    expect(json.suggested_cleanup_action).toContain('release 1 expired/weak advisory claim');
+    expect(json.recommended_action).toBe(json.suggested_cleanup_action);
     expect(json.expired_handoffs[0]).toMatchObject({ summary: 'expired handoff' });
     expect(json.expired_messages[0]).toMatchObject({
       preview: 'expired blocking message',
@@ -147,18 +180,20 @@ describe('colony coordination CLI', () => {
       { from: 'node' },
     );
 
-    expect(output).toContain('Coordination sweep: 7 stale biological signal(s)');
+    expect(output).toContain('Coordination sweep: 8 stale biological signal(s)');
     expect(output).toContain('mode: dry-run, read-only');
     expect(output).toContain('audit: observations retained; advisory claims only');
-    expect(output).toContain('fresh claims: 1  stale claims: 2  expired/weak claims: 1');
-    expect(output).toContain('suggested cleanup: dry-run: 1 expired/weak advisory claim');
-    expect(output).toContain('Fresh claims:');
+    expect(output).toContain('active claims: 1  stale claims: 3  expired/weak claims: 1');
+    expect(output).toContain('recommended action: dry-run: release 1 expired/weak advisory claim');
+    expect(output).toContain('Active claims:');
     expect(output).toContain('Stale claims:');
     expect(output).toContain('review owner activity, then release or hand off if inactive');
     expect(output).toContain('Expired/weak claims:');
-    expect(output).toContain('would expire advisory claim; audit observations stay intact');
+    expect(output).toContain(
+      'would release expired/weak advisory claim; audit observations stay intact',
+    );
     expect(output).toContain('Top branches with stale claims:');
-    expect(output).toContain('expire 1 weak advisory claim(s); keep audit observations');
+    expect(output).toContain('release 1 expired/weak advisory claim(s); keep audit observations');
     expect(output).toContain('Expired handoffs:');
     expect(output).toContain('send a fresh handoff if still needed');
     expect(output).toContain('Decayed proposals:');
@@ -169,8 +204,8 @@ describe('colony coordination CLI', () => {
     const settings = loadSettings();
     await withStore(settings, (store) => {
       const mainTaskId = taskIdByBranch(store, 'main');
-      expect(store.storage.listProposals(repoRoot)).toHaveLength(1);
-      expect(store.storage.listClaims(mainTaskId)).toHaveLength(3);
+      expect(store.storage.listProposals(storedRepoRoot)).toHaveLength(1);
+      expect(store.storage.listClaims(mainTaskId)).toHaveLength(4);
       expect(store.storage.taskObservationsByKind(mainTaskId, 'handoff')).toHaveLength(1);
       expect(store.storage.taskObservationsByKind(mainTaskId, 'message')).toHaveLength(1);
     });
@@ -184,7 +219,7 @@ async function seedSweepSignals(): Promise<void> {
     store.startSession({ id: 'codex@stale', ide: 'codex', cwd: repoRoot });
     store.startSession({ id: 'claude@target', ide: 'claude-code', cwd: repoRoot });
     const thread = TaskThread.open(store, {
-      repo_root: repoRoot,
+      repo_root: storedRepoRoot,
       branch: 'main',
       title: 'main task',
       session_id: 'codex@stale',
@@ -213,6 +248,9 @@ async function seedSweepSignals(): Promise<void> {
       deposited_at: Date.now(),
     });
 
+    setMinutesAgo(720);
+    thread.claimFile({ session_id: 'codex@stale', file_path: 'src/expired.ts' });
+
     setMinutesAgo(30);
     thread.handOff({
       from_session_id: 'codex@stale',
@@ -235,7 +273,7 @@ async function seedSweepSignals(): Promise<void> {
     setMinutesAgo(720);
     const proposals = new ProposalSystem(store);
     proposals.propose({
-      repo_root: repoRoot,
+      repo_root: storedRepoRoot,
       branch: 'main',
       summary: 'old proposal',
       rationale: 'Old weak candidate.',
@@ -251,7 +289,7 @@ async function seedSweepSignals(): Promise<void> {
 function seedBlockedPlan(store: MemoryStore): void {
   setMinutesAgo(120);
   const parent = TaskThread.open(store, {
-    repo_root: repoRoot,
+    repo_root: storedRepoRoot,
     branch: 'spec/blocked-plan',
     title: 'blocked plan',
     session_id: 'codex@stale',
@@ -266,7 +304,7 @@ function seedBlockedPlan(store: MemoryStore): void {
 
   for (let i = 0; i < 2; i++) {
     const thread = TaskThread.open(store, {
-      repo_root: repoRoot,
+      repo_root: storedRepoRoot,
       branch: `spec/blocked-plan/sub-${i}`,
       session_id: 'codex@stale',
     });
@@ -293,7 +331,7 @@ function seedBlockedPlan(store: MemoryStore): void {
 function taskIdByBranch(store: MemoryStore, branch: string): number {
   const task = store.storage
     .listTasks(2_000)
-    .find((candidate) => candidate.repo_root === repoRoot && candidate.branch === branch);
+    .find((candidate) => candidate.repo_root === storedRepoRoot && candidate.branch === branch);
   if (!task) throw new Error(`missing task for ${branch}`);
   return task.id;
 }

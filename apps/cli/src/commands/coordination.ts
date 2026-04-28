@@ -1,4 +1,6 @@
-import { resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { realpathSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { loadSettings } from '@colony/config';
 import { type CoordinationSweepResult, buildCoordinationSweep } from '@colony/core';
 import type { Command } from 'commander';
@@ -24,9 +26,13 @@ export function registerCoordinationCommand(program: Command): void {
     .option('--json', 'emit sweep result as JSON')
     .action(async (opts: SweepOpts) => {
       const repoRoot = resolve(opts.repoRoot ?? process.cwd());
+      const repoRoots = repoRootAliases(repoRoot);
       const settings = loadSettings();
       await withStore(settings, (store) => {
-        const result = buildCoordinationSweep(store, { repo_root: repoRoot });
+        const result = buildCoordinationSweep(store, {
+          repo_root: repoRoot,
+          repo_roots: repoRoots,
+        });
         if (opts.json) {
           process.stdout.write(`${JSON.stringify({ ...result, dry_run: true }, null, 2)}\n`);
           return;
@@ -34,6 +40,35 @@ export function registerCoordinationCommand(program: Command): void {
         process.stdout.write(`${renderCoordinationSweep(result)}\n`);
       });
     });
+}
+
+function repoRootAliases(repoRoot: string): string[] {
+  const roots = new Set([repoRoot]);
+  try {
+    roots.add(realpathSync(repoRoot));
+  } catch {
+    // Non-existent --repo-root values are still passed through as literal filters.
+  }
+  const remoteSlug = gitOriginSlug(repoRoot);
+  if (remoteSlug) roots.add(resolve(dirname(repoRoot), remoteSlug));
+  return [...roots];
+}
+
+function gitOriginSlug(repoRoot: string): string | null {
+  try {
+    const remote = execFileSync('git', ['-C', repoRoot, 'config', '--get', 'remote.origin.url'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const name = remote
+      .split(/[/:]/)
+      .pop()
+      ?.replace(/\.git$/, '')
+      .trim();
+    return name && name.length > 0 ? name : null;
+  } catch {
+    return null;
+  }
 }
 
 function renderCoordinationSweep(result: CoordinationSweepResult): string {
@@ -48,9 +83,9 @@ function renderCoordinationSweep(result: CoordinationSweepResult): string {
   lines.push(`  repo: ${result.repo_root ?? 'all'}`);
   lines.push('  mode: dry-run, read-only');
   lines.push('  audit: observations retained; advisory claims only');
-  lines.push(`  suggested cleanup: ${result.suggested_cleanup_action}`);
+  lines.push(`  recommended action: ${result.recommended_action}`);
   lines.push(
-    `  fresh claims: ${result.summary.fresh_claim_count}  stale claims: ${result.summary.stale_claim_count}  expired/weak claims: ${result.summary.expired_weak_claim_count}`,
+    `  active claims: ${result.summary.active_claim_count}  stale claims: ${result.summary.stale_claim_count}  expired/weak claims: ${result.summary.expired_weak_claim_count}`,
   );
   lines.push(
     `  expired handoffs: ${result.summary.expired_handoff_count}  expired messages: ${result.summary.expired_message_count}`,
@@ -61,8 +96,8 @@ function renderCoordinationSweep(result: CoordinationSweepResult): string {
 
   renderSection(
     lines,
-    'Fresh claims',
-    result.fresh_claims,
+    'Active claims',
+    result.active_claims,
     (claim) =>
       `task #${claim.task_id} ${claim.branch} ${claim.file_path} held by ${claim.session_id} for ${claim.age_minutes}m -> keep active`,
   );
@@ -78,7 +113,7 @@ function renderCoordinationSweep(result: CoordinationSweepResult): string {
     'Expired/weak claims',
     result.expired_weak_claims,
     (claim) =>
-      `task #${claim.task_id} ${claim.branch} ${claim.file_path} held by ${claim.session_id} for ${claim.age_minutes}m, pheromone ${claim.current_strength} < ${result.thresholds.hot_file_noise_floor} -> ${claim.cleanup_summary}`,
+      `task #${claim.task_id} ${claim.branch} ${claim.file_path} held by ${claim.session_id} for ${claim.age_minutes}m (${claim.weak_reason ?? 'weak'}) -> ${claim.cleanup_summary}`,
   );
   renderSection(
     lines,
