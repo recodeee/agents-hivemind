@@ -4,6 +4,7 @@ import {
   type MemoryStore,
   type SubtaskInfo,
   claimsForPaths,
+  listMessagesForAgent,
   listPlans,
   loadProfile,
   rankCandidates,
@@ -15,6 +16,9 @@ import type { ToolContext } from './context.js';
 
 const DEFAULT_LIMIT = 5;
 const RELEASE_DENSITY_WINDOW_MS = 60 * 60 * 1000;
+const CURRENT_TASK_SWITCH_MARGIN = 0.2;
+const RECENT_CLAIM_COOLDOWN_MS = 20 * 60 * 1000;
+const RECENT_CLAIM_COOLDOWN_MARGIN = 0.05;
 const PLAN_SUBTASK_KIND = 'plan-subtask';
 const PLAN_SUBTASK_CLAIM_KIND = 'plan-subtask-claim';
 const CAPABILITY_HINT_TEXT: Record<string, string> = {
@@ -24,6 +28,8 @@ const CAPABILITY_HINT_TEXT: Record<string, string> = {
   infra_work: 'build config pipeline',
   doc_work: 'doc',
 };
+
+type ReadyReason = 'continue_current_task' | 'urgent_override' | 'ready_high_score';
 
 interface ReadySubtask {
   plan_slug: string;
@@ -35,11 +41,15 @@ interface ReadySubtask {
   capability_hint: string | null;
   file_scope: string[];
   fit_score: number;
+  reason: ReadyReason;
   reasoning: string;
 }
 
 interface RankedSubtask extends ReadySubtask {
+  task_id: number;
   created_at: number;
+  claim_ts: number | null;
+  current_claim: boolean;
 }
 
 interface ScopeConflict {
@@ -62,7 +72,6 @@ export function register(server: McpServer, ctx: ToolContext): void {
     async ({ session_id, agent, repo_root, limit }) => {
       const plans = listPlans(store, {
         ...(repo_root !== undefined ? { repo_root } : {}),
-        only_with_available_subtasks: true,
         limit: 2000,
       });
       const profile = loadProfile(store.storage, agent);
@@ -71,7 +80,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
           .listTasks(2000)
           .map((t) => [t.id, { created_at: t.created_at, created_by: t.created_by }]),
       );
-      const ranked = plans
+      const available = plans
         .flatMap((plan) =>
           plan.next_available.map((subtask) =>
             rankSubtask(store, {
@@ -81,16 +90,47 @@ export function register(server: McpServer, ctx: ToolContext): void {
               profile,
               parent_plan_created_by: tasksById.get(plan.spec_task_id)?.created_by ?? null,
               created_at: tasksById.get(subtask.task_id)?.created_at ?? plan.created_at,
+              reason: 'ready_high_score',
+              current_claim: false,
             }),
           ),
-        )
-        .sort((a, b) => b.fit_score - a.fit_score || a.created_at - b.created_at);
+        );
+      const currentClaims = plans.flatMap((plan) =>
+        plan.subtasks
+          .filter(
+            (subtask) =>
+              subtask.status === 'claimed' && subtask.claimed_by_session_id === session_id,
+          )
+          .map((subtask) =>
+            rankSubtask(store, {
+              plan_slug: plan.plan_slug,
+              subtask,
+              session_id,
+              profile,
+              parent_plan_created_by: tasksById.get(plan.spec_task_id)?.created_by ?? null,
+              created_at: tasksById.get(subtask.task_id)?.created_at ?? plan.created_at,
+              reason: 'continue_current_task',
+              current_claim: true,
+            }),
+          ),
+      );
+      const urgentTaskIds = blockingMessageTaskIds(store, {
+        session_id,
+        agent,
+        task_ids: [...new Set([...available, ...currentClaims].map((task) => task.task_id))],
+      });
+      const ranked = rankForSelection(
+        available.map((task) =>
+          urgentTaskIds.has(task.task_id) ? { ...task, reason: 'urgent_override' } : task,
+        ),
+        currentClaims,
+      );
 
       return jsonReply({
         ready: ranked
           .slice(0, limit ?? DEFAULT_LIMIT)
-          .map(({ created_at: _createdAt, ...entry }) => entry),
-        total_available: ranked.length,
+          .map(({ created_at: _createdAt, task_id: _taskId, claim_ts: _claimTs, current_claim: _currentClaim, ...entry }) => entry),
+        total_available: available.length,
       });
     },
   );
@@ -105,6 +145,8 @@ function rankSubtask(
     profile: AgentProfile;
     parent_plan_created_by: string | null;
     created_at: number;
+    reason: ReadyReason;
+    current_claim: boolean;
   },
 ): RankedSubtask {
   const capabilityMatch = capabilityMatchScore(args.subtask.capability_hint, args.profile);
@@ -117,6 +159,7 @@ function rankSubtask(
   );
 
   return {
+    task_id: args.subtask.task_id,
     plan_slug: args.plan_slug,
     subtask_index: args.subtask.subtask_index,
     wave_index: args.subtask.wave_index,
@@ -126,6 +169,7 @@ function rankSubtask(
     capability_hint: args.subtask.capability_hint,
     file_scope: args.subtask.file_scope,
     fit_score: fitScore,
+    reason: args.reason,
     reasoning: buildReasoning({
       capability_hint: args.subtask.capability_hint,
       capability_match: capabilityMatch,
@@ -135,7 +179,96 @@ function rankSubtask(
       queen_bonus: queenBonus,
     }),
     created_at: args.created_at,
+    claim_ts: args.current_claim
+      ? currentClaimTimestamp(store, args.subtask.task_id, args.session_id)
+      : null,
+    current_claim: args.current_claim,
   };
+}
+
+function rankForSelection(
+  available: RankedSubtask[],
+  currentClaims: RankedSubtask[],
+): RankedSubtask[] {
+  const orderedCurrent = [...currentClaims].sort(compareCurrentClaims);
+  const activeCurrent = orderedCurrent[0] ?? null;
+  if (!activeCurrent) {
+    return [...available].sort(compareReady);
+  }
+
+  const switchMargin =
+    activeCurrent.claim_ts !== null && Date.now() - activeCurrent.claim_ts < RECENT_CLAIM_COOLDOWN_MS
+      ? CURRENT_TASK_SWITCH_MARGIN + RECENT_CLAIM_COOLDOWN_MARGIN
+      : CURRENT_TASK_SWITCH_MARGIN;
+  const highScoreThreshold = activeCurrent.fit_score + switchMargin;
+
+  return [...available, ...orderedCurrent].sort((a, b) => {
+    const priorityDelta =
+      selectionPriority(a, highScoreThreshold) - selectionPriority(b, highScoreThreshold);
+    if (priorityDelta !== 0) return priorityDelta;
+    if (a.current_claim || b.current_claim) return compareCurrentClaims(a, b);
+    return compareReady(a, b);
+  });
+}
+
+function selectionPriority(task: RankedSubtask, highScoreThreshold: number): number {
+  if (task.reason === 'urgent_override') return 0;
+  if (!task.current_claim && task.fit_score >= highScoreThreshold) return 1;
+  if (task.current_claim) return 2;
+  return 3;
+}
+
+function compareReady(a: RankedSubtask, b: RankedSubtask): number {
+  return (
+    b.fit_score - a.fit_score ||
+    a.created_at - b.created_at ||
+    a.plan_slug.localeCompare(b.plan_slug) ||
+    a.subtask_index - b.subtask_index
+  );
+}
+
+function compareCurrentClaims(a: RankedSubtask, b: RankedSubtask): number {
+  const aClaim = a.claim_ts ?? a.created_at;
+  const bClaim = b.claim_ts ?? b.created_at;
+  return (
+    bClaim - aClaim ||
+    b.fit_score - a.fit_score ||
+    a.created_at - b.created_at ||
+    a.plan_slug.localeCompare(b.plan_slug) ||
+    a.subtask_index - b.subtask_index
+  );
+}
+
+function blockingMessageTaskIds(
+  store: MemoryStore,
+  args: { session_id: string; agent: string; task_ids: number[] },
+): Set<number> {
+  if (args.task_ids.length === 0) return new Set();
+  return new Set(
+    listMessagesForAgent(store, {
+      session_id: args.session_id,
+      agent: args.agent,
+      task_ids: args.task_ids,
+      unread_only: true,
+      limit: 200,
+    })
+      .filter((message) => message.urgency === 'blocking')
+      .map((message) => message.task_id),
+  );
+}
+
+function currentClaimTimestamp(
+  store: MemoryStore,
+  taskId: number,
+  sessionId: string,
+): number | null {
+  const row = store.storage
+    .taskObservationsByKind(taskId, PLAN_SUBTASK_CLAIM_KIND, 500)
+    .find((entry) => {
+      const meta = parseMeta(entry.metadata);
+      return meta.status === 'claimed' && meta.session_id === sessionId;
+    });
+  return row?.ts ?? null;
 }
 
 function capabilityMatchScore(capabilityHint: string | null, profile: AgentProfile): number {

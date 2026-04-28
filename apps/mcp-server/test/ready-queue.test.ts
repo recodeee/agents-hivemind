@@ -23,16 +23,32 @@ interface ReadyEntry {
   capability_hint: string | null;
   file_scope: string[];
   fit_score: number;
+  reason: 'continue_current_task' | 'urgent_override' | 'ready_high_score';
   reasoning: string;
 }
 
-async function claimAndComplete(planSlug: string, subtaskIndex: number): Promise<void> {
-  await call('task_plan_claim_subtask', {
+interface ClaimResult {
+  task_id: number;
+  branch: string;
+  file_scope: string[];
+}
+
+async function claimSubtask(
+  planSlug: string,
+  subtaskIndex: number,
+  sessionId = 'agent-session',
+  agent = 'codex',
+): Promise<ClaimResult> {
+  return call<ClaimResult>('task_plan_claim_subtask', {
     plan_slug: planSlug,
     subtask_index: subtaskIndex,
-    session_id: 'agent-session',
-    agent: 'codex',
+    session_id: sessionId,
+    agent,
   });
+}
+
+async function claimAndComplete(planSlug: string, subtaskIndex: number): Promise<void> {
+  await claimSubtask(planSlug, subtaskIndex);
   await call('task_plan_complete_subtask', {
     plan_slug: planSlug,
     subtask_index: subtaskIndex,
@@ -71,6 +87,30 @@ function publishArgs(
     acceptance_criteria: ['Ready queue ranks available work'],
     subtasks,
   };
+}
+
+function taskIdForSubtask(planSlug: string, subtaskIndex: number): number {
+  const task = store.storage
+    .listTasks(2000)
+    .find((entry) => entry.branch === `spec/${planSlug}/sub-${subtaskIndex}`);
+  expect(task).toBeDefined();
+  return task?.id ?? -1;
+}
+
+function blockSubtask(planSlug: string, subtaskIndex: number, taskId: number): void {
+  store.addObservation({
+    session_id: 'agent-session',
+    task_id: taskId,
+    kind: 'plan-subtask-claim',
+    content: `sub-${subtaskIndex} blocked`,
+    metadata: {
+      status: 'blocked',
+      session_id: 'agent-session',
+      agent: 'codex',
+      plan_slug: planSlug,
+      subtask_index: subtaskIndex,
+    },
+  });
 }
 
 beforeEach(async () => {
@@ -434,5 +474,184 @@ describe('task_ready_for_agent', () => {
       expect(entry.reasoning).toContain('scope clear of live claims');
       expect(entry.reasoning).toContain('recent claim density 0');
     }
+  });
+
+  it('keeps the current claimed sub-task ahead of slightly higher new work', async () => {
+    await call('agent_upsert_profile', {
+      agent: 'codex',
+      capabilities: { api_work: 0.7, ui_work: 0.76 },
+    });
+    await call('task_plan_publish', {
+      ...publishArgs(
+        [
+          {
+            title: 'Continue API',
+            description: 'Current claimed work.',
+            file_scope: ['apps/api/current.ts'],
+            capability_hint: 'api_work',
+          },
+          {
+            title: 'New UI signal',
+            description: 'Slightly higher fit, but not enough to switch.',
+            file_scope: ['apps/web/new-signal.tsx'],
+            capability_hint: 'ui_work',
+          },
+        ],
+        { slug: 'stay-bias-plan' },
+      ),
+    });
+    await claimSubtask('stay-bias-plan', 0);
+
+    const result = await call<ReadyResult>('task_ready_for_agent', {
+      session_id: 'agent-session',
+      agent: 'codex',
+      repo_root: repoRoot,
+      limit: 10,
+    });
+
+    expect(result.total_available).toBe(1);
+    expect(result.ready.map((entry) => entry.title)).toEqual([
+      'Continue API',
+      'New UI signal',
+    ]);
+    expect(result.ready[0]).toMatchObject({
+      title: 'Continue API',
+      reason: 'continue_current_task',
+    });
+    expect(result.ready[1]?.fit_score).toBeGreaterThan(result.ready[0]?.fit_score ?? 0);
+  });
+
+  it('lets a blocking urgent message override stay-on-task bias', async () => {
+    await call('agent_upsert_profile', {
+      agent: 'codex',
+      capabilities: { api_work: 0.7, ui_work: 0.76 },
+    });
+    await call('task_plan_publish', {
+      ...publishArgs(
+        [
+          {
+            title: 'Continue API',
+            description: 'Current claimed work.',
+            file_scope: ['apps/api/current-urgent.ts'],
+            capability_hint: 'api_work',
+          },
+          {
+            title: 'Urgent UI signal',
+            description: 'Blocking message should allow switching.',
+            file_scope: ['apps/web/urgent-signal.tsx'],
+            capability_hint: 'ui_work',
+          },
+        ],
+        { slug: 'urgent-bias-plan' },
+      ),
+    });
+    await claimSubtask('urgent-bias-plan', 0);
+    const urgentTask = new TaskThread(store, taskIdForSubtask('urgent-bias-plan', 1));
+    urgentTask.join('agent-session', 'codex');
+    urgentTask.postMessage({
+      from_session_id: 'planner',
+      from_agent: 'claude',
+      to_agent: 'codex',
+      to_session_id: 'agent-session',
+      urgency: 'blocking',
+      content: 'blocking handoff needs the UI lane now',
+    });
+
+    const result = await call<ReadyResult>('task_ready_for_agent', {
+      session_id: 'agent-session',
+      agent: 'codex',
+      repo_root: repoRoot,
+      limit: 10,
+    });
+
+    expect(result.ready.map((entry) => entry.title)).toEqual([
+      'Urgent UI signal',
+      'Continue API',
+    ]);
+    expect(result.ready[0]).toMatchObject({
+      title: 'Urgent UI signal',
+      reason: 'urgent_override',
+    });
+  });
+
+  it('removes stay-on-task bias after the current sub-task completes', async () => {
+    await call('agent_upsert_profile', {
+      agent: 'codex',
+      capabilities: { api_work: 0.7, ui_work: 0.76 },
+    });
+    await call('task_plan_publish', {
+      ...publishArgs(
+        [
+          {
+            title: 'Completing API',
+            description: 'Current work that finishes.',
+            file_scope: ['apps/api/completing.ts'],
+            capability_hint: 'api_work',
+          },
+          {
+            title: 'Ready UI after completion',
+            description: 'Ready work after current completion.',
+            file_scope: ['apps/web/after-completion.tsx'],
+            capability_hint: 'ui_work',
+          },
+        ],
+        { slug: 'completed-bias-plan' },
+      ),
+    });
+    await claimAndComplete('completed-bias-plan', 0);
+
+    const result = await call<ReadyResult>('task_ready_for_agent', {
+      session_id: 'agent-session',
+      agent: 'codex',
+      repo_root: repoRoot,
+      limit: 10,
+    });
+
+    expect(result.ready.map((entry) => entry.title)).toEqual(['Ready UI after completion']);
+    expect(result.ready[0]).toMatchObject({
+      title: 'Ready UI after completion',
+      reason: 'ready_high_score',
+    });
+  });
+
+  it('removes stay-on-task bias after the current sub-task is blocked', async () => {
+    await call('agent_upsert_profile', {
+      agent: 'codex',
+      capabilities: { api_work: 0.7, ui_work: 0.76 },
+    });
+    await call('task_plan_publish', {
+      ...publishArgs(
+        [
+          {
+            title: 'Blocked API',
+            description: 'Current work that hits a blocker.',
+            file_scope: ['apps/api/blocked.ts'],
+            capability_hint: 'api_work',
+          },
+          {
+            title: 'Ready UI after block',
+            description: 'Ready work after blocker.',
+            file_scope: ['apps/web/after-block.tsx'],
+            capability_hint: 'ui_work',
+          },
+        ],
+        { slug: 'blocked-bias-plan' },
+      ),
+    });
+    const claim = await claimSubtask('blocked-bias-plan', 0);
+    blockSubtask('blocked-bias-plan', 0, claim.task_id);
+
+    const result = await call<ReadyResult>('task_ready_for_agent', {
+      session_id: 'agent-session',
+      agent: 'codex',
+      repo_root: repoRoot,
+      limit: 10,
+    });
+
+    expect(result.ready.map((entry) => entry.title)).toEqual(['Ready UI after block']);
+    expect(result.ready[0]).toMatchObject({
+      title: 'Ready UI after block',
+      reason: 'ready_high_score',
+    });
   });
 });

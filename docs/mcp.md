@@ -899,7 +899,7 @@ Find the next task to claim for this agent. Use this when deciding what to work 
 }
 ```
 
-Returns `{ ready, total_available }`. Each `ready` entry includes `plan_slug`, `subtask_index`, `title`, `capability_hint`, `file_scope`, `fit_score`, and `reasoning`. Blocked work is filtered out, and conflicting active file claims lower the score. Claim the selected item with `task_plan_claim_subtask`, or claim specific files with `task_claim_file` before editing.
+Returns `{ ready, total_available }`. Each `ready` entry includes `plan_slug`, `subtask_index`, `title`, `capability_hint`, `file_scope`, `fit_score`, compact `reason`, and `reasoning`. `reason` is one of `continue_current_task`, `urgent_override`, or `ready_high_score`. Blocked work is filtered out, and conflicting active file claims lower the score. Claim new selected work with `task_plan_claim_subtask`; if the top reason is `continue_current_task`, keep working the already-claimed sub-task.
 
 ## `task_plan_claim_subtask`
 
