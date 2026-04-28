@@ -35,7 +35,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
             text: JSON.stringify({
               proposal_id: id,
               strength,
-              promotion_threshold: ProposalSystem.PROMOTION_THRESHOLD,
+              promotion_threshold: proposals.promotionThreshold,
             }),
           },
         ],

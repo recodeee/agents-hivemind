@@ -1,4 +1,5 @@
-import type { ReinforcementKind } from '@colony/storage';
+import { defaultSettings } from '@colony/config';
+import type { ReinforcementKind, ReinforcementRow } from '@colony/storage';
 import { inferIdeFromSessionId } from './infer-ide.js';
 import type { MemoryStore } from './memory-store.js';
 import { synthesizePlanFromProposal } from './plan.js';
@@ -23,11 +24,17 @@ export interface PromotedProposal {
   summary: string;
   task_id: number;
   promoted_at: number;
+  strength: number;
+  reinforcement_count: number;
 }
 
 export interface ForagingReport {
   pending: PendingProposal[];
   promoted: PromotedProposal[];
+}
+
+export interface ProposalSystemOptions {
+  now?: () => number;
 }
 
 /**
@@ -36,10 +43,9 @@ export interface ForagingReport {
  * `reinforce()` to support it; the PostToolUse hook also calls
  * `reinforce(..., 'adjacent')` whenever an agent edits a file a pending
  * proposal would touch. Strength is source-diverse: repeated same-session
- * support is collapsed, extra same-agent sessions count moderately, and a
- * different agent type counts fully. When total decayed strength crosses
- * PROMOTION_THRESHOLD, the proposal is auto-promoted into a real task
- * thread agents can join like any other task.
+ * support is collapsed for scoring, extra same-agent sessions count
+ * moderately, and a different agent type counts fully. Raw reinforcement
+ * events remain append-only for audit.
  */
 export class ProposalSystem {
   /**
@@ -47,8 +53,7 @@ export class ProposalSystem {
    * longer than edits. A proposal made 30 minutes ago is still potentially
    * a good idea; an edit made 30 minutes ago is stale context.
    */
-  private static readonly HALF_LIFE_MS = 60 * 60_000;
-  private static readonly DECAY_RATE = Math.LN2 / ProposalSystem.HALF_LIFE_MS;
+  static readonly HALF_LIFE_MS = defaultSettings.foraging.proposalHalfLifeMinutes * 60_000;
 
   /**
    * Reinforcement weights by kind. Rediscovery weighs more than explicit
@@ -81,16 +86,41 @@ export class ProposalSystem {
    * Tune after real usage: too low and spurious promotions clog the task
    * list; too high and good ideas never clear the bar.
    */
-  static readonly PROMOTION_THRESHOLD = 2.5;
+  static readonly PROMOTION_THRESHOLD = defaultSettings.foraging.promotionThreshold;
 
   /**
    * Noise floor for the foraging report. Pending proposals whose strength
    * has decayed below this are effectively evaporated — surface them only
    * in debrief analytics, not in live coordination prefaces.
    */
-  static readonly NOISE_FLOOR = 0.3;
+  static readonly NOISE_FLOOR = defaultSettings.foraging.proposalNoiseFloor;
 
-  constructor(private store: MemoryStore) {}
+  constructor(
+    private store: MemoryStore,
+    private readonly options: ProposalSystemOptions = {},
+  ) {}
+
+  get promotionThreshold(): number {
+    return positiveNumber(
+      this.store.settings.foraging.promotionThreshold,
+      ProposalSystem.PROMOTION_THRESHOLD,
+    );
+  }
+
+  get noiseFloor(): number {
+    return nonNegativeNumber(
+      this.store.settings.foraging.proposalNoiseFloor,
+      ProposalSystem.NOISE_FLOOR,
+    );
+  }
+
+  get halfLifeMs(): number {
+    const minutes = positiveNumber(
+      this.store.settings.foraging.proposalHalfLifeMinutes,
+      defaultSettings.foraging.proposalHalfLifeMinutes,
+    );
+    return minutes * 60_000;
+  }
 
   /**
    * Record a new proposal. The proposer is implicitly treated as the first
@@ -106,7 +136,7 @@ export class ProposalSystem {
     touches_files: string[];
     session_id: string;
   }): number {
-    const now = Date.now();
+    const now = this.now();
     const id = this.store.storage.insertProposal({
       repo_root: args.repo_root,
       branch: args.branch,
@@ -136,18 +166,15 @@ export class ProposalSystem {
     session_id: string;
     kind: ReinforcementKind;
   }): { strength: number; promoted: boolean } {
-    const now = Date.now();
-    const weight = ProposalSystem.WEIGHTS[args.kind];
-    if (!this.hasSameSessionWeightAtLeast(args.proposal_id, args.session_id, weight)) {
-      this.store.storage.insertReinforcement({
-        proposal_id: args.proposal_id,
-        session_id: args.session_id,
-        kind: args.kind,
-        weight,
-        reinforced_at: now,
-      });
-    }
-    const strength = this.currentStrength(args.proposal_id);
+    const now = this.now();
+    this.store.storage.insertReinforcement({
+      proposal_id: args.proposal_id,
+      session_id: args.session_id,
+      kind: args.kind,
+      weight: ProposalSystem.WEIGHTS[args.kind],
+      reinforced_at: now,
+    });
+    const strength = this.currentStrength(args.proposal_id, now);
     const promoted = this.maybePromote(args.proposal_id, strength);
     return { strength, promoted };
   }
@@ -160,34 +187,10 @@ export class ProposalSystem {
    * reinforcement count but n is small (typically under 20) so this stays
    * cheap.
    */
-  currentStrength(proposal_id: number): number {
-    const now = Date.now();
+  currentStrength(proposal_id: number, now = this.now()): number {
     const rows = this.store.storage.listReinforcements(proposal_id);
     const proposal = this.store.storage.getProposal(proposal_id);
-    const sessionTypes = new Map<string, string>();
-    const bySession = new Map<string, SessionEvidence>();
-
-    for (const row of rows) {
-      const strength = ProposalSystem.decay(row.weight, row.reinforced_at, now);
-      const existing = bySession.get(row.session_id);
-      if (
-        !existing ||
-        strength > existing.strength ||
-        (strength === existing.strength && row.reinforced_at > existing.reinforced_at)
-      ) {
-        bySession.set(row.session_id, {
-          session_id: row.session_id,
-          agent_type: this.agentTypeForSession(row.session_id, sessionTypes),
-          strength,
-          reinforced_at: row.reinforced_at,
-        });
-      }
-    }
-
-    return ProposalSystem.applySourceDiversity(
-      Array.from(bySession.values()),
-      proposal?.proposed_by,
-    );
+    return this.strengthFrom(rows, now, proposal?.proposed_by);
   }
 
   /**
@@ -225,21 +228,25 @@ export class ProposalSystem {
     const rows = this.store.storage.listProposalsForBranch(repo_root, branch);
     const pending: PendingProposal[] = [];
     const promoted: PromotedProposal[] = [];
+    const now = this.now();
 
     for (const p of rows) {
+      const reinforcements = this.store.storage.listReinforcements(p.id);
+      const strength = this.strengthFrom(reinforcements, now, p.proposed_by);
+      const reinforcementCount = distinctSessionCount(reinforcements);
       if (p.status === 'active' && p.task_id && p.promoted_at) {
         promoted.push({
           id: p.id,
           summary: p.summary,
           task_id: p.task_id,
           promoted_at: p.promoted_at,
+          strength,
+          reinforcement_count: reinforcementCount,
         });
         continue;
       }
       if (p.status !== 'pending') continue;
-      const strength = this.currentStrength(p.id);
-      if (strength < ProposalSystem.NOISE_FLOOR) continue;
-      const reinforcements = this.store.storage.listReinforcements(p.id);
+      if (strength < this.noiseFloor) continue;
       pending.push({
         id: p.id,
         summary: p.summary,
@@ -248,11 +255,11 @@ export class ProposalSystem {
         proposed_by: p.proposed_by,
         proposed_at: p.proposed_at,
         strength,
-        reinforcement_count: new Set(reinforcements.map((row) => row.session_id)).size,
+        reinforcement_count: reinforcementCount,
         signal_metadata: signalMetadataFromProposal(p, {
           reinforcements,
           strength,
-          half_life_minutes: ProposalSystem.HALF_LIFE_MS / 60_000,
+          half_life_minutes: this.halfLifeMs / 60_000,
         }),
       });
     }
@@ -269,7 +276,7 @@ export class ProposalSystem {
    * UNIQUE constraint — the promoted task is a sibling, not a replacement.
    */
   private maybePromote(proposal_id: number, strength: number): boolean {
-    if (strength < ProposalSystem.PROMOTION_THRESHOLD) return false;
+    if (strength < this.promotionThreshold) return false;
     const proposal = this.store.storage.getProposal(proposal_id);
     if (!proposal || proposal.status !== 'pending') return false;
 
@@ -283,7 +290,7 @@ export class ProposalSystem {
 
     this.store.storage.updateProposal(proposal_id, {
       status: 'active',
-      promoted_at: Date.now(),
+      promoted_at: this.now(),
       task_id: thread.task_id,
     });
 
@@ -296,14 +303,20 @@ export class ProposalSystem {
     // a re-entry of this method returns false at the status guard before
     // ever calling synthesize again.
     try {
-      synthesizePlanFromProposal(this.store, {
-        id: proposal.id,
-        repo_root: proposal.repo_root,
-        summary: proposal.summary,
-        rationale: proposal.rationale,
-        touches_files: proposal.touches_files,
-        proposed_by: proposal.proposed_by,
-      });
+      synthesizePlanFromProposal(
+        this.store,
+        {
+          id: proposal.id,
+          repo_root: proposal.repo_root,
+          summary: proposal.summary,
+          rationale: proposal.rationale,
+          touches_files: proposal.touches_files,
+          proposed_by: proposal.proposed_by,
+        },
+        {
+          promotion_threshold_label: formatStrength(this.promotionThreshold),
+        },
+      );
     } catch (err) {
       this.store.addObservation({
         session_id: proposal.proposed_by,
@@ -317,16 +330,6 @@ export class ProposalSystem {
     }
 
     return true;
-  }
-
-  private hasSameSessionWeightAtLeast(
-    proposal_id: number,
-    session_id: string,
-    weight: number,
-  ): boolean {
-    return this.store.storage
-      .listReinforcements(proposal_id)
-      .some((row) => row.session_id === session_id && row.weight >= weight);
   }
 
   private agentTypeForSession(session_id: string, cache: Map<string, string>): string {
@@ -343,10 +346,39 @@ export class ProposalSystem {
     return type;
   }
 
-  private static decay(weight: number, reinforcedAt: number, now: number): number {
+  static decay(weight: number, reinforcedAt: number, now: number, halfLifeMs?: number): number {
     const elapsed = now - reinforcedAt;
     if (elapsed <= 0) return weight;
-    return weight * Math.exp(-ProposalSystem.DECAY_RATE * elapsed);
+    const validHalfLifeMs = positiveNumber(halfLifeMs, ProposalSystem.HALF_LIFE_MS);
+    return weight * Math.exp(-(Math.LN2 / validHalfLifeMs) * elapsed);
+  }
+
+  private strengthFrom(
+    rows: ReinforcementRow[],
+    now: number,
+    proposedBy: string | undefined,
+  ): number {
+    const sessionTypes = new Map<string, string>();
+    const bySession = new Map<string, SessionEvidence>();
+
+    for (const row of rows) {
+      const strength = ProposalSystem.decay(row.weight, row.reinforced_at, now, this.halfLifeMs);
+      const existing = bySession.get(row.session_id);
+      if (
+        !existing ||
+        strength > existing.strength ||
+        (strength === existing.strength && row.reinforced_at > existing.reinforced_at)
+      ) {
+        bySession.set(row.session_id, {
+          session_id: row.session_id,
+          agent_type: this.agentTypeForSession(row.session_id, sessionTypes),
+          strength,
+          reinforced_at: row.reinforced_at,
+        });
+      }
+    }
+
+    return ProposalSystem.applySourceDiversity(Array.from(bySession.values()), proposedBy);
   }
 
   private static applySourceDiversity(
@@ -381,6 +413,10 @@ export class ProposalSystem {
 
     return total;
   }
+
+  private now(): number {
+    return this.options.now?.() ?? Date.now();
+  }
 }
 
 interface SessionEvidence {
@@ -407,6 +443,10 @@ function parseFiles(raw: string): string[] {
   }
 }
 
+function distinctSessionCount(rows: ReinforcementRow[]): number {
+  return new Set(rows.map((row) => row.session_id)).size;
+}
+
 function agentTypeFromMetadata(raw: string | null | undefined): string | undefined {
   if (!raw) return undefined;
   try {
@@ -429,4 +469,16 @@ function normalizeAgentType(value: unknown): string | undefined {
   if (!normalized || normalized === 'unknown') return undefined;
   if (normalized === 'claude-code' || normalized === 'claudecode') return 'claude';
   return normalized;
+}
+
+function positiveNumber(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function nonNegativeNumber(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+function formatStrength(value: number): string {
+  return Number.isInteger(value) ? String(value) : String(value);
 }

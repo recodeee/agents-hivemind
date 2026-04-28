@@ -161,6 +161,49 @@ export class Storage {
     if (hasVec && !hasEmbedding) {
       this.db.exec('ALTER TABLE task_embeddings RENAME COLUMN vec TO embedding');
     }
+    this.migrateProposalReinforcementAuditRows();
+  }
+
+  private migrateProposalReinforcementAuditRows(): void {
+    if (!this.tableExists('proposal_reinforcements')) return;
+    const cols = this.db.prepare('PRAGMA table_info(proposal_reinforcements)').all() as Array<{
+      name: string;
+    }>;
+    if (cols.some((c) => c.name === 'id')) return;
+
+    this.db.pragma('foreign_keys = OFF');
+    try {
+      this.db.exec(`
+        BEGIN;
+        DROP INDEX IF EXISTS idx_reinforcements_proposal;
+        ALTER TABLE proposal_reinforcements RENAME TO proposal_reinforcements_old;
+        CREATE TABLE proposal_reinforcements (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          proposal_id INTEGER NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,
+          session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+          kind TEXT NOT NULL,
+          weight REAL NOT NULL,
+          reinforced_at INTEGER NOT NULL
+        );
+        INSERT INTO proposal_reinforcements(proposal_id, session_id, kind, weight, reinforced_at)
+          SELECT proposal_id, session_id, kind, weight, reinforced_at
+          FROM proposal_reinforcements_old
+          ORDER BY proposal_id, reinforced_at, session_id;
+        DROP TABLE proposal_reinforcements_old;
+        CREATE INDEX IF NOT EXISTS idx_reinforcements_proposal
+          ON proposal_reinforcements(proposal_id);
+        COMMIT;
+      `);
+    } catch (err) {
+      try {
+        this.db.exec('ROLLBACK;');
+      } catch {
+        // Keep the original migration error visible.
+      }
+      throw err;
+    } finally {
+      this.db.pragma('foreign_keys = ON');
+    }
   }
 
   /**
@@ -1100,7 +1143,7 @@ export class Storage {
   insertReinforcement(r: NewReinforcement): void {
     this.db
       .prepare(
-        `INSERT OR REPLACE INTO proposal_reinforcements
+        `INSERT INTO proposal_reinforcements
            (proposal_id, session_id, kind, weight, reinforced_at)
          VALUES (?, ?, ?, ?, ?)`,
       )

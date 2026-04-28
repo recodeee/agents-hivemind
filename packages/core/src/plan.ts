@@ -320,7 +320,7 @@ const MAX_AUTO_SUBTASKS = 20;
 export function synthesizePlanFromProposal(
   store: MemoryStore,
   proposal: ProposalForSynthesis,
-  options?: { auto_archive?: boolean },
+  options?: { auto_archive?: boolean; promotion_threshold_label?: string },
 ): SynthesizedPlan {
   const planSlug = `proposal-${proposal.id}`;
   const parsedFiles = parseTouchesFilesArray(proposal.touches_files);
@@ -400,13 +400,14 @@ export function synthesizePlanFromProposal(
   // the events feed (Plans page side panel) gets a distinct line:
   // "Proposal #847 colony-foraging-cleanup crossed strength 2.5 and
   //  auto-promoted to a plan with N sub-tasks."
+  const thresholdLabel = options?.promotion_threshold_label ?? DEFAULT_PROMOTION_THRESHOLD_LABEL;
   store.addObservation({
     session_id: proposal.proposed_by,
     task_id: parent.task_id,
     kind: 'proposal-promoted',
     content:
       `Proposal #${proposal.id} ${proposal.summary} crossed strength ` +
-      `${ProposalSystem_PROMOTION_THRESHOLD_LABEL} and auto-promoted to a plan with ` +
+      `${thresholdLabel} and auto-promoted to a plan with ` +
       `${groups.length} sub-task${groups.length === 1 ? '' : 's'}.`,
     metadata: {
       plan_slug: planSlug,
@@ -424,10 +425,7 @@ export function synthesizePlanFromProposal(
   };
 }
 
-// Avoid a circular import (proposal-system → plan → proposal-system) by
-// duplicating the threshold label as a string literal here. The numeric
-// value lives in ProposalSystem.PROMOTION_THRESHOLD; keep this in sync.
-const ProposalSystem_PROMOTION_THRESHOLD_LABEL = '2.5';
+const DEFAULT_PROMOTION_THRESHOLD_LABEL = '2.5';
 
 function parseTouchesFilesArray(raw: string): string[] {
   try {

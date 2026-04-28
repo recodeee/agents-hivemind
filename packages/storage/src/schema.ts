@@ -143,12 +143,12 @@ CREATE INDEX IF NOT EXISTS idx_proposals_branch ON proposals(repo_root, branch, 
 -- independent rediscovery, while keeping rows timestamped for decay and for
 -- backward-compatible historical data.
 CREATE TABLE IF NOT EXISTS proposal_reinforcements (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   proposal_id INTEGER NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,
   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
   kind TEXT NOT NULL,
   weight REAL NOT NULL,
-  reinforced_at INTEGER NOT NULL,
-  PRIMARY KEY (proposal_id, session_id, reinforced_at)
+  reinforced_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_reinforcements_proposal ON proposal_reinforcements(proposal_id);
 

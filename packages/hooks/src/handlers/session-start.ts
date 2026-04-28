@@ -628,7 +628,7 @@ export function buildProposalPreface(store: MemoryStore, input: Pick<HookInput, 
     lines.push('Pending (support via task_reinforce if you agree):');
     for (const p of report.pending.slice(0, 5)) {
       lines.push(
-        `  #${p.id} [${p.strength.toFixed(1)} / ${ProposalSystem.PROMOTION_THRESHOLD}] ${p.summary}`,
+        `  #${p.id} [${p.strength.toFixed(1)} / ${proposals.promotionThreshold}] ${p.summary}`,
       );
     }
     if (report.pending.length > 5) {

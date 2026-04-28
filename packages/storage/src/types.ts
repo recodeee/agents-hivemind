@@ -142,6 +142,7 @@ export interface NewProposal {
 }
 
 export interface ReinforcementRow {
+  id: number;
   proposal_id: number;
   session_id: string;
   kind: ReinforcementKind;

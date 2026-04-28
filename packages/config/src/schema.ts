@@ -158,6 +158,23 @@ export const SettingsSchema = z
           .boolean()
           .default(true)
           .describe('Fire-and-forget the scanner when SessionStart fires.'),
+        proposalHalfLifeMinutes: z
+          .number()
+          .positive()
+          .default(60)
+          .describe(
+            'Minutes before a proposal reinforcement contributes half its original strength.',
+          ),
+        proposalNoiseFloor: z
+          .number()
+          .nonnegative()
+          .default(0.3)
+          .describe('Pending proposals below this decayed strength are omitted from foraging.'),
+        promotionThreshold: z
+          .number()
+          .positive()
+          .default(2.5)
+          .describe('Decayed proposal strength required to auto-promote into a task.'),
         extraSecretEnvNames: z
           .array(z.string())
           .default([])
@@ -169,6 +186,9 @@ export const SettingsSchema = z
         maxFileBytes: 200_000,
         maxFilesPerSource: 50,
         scanOnSessionStart: true,
+        proposalHalfLifeMinutes: 60,
+        proposalNoiseFloor: 0.3,
+        promotionThreshold: 2.5,
         extraSecretEnvNames: [],
       })
       .describe('Foraging: turn <repo_root>/examples into a reusable food source.'),

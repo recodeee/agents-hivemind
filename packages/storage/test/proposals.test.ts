@@ -148,4 +148,35 @@ describe('proposals storage', () => {
       .run(id);
     expect(storage.listReinforcements(id)).toEqual([]);
   });
+
+  it('keeps same-session same-millisecond reinforcements as auditable history', () => {
+    seed('A');
+    const id = storage.insertProposal({
+      repo_root: '/r',
+      branch: 'b',
+      summary: 's',
+      rationale: 'r',
+      touches_files: '[]',
+      proposed_by: 'A',
+    });
+    storage.insertReinforcement({
+      proposal_id: id,
+      session_id: 'A',
+      kind: 'explicit',
+      weight: 1.0,
+      reinforced_at: 1_000,
+    });
+    storage.insertReinforcement({
+      proposal_id: id,
+      session_id: 'A',
+      kind: 'adjacent',
+      weight: 0.3,
+      reinforced_at: 1_000,
+    });
+
+    const rows = storage.listReinforcements(id);
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((r) => r.id)).size).toBe(2);
+    expect(rows.map((r) => r.kind)).toEqual(['explicit', 'adjacent']);
+  });
 });

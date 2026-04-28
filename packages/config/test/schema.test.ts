@@ -6,6 +6,9 @@ describe('SettingsSchema', () => {
     const parsed = SettingsSchema.parse({});
     expect(parsed.workerPort).toBe(37777);
     expect(parsed.compression.intensity).toBe('full');
+    expect(parsed.foraging.proposalHalfLifeMinutes).toBe(60);
+    expect(parsed.foraging.proposalNoiseFloor).toBe(0.3);
+    expect(parsed.foraging.promotionThreshold).toBe(2.5);
   });
 
   it('rejects invalid intensity', () => {
@@ -15,6 +18,9 @@ describe('SettingsSchema', () => {
   it('defaults match exported defaultSettings', () => {
     expect(defaultSettings.workerPort).toBe(37777);
     expect(defaultSettings.embedding.provider).toBe('local');
+    expect(defaultSettings.foraging.proposalHalfLifeMinutes).toBe(60);
+    expect(defaultSettings.foraging.proposalNoiseFloor).toBe(0.3);
+    expect(defaultSettings.foraging.promotionThreshold).toBe(2.5);
   });
 
   it('uses COLONY_HOME for default settings location and data dir', () => {

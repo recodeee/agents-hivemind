@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultSettings } from '@colony/config';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MemoryStore } from '../src/memory-store.js';
 import { listPlans } from '../src/plan.js';
 import { ProposalSystem } from '../src/proposal-system.js';
@@ -23,7 +23,6 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  vi.useRealTimers();
   store.close();
   rmSync(dir, { recursive: true, force: true });
 });
@@ -139,9 +138,8 @@ describe('ProposalSystem.reinforce', () => {
 
   it('does not inflate strength from repeated same-session reinforcement', () => {
     seed('A', ['B', 'codex']);
-    const proposals = new ProposalSystem(store);
-    vi.useFakeTimers();
-    vi.setSystemTime(1_000_000);
+    let now = 1_000_000;
+    const proposals = new ProposalSystem(store, { now: () => now });
     const id = proposals.propose({
       repo_root: '/r',
       branch: 'b',
@@ -151,10 +149,10 @@ describe('ProposalSystem.reinforce', () => {
       session_id: 'A',
     });
 
-    vi.setSystemTime(1_000_001);
+    now += 1;
     const first = proposals.reinforce({ proposal_id: id, session_id: 'B', kind: 'explicit' });
     for (let i = 2; i <= 6; i += 1) {
-      vi.setSystemTime(1_000_000 + i);
+      now = 1_000_000 + i;
       proposals.reinforce({ proposal_id: id, session_id: 'B', kind: 'explicit' });
     }
     const afterSpam = proposals.currentStrength(id);
@@ -162,15 +160,14 @@ describe('ProposalSystem.reinforce', () => {
     const report = proposals.foragingReport('/r', 'b');
 
     expect(afterSpam).toBeCloseTo(first.strength, 4);
-    expect(rows.filter((row) => row.session_id === 'B')).toHaveLength(1);
+    expect(rows.filter((row) => row.session_id === 'B')).toHaveLength(6);
     expect(report.pending.find((proposal) => proposal.id === id)?.reinforcement_count).toBe(2);
   });
 
   it('adds moderate strength from different sessions of the same agent type', () => {
     seed('A', 'B', 'C');
-    const proposals = new ProposalSystem(store);
-    vi.useFakeTimers();
-    vi.setSystemTime(1_000_000);
+    const now = 1_000_000;
+    const proposals = new ProposalSystem(store, { now: () => now });
     const id = proposals.propose({
       repo_root: '/r',
       branch: 'b',
@@ -252,15 +249,42 @@ describe('ProposalSystem.reinforce', () => {
     expect(result.promoted).toBe(true);
     expect(store.storage.getProposal(id)?.status).toBe('active');
   });
+
+  it('uses the configured promotion threshold', () => {
+    store.close();
+    store = new MemoryStore({
+      dbPath: join(dir, 'custom-threshold.db'),
+      settings: {
+        ...defaultSettings,
+        foraging: {
+          ...defaultSettings.foraging,
+          promotionThreshold: 1.2,
+        },
+      },
+    });
+    seed('A', ['B', 'codex']);
+    const proposals = new ProposalSystem(store);
+    const id = proposals.propose({
+      repo_root: '/r',
+      branch: 'b',
+      summary: 'low threshold',
+      rationale: 'configurable promotion',
+      touches_files: [],
+      session_id: 'A',
+    });
+
+    const result = proposals.reinforce({ proposal_id: id, session_id: 'B', kind: 'adjacent' });
+
+    expect(result.strength).toBeCloseTo(1.3, 5);
+    expect(result.promoted).toBe(true);
+  });
 });
 
 describe('ProposalSystem.currentStrength decay', () => {
   it('applies exponential decay per-reinforcement', () => {
     seed('A');
-    const proposals = new ProposalSystem(store);
-    const t0 = 1_000_000;
-    vi.useFakeTimers();
-    vi.setSystemTime(t0);
+    let now = 1_000_000;
+    const proposals = new ProposalSystem(store, { now: () => now });
     const id = proposals.propose({
       repo_root: '/r',
       branch: 'b',
@@ -271,7 +295,7 @@ describe('ProposalSystem.currentStrength decay', () => {
     });
     // Advance one hour (half-life) and check: original 1.0 deposit should
     // have decayed to ~0.5.
-    vi.setSystemTime(t0 + 60 * 60_000);
+    now += ProposalSystem.HALF_LIFE_MS;
     expect(proposals.currentStrength(id)).toBeCloseTo(0.5, 2);
   });
 });
@@ -337,6 +361,88 @@ describe('ProposalSystem.pendingProposalsTouching', () => {
 });
 
 describe('ProposalSystem.foragingReport', () => {
+  it('keeps a new proposal visible with current decayed strength', () => {
+    seed('A');
+    const now = 1_000_000;
+    const proposals = new ProposalSystem(store, { now: () => now });
+    const id = proposals.propose({
+      repo_root: '/r',
+      branch: 'b',
+      summary: 'fresh',
+      rationale: 'new food source',
+      touches_files: [],
+      session_id: 'A',
+    });
+
+    const report = proposals.foragingReport('/r', 'b');
+
+    expect(report.pending.map((p) => p.id)).toEqual([id]);
+    expect(report.pending[0]?.strength).toBeCloseTo(1, 5);
+    expect(report.promoted).toEqual([]);
+  });
+
+  it('omits ignored proposals once they decay below the report noise floor', () => {
+    seed('A');
+    let now = 1_000_000;
+    const proposals = new ProposalSystem(store, { now: () => now });
+    const id = proposals.propose({
+      repo_root: '/r',
+      branch: 'b',
+      summary: 'ignored',
+      rationale: 'no support arrived',
+      touches_files: [],
+      session_id: 'A',
+    });
+
+    now += 3 * ProposalSystem.HALF_LIFE_MS;
+    const report = proposals.foragingReport('/r', 'b');
+
+    expect(proposals.currentStrength(id)).toBeLessThan(proposals.noiseFloor);
+    expect(report.pending.find((p) => p.id === id)).toBeUndefined();
+  });
+
+  it('keeps a reinforced proposal visible after its first signal fades', () => {
+    seed('A', 'B');
+    let now = 1_000_000;
+    const proposals = new ProposalSystem(store, { now: () => now });
+    const id = proposals.propose({
+      repo_root: '/r',
+      branch: 'b',
+      summary: 'rediscovered',
+      rationale: 'another agent found it later',
+      touches_files: [],
+      session_id: 'A',
+    });
+
+    now += 3 * ProposalSystem.HALF_LIFE_MS;
+    proposals.reinforce({ proposal_id: id, session_id: 'B', kind: 'explicit' });
+    const report = proposals.foragingReport('/r', 'b');
+
+    expect(report.pending.find((p) => p.id === id)?.strength).toBeGreaterThan(proposals.noiseFloor);
+  });
+
+  it('keeps promoted proposals durable after their strength falls below the noise floor', () => {
+    seed('A', 'B', ['C', 'codex']);
+    let now = 1_000_000;
+    const proposals = new ProposalSystem(store, { now: () => now });
+    const id = proposals.propose({
+      repo_root: '/r',
+      branch: 'b',
+      summary: 'promoted durable',
+      rationale: 'promotion is durable state',
+      touches_files: [],
+      session_id: 'A',
+    });
+    proposals.reinforce({ proposal_id: id, session_id: 'B', kind: 'explicit' });
+    proposals.reinforce({ proposal_id: id, session_id: 'C', kind: 'explicit' });
+
+    now += 10 * ProposalSystem.HALF_LIFE_MS;
+    const report = proposals.foragingReport('/r', 'b');
+
+    expect(report.pending.find((p) => p.id === id)).toBeUndefined();
+    expect(report.promoted.find((p) => p.id === id)?.strength).toBeLessThan(proposals.noiseFloor);
+  });
+
   it('ranks pending by strength desc, lists promoted separately, and omits evaporated proposals', () => {
     seed('A', ['B', 'codex'], ['C', 'gemini']);
     const proposals = new ProposalSystem(store);
@@ -388,7 +494,8 @@ describe('ProposalSystem.foragingReport', () => {
 
   it('filters proposals whose strength has evaporated below NOISE_FLOOR', () => {
     seed('A');
-    const proposals = new ProposalSystem(store);
+    let now = 1_000_000;
+    const proposals = new ProposalSystem(store, { now: () => now });
     const id = proposals.propose({
       repo_root: '/r',
       branch: 'b',
@@ -397,18 +504,8 @@ describe('ProposalSystem.foragingReport', () => {
       touches_files: [],
       session_id: 'A',
     });
-    // Force the reinforcement timestamp to the distant past by rewriting it
-    // directly; can't use vi.setSystemTime here because the insert already
-    // happened and we need to make that insert's age big.
-    const veryOld = Date.now() - 10 * 60 * 60_000; // 10 hours ago -> way below floor
-    (
-      store.storage as unknown as {
-        db: { prepare: (s: string) => { run: (...a: unknown[]) => unknown } };
-      }
-    ).db
-      .prepare('UPDATE proposal_reinforcements SET reinforced_at = ? WHERE proposal_id = ?')
-      .run(veryOld, id);
 
+    now += 10 * ProposalSystem.HALF_LIFE_MS;
     const report = proposals.foragingReport('/r', 'b');
     expect(report.pending.find((p) => p.id === id)).toBeUndefined();
   });
