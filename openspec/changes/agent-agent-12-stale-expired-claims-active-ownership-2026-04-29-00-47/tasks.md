@@ -21,9 +21,9 @@
 
 ## Completion / Cleanup
 
-- [ ] Commit changes.
-- [ ] Push branch.
-- [ ] Open/update PR.
-- [ ] Merge PR.
-- [ ] Prune sandbox worktree.
-- [ ] Record final proof.
+- [x] Commit changes: `0c1175a` on `agent/agent-12/stale-expired-claims-active-ownership-2026-04-29-00-47`.
+- [x] Push branch: `origin/agent/agent-12/stale-expired-claims-active-ownership-2026-04-29-00-47`.
+- [x] Open/update PR: https://github.com/recodeee/colony/pull/224.
+- [x] Merge PR: `MERGED` at `2026-04-28T22:57:14Z`, merge commit `f447cb725bd11af5d4fe5b21aa92b9eae5dffc78`.
+- [x] Prune sandbox worktree: `colony__agent-12__stale-expired-claims-active-ownership-2026-04-29-00-47` absent from `git worktree list`.
+- [x] Record final proof: local and remote `agent/agent-12/stale-expired-claims-active-ownership-2026-04-29-00-47` refs absent after cleanup.
