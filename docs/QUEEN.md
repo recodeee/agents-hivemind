@@ -355,6 +355,9 @@ accept, decline, reinforce, or hand off.
 Queen is not a shell scheduler. It must not monitor every running shell or infer
 global worker state from process activity. Startup context, attention inbox,
 ready-work ranking, rescue, sweep, and archive remain the coordination surfaces.
+Rescue ranks stale claimed sub-tasks with Queen plan context: a stale early-wave
+claim that blocks downstream work surfaces ahead of a stale leaf claim, and
+completed downstream sub-tasks do not count as blocked.
 
 Queen must not preserve stale state. Any live signal it emits or surfaces must
 expire, decay, sweep, archive, or become an explicit durable record.

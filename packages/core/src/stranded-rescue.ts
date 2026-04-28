@@ -3,11 +3,25 @@ import { type HivemindSession, readHivemind } from './hivemind.js';
 import { inferIdeFromSessionId } from './infer-ide.js';
 import type { MemoryStore } from './memory-store.js';
 import { type PlanInfo, type SubtaskInfo, listPlans } from './plan.js';
-import { type RelayReason, TaskThread } from './task-thread.js';
+import {
+  type MessageUrgency,
+  type RelayReason,
+  TaskThread,
+  isMessageAddressedTo,
+  parseMessage,
+} from './task-thread.js';
 
 const DEFAULT_STRANDED_AFTER_MS = 10 * 60_000;
 const RESCUE_RELAY_TTL_MS = 30 * 60_000;
 const ONE_LINE_LIMIT = 240;
+const MINUTE_MS = 60_000;
+
+export type BlockingUrgency = 'blocks_downstream' | 'local_claim';
+export type MessageAttentionState =
+  | 'blocking_message'
+  | 'needs_reply_message'
+  | 'fyi_message'
+  | 'no_pending_message';
 
 export interface StrandedRescueOptions {
   stranded_after_ms?: number;
@@ -26,6 +40,9 @@ export interface StrandedRescueOutcome {
     wave_index?: number;
     blocked_downstream_count?: number;
     suggested_action?: string;
+    blocking_urgency: BlockingUrgency;
+    stale_age_minutes: number;
+    message_attention_state: MessageAttentionState;
   }>;
   skipped: Array<{ session_id: string; reason: string }>;
 }
@@ -73,6 +90,9 @@ interface RescueJob {
   from_agent: string;
   last_observation_ts: number | null;
   one_line: string;
+  stale_age_ms: number;
+  blocking_urgency: BlockingUrgency;
+  message_attention_state: MessageAttentionState;
   planContext?: OrderedPlanContext;
 }
 
@@ -82,6 +102,7 @@ export function rescueStrandedSessions(
 ): StrandedRescueOutcome {
   const stranded_after_ms = options.stranded_after_ms ?? DEFAULT_STRANDED_AFTER_MS;
   const dryRun = options.dry_run ?? false;
+  const now = Date.now();
   const storage = store.storage as typeof store.storage & RescueStorage;
   const candidates = storage.findStrandedSessions({ stranded_after_ms });
   const outcome: StrandedRescueOutcome = { scanned: candidates.length, rescued: [], skipped: [] };
@@ -119,6 +140,7 @@ export function rescueStrandedSessions(
     const one_line = rescueOneLine(store, session_id);
 
     for (const [task_id, claims] of claimsByTask.entries()) {
+      const planContext = orderedPlanContexts.get(task_id);
       const job: RescueJob = {
         session_id,
         task_id,
@@ -129,8 +151,15 @@ export function rescueStrandedSessions(
         from_agent,
         one_line,
         last_observation_ts,
+        stale_age_ms: staleAgeMs({ now, last_observation_ts, claims }),
+        blocking_urgency: blockingUrgencyFor(planContext),
+        message_attention_state: messageAttentionState(store, {
+          task_id,
+          session_id,
+          agent: from_agent,
+          now,
+        }),
       };
-      const planContext = orderedPlanContexts.get(task_id);
       if (planContext) job.planContext = planContext;
       jobs.push(job);
     }
@@ -149,6 +178,9 @@ export function rescueStrandedSessions(
       claim_count: inherited_claims.length,
       rescue_reason: job.rescue_reason,
       dry_run: dryRun,
+      blocking_urgency: job.blocking_urgency,
+      stale_age_minutes: ageMinutes(job.stale_age_ms),
+      message_attention_state: job.message_attention_state,
       ...planMetadata,
     };
     store.addObservation({
@@ -166,6 +198,9 @@ export function rescueStrandedSessions(
         relay_observation_id: -1,
         inherited_claims,
         rescue_reason: job.rescue_reason,
+        blocking_urgency: job.blocking_urgency,
+        stale_age_minutes: ageMinutes(job.stale_age_ms),
+        message_attention_state: job.message_attention_state,
         ...planMetadata,
       });
       continue;
@@ -194,6 +229,9 @@ export function rescueStrandedSessions(
         claim_count: inherited_claims.length,
         rescue_reason: job.rescue_reason,
         relay_observation_id,
+        blocking_urgency: job.blocking_urgency,
+        stale_age_minutes: ageMinutes(job.stale_age_ms),
+        message_attention_state: job.message_attention_state,
         ...planMetadata,
       },
     });
@@ -204,6 +242,9 @@ export function rescueStrandedSessions(
       relay_observation_id,
       inherited_claims,
       rescue_reason: job.rescue_reason,
+      blocking_urgency: job.blocking_urgency,
+      stale_age_minutes: ageMinutes(job.stale_age_ms),
+      message_attention_state: job.message_attention_state,
       ...planMetadata,
     });
   }
@@ -212,11 +253,85 @@ export function rescueStrandedSessions(
 }
 
 function compareRescueJobs(left: RescueJob, right: RescueJob): number {
+  const blockingUrgency = blockingUrgencyRank(right) - blockingUrgencyRank(left);
+  if (blockingUrgency !== 0) return blockingUrgency;
+
+  const age = right.stale_age_ms - left.stale_age_ms;
+  if (age !== 0) return age;
+
   const impact =
     (right.planContext?.blocked_downstream_count ?? 0) -
     (left.planContext?.blocked_downstream_count ?? 0);
   if (impact !== 0) return impact;
+
+  const attention =
+    attentionRank(right.message_attention_state) - attentionRank(left.message_attention_state);
+  if (attention !== 0) return attention;
+
   return left.task_id - right.task_id;
+}
+
+function blockingUrgencyFor(context: OrderedPlanContext | undefined): BlockingUrgency {
+  return (context?.blocked_downstream_count ?? 0) > 0 ? 'blocks_downstream' : 'local_claim';
+}
+
+function blockingUrgencyRank(job: RescueJob): number {
+  return job.blocking_urgency === 'blocks_downstream' ? 1 : 0;
+}
+
+function staleAgeMs(args: {
+  now: number;
+  last_observation_ts: number | null;
+  claims: TaskClaimRow[];
+}): number {
+  const ages = [
+    args.last_observation_ts !== null ? args.now - args.last_observation_ts : 0,
+    ...args.claims.map((claim) => args.now - claim.claimed_at),
+  ];
+  return Math.max(0, ...ages);
+}
+
+function ageMinutes(ageMs: number): number {
+  return Math.max(0, Math.floor(ageMs / MINUTE_MS));
+}
+
+function messageAttentionState(
+  store: MemoryStore,
+  args: { task_id: number; session_id: string; agent: string; now: number },
+): MessageAttentionState {
+  let best: MessageUrgency | null = null;
+  for (const row of store.storage.taskObservationsByKind(args.task_id, 'message', 50)) {
+    if (row.session_id === args.session_id) continue;
+    const meta = parseMessage(row.metadata);
+    if (!meta) continue;
+    if (meta.status !== 'unread') continue;
+    if (meta.expires_at !== null && args.now > meta.expires_at) continue;
+    if (!isMessageAddressedTo(meta, args.session_id, args.agent)) continue;
+    if (best === 'blocking') continue;
+    if (meta.urgency === 'blocking' || best === null) {
+      best = meta.urgency;
+    } else if (meta.urgency === 'needs_reply' && best === 'fyi') {
+      best = meta.urgency;
+    }
+  }
+
+  if (best === 'blocking') return 'blocking_message';
+  if (best === 'needs_reply') return 'needs_reply_message';
+  if (best === 'fyi') return 'fyi_message';
+  return 'no_pending_message';
+}
+
+function attentionRank(state: MessageAttentionState): number {
+  switch (state) {
+    case 'blocking_message':
+      return 3;
+    case 'needs_reply_message':
+      return 2;
+    case 'fyi_message':
+      return 1;
+    case 'no_pending_message':
+      return 0;
+  }
 }
 
 function orderedPlanContextByTask(store: MemoryStore): Map<number, OrderedPlanContext> {
