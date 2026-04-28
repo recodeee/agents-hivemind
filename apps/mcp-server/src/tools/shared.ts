@@ -33,6 +33,7 @@ export interface HivemindContextBuildOptions {
   attention?: HivemindContextAttentionInput;
   localContext?: HivemindLocalContext;
   readyWorkCount?: number;
+  adoptionNudges?: HivemindAdoptionNudge[];
 }
 
 export interface HivemindContextAttentionInput {
@@ -41,6 +42,18 @@ export interface HivemindContextAttentionInput {
   summary: AttentionInbox['summary'];
   observation_ids: number[];
   observation_ids_truncated: boolean;
+}
+
+export type HivemindAdoptionNudgeKey =
+  | 'task_list_overuse'
+  | 'notepad_overuse'
+  | 'claim_before_edit_low';
+
+export interface HivemindAdoptionNudge {
+  key: HivemindAdoptionNudgeKey;
+  tool: 'task_ready_for_agent' | 'task_note_working' | 'task_claim_file';
+  current: string;
+  hint: string;
 }
 
 export interface HivemindContextLane {
@@ -80,6 +93,7 @@ export interface HivemindContext {
     pending_handoff_count: number;
     blocking: boolean;
     ready_work_count?: number;
+    adoption_nudges: HivemindAdoptionNudge[];
     attention_counts: HivemindContextAttentionCounts;
     state_tool_replacements: Record<string, string[]>;
   };
@@ -297,6 +311,7 @@ export function buildHivemindContext(
   const ownership = buildOwnership(lanes, options.maxClaims, options.maxHotFiles);
   const attention = buildAttention(needsAttentionCount, options.attention);
   const localContext = options.localContext ?? null;
+  const adoptionNudges = options.adoptionNudges ?? [];
 
   return {
     generated_at: snapshot.generated_at,
@@ -311,13 +326,16 @@ export function buildHivemindContext(
       claim_count: ownership.claim_count,
       hot_file_count: ownership.hot_files.length,
       next_action: localContext?.ready_next_action ?? HIVEMIND_FUNNEL_NEXT_ACTION,
-      suggested_tools: HIVEMIND_SUGGESTED_TOOLS,
+      suggested_tools: [
+        ...new Set([...HIVEMIND_SUGGESTED_TOOLS, ...adoptionNudges.map((nudge) => nudge.tool)]),
+      ],
       attention_hint: HIVEMIND_ATTENTION_HINT,
       ready_work_hint: HIVEMIND_READY_WORK_HINT,
       unread_message_count: attention.counts.unread_message_count,
       pending_handoff_count: attention.counts.pending_handoff_count,
       blocking: attention.counts.blocked,
       ...(options.readyWorkCount !== undefined ? { ready_work_count: options.readyWorkCount } : {}),
+      adoption_nudges: adoptionNudges,
       attention_counts: attention.counts,
       state_tool_replacements: STATE_TOOL_REPLACEMENTS,
     },

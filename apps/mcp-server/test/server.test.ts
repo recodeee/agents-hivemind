@@ -368,6 +368,89 @@ describe('MCP server', () => {
     expect(payload.memory_hits[0]).not.toHaveProperty('content');
   });
 
+  it('hivemind_context adds compact adoption nudges from synthetic telemetry', async () => {
+    const repoRoot = join(dir, 'repo-adoption-nudges');
+    store.startSession({ id: 'metrics', ide: 'test', cwd: repoRoot });
+    for (let i = 0; i < 4; i += 1) {
+      store.addObservation({
+        session_id: 'metrics',
+        kind: 'tool_use',
+        content: 'task_list',
+        metadata: { tool: 'mcp__colony__task_list' },
+      });
+    }
+    store.addObservation({
+      session_id: 'metrics',
+      kind: 'tool_use',
+      content: 'task_ready_for_agent',
+      metadata: { tool: 'mcp__colony__task_ready_for_agent' },
+    });
+    store.addObservation({
+      session_id: 'metrics',
+      kind: 'tool_use',
+      content: 'task_note_working',
+      metadata: { tool: 'mcp__colony__task_note_working' },
+    });
+    for (let i = 0; i < 3; i += 1) {
+      store.addObservation({
+        session_id: 'metrics',
+        kind: 'tool_use',
+        content: 'notepad_write_working',
+        metadata: { tool: 'mcp__omx_memory__notepad_write_working' },
+      });
+    }
+    store.addObservation({
+      session_id: 'metrics',
+      kind: 'tool_use',
+      content: 'edit without colony claim',
+      metadata: { tool: 'Edit', file_path: 'src/live-tool.ts' },
+    });
+
+    const res = await client.callTool({
+      name: 'hivemind_context',
+      arguments: { repo_root: repoRoot, query: 'adoption nudges' },
+    });
+    const text = (res.content as Array<{ type: string; text: string }>)[0]?.text ?? '{}';
+    const payload = JSON.parse(text) as {
+      summary: {
+        suggested_tools: string[];
+        adoption_nudges: Array<{
+          key: string;
+          tool: string;
+          current: string;
+          hint: string;
+        }>;
+      };
+    };
+
+    expect(payload.summary.adoption_nudges).toEqual([
+      expect.objectContaining({
+        key: 'task_list_overuse',
+        tool: 'task_ready_for_agent',
+        current: 'task_list=4; task_ready_for_agent=1',
+      }),
+      expect.objectContaining({
+        key: 'notepad_overuse',
+        tool: 'task_note_working',
+        current: 'colony_notes=1; omx_notepad_writes=3',
+      }),
+      expect.objectContaining({
+        key: 'claim_before_edit_low',
+        tool: 'task_claim_file',
+        current: 'claimed_before_edit=0/1',
+      }),
+    ]);
+    expect(payload.summary.suggested_tools).toEqual([
+      'attention_inbox',
+      'task_ready_for_agent',
+      'task_note_working',
+      'task_claim_file',
+    ]);
+    expect(payload.summary.adoption_nudges.map((nudge) => nudge.hint).join(' ')).toContain(
+      'task_note_working',
+    );
+  });
+
   it('hivemind_context keeps huge active-session sets compact by default', async () => {
     const repoRoot = join(dir, 'repo-huge-context');
     const activeSessionDir = join(repoRoot, '.omx', 'state', 'active-sessions');

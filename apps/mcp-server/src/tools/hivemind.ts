@@ -14,6 +14,7 @@ import { type ToolContext, defaultWrapHandler } from './context.js';
 import { detectMcpClientIdentity } from './heartbeat.js';
 import {
   type CompactNegativeWarning,
+  type HivemindAdoptionNudge,
   buildContextQuery,
   buildHivemindContext,
   buildHivemindLocalContext,
@@ -29,6 +30,10 @@ const DEFAULT_CONTEXT_MEMORY_LIMIT = 3;
 const DEFAULT_CONTEXT_CLAIM_LIMIT = 12;
 const DEFAULT_CONTEXT_HOT_FILE_LIMIT = 8;
 const DEFAULT_CONTEXT_ATTENTION_ID_LIMIT = 12;
+const ADOPTION_NUDGE_LOOKBACK_MS = 24 * 60 * 60_000;
+const TARGET_TASK_READY_PER_LIST = 0.3;
+const TARGET_COLONY_NOTE_SHARE = 0.7;
+const TARGET_CLAIM_BEFORE_EDIT = 0.5;
 
 export function register(server: McpServer, ctx: ToolContext): void {
   const wrapHandler = ctx.wrapHandler ?? defaultWrapHandler;
@@ -220,6 +225,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
             })
           : undefined;
         const readyWorkCount = countReadyWork(store, { repo_root, repo_roots });
+        const adoptionNudges = buildAdoptionNudges(store);
 
         return {
           content: [
@@ -231,6 +237,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
                   maxHotFiles,
                   attention: attentionInput,
                   readyWorkCount,
+                  adoptionNudges,
                   ...(localContext !== undefined ? { localContext } : {}),
                 }),
               ),
@@ -265,6 +272,93 @@ function countReadyWork(
   return listPlans(store, { limit: 2000 })
     .filter((plan) => roots.size === 0 || roots.has(resolve(plan.repo_root)))
     .reduce((total, plan) => total + plan.next_available.length, 0);
+}
+
+function buildAdoptionNudges(store: MemoryStore, now = Date.now()): HivemindAdoptionNudge[] {
+  try {
+    return adoptionNudgesFromMetrics(store, now);
+  } catch {
+    return [];
+  }
+}
+
+function adoptionNudgesFromMetrics(store: MemoryStore, now: number): HivemindAdoptionNudge[] {
+  const since = now - ADOPTION_NUDGE_LOOKBACK_MS;
+  const calls = store.storage.toolCallsSince(since);
+  const nudges: HivemindAdoptionNudge[] = [];
+  const taskListCalls = countColonyTool(calls, 'task_list');
+  const taskReadyCalls = countColonyTool(calls, 'task_ready_for_agent');
+  const readyPerList = ratio(taskReadyCalls, taskListCalls);
+
+  if (taskListCalls > 0 && (readyPerList ?? 0) < TARGET_TASK_READY_PER_LIST) {
+    nudges.push({
+      key: 'task_list_overuse',
+      tool: 'task_ready_for_agent',
+      current: `task_list=${taskListCalls}; task_ready_for_agent=${taskReadyCalls}`,
+      hint: 'Use task_ready_for_agent before choosing work; task_list is inventory.',
+    });
+  }
+
+  const colonyWorkingNotes =
+    countColonyTool(calls, 'task_post') + countColonyTool(calls, 'task_note_working');
+  const omxNotepadWrites = calls.filter((call) => isOmxNotepadWrite(call.tool)).length;
+  const colonyNoteShare = ratio(colonyWorkingNotes, colonyWorkingNotes + omxNotepadWrites);
+
+  if (
+    omxNotepadWrites > 0 &&
+    colonyNoteShare !== null &&
+    colonyNoteShare < TARGET_COLONY_NOTE_SHARE
+  ) {
+    nudges.push({
+      key: 'notepad_overuse',
+      tool: 'task_note_working',
+      current: `colony_notes=${colonyWorkingNotes}; omx_notepad_writes=${omxNotepadWrites}`,
+      hint: 'Use task_note_working for task-scoped working state; keep OMX notepad as fallback.',
+    });
+  }
+
+  try {
+    const claimStats = store.storage.claimBeforeEditStats(since);
+    const claimBeforeEditRatio = ratio(
+      claimStats.edits_claimed_before,
+      claimStats.edits_with_file_path,
+    );
+
+    if (
+      claimStats.edits_with_file_path > 0 &&
+      claimBeforeEditRatio !== null &&
+      claimBeforeEditRatio < TARGET_CLAIM_BEFORE_EDIT
+    ) {
+      nudges.push({
+        key: 'claim_before_edit_low',
+        tool: 'task_claim_file',
+        current: `claimed_before_edit=${claimStats.edits_claimed_before}/${claimStats.edits_with_file_path}`,
+        hint: 'Call task_claim_file for touched files before edit tools.',
+      });
+    }
+  } catch {
+    // Keep the context response and other adoption nudges available.
+  }
+
+  return nudges;
+}
+
+type ToolCall = ReturnType<MemoryStore['storage']['toolCallsSince']>[number];
+
+function countColonyTool(calls: ToolCall[], toolName: string): number {
+  return calls.filter((call) => isColonyTool(call.tool, toolName)).length;
+}
+
+function isColonyTool(tool: string, toolName: string): boolean {
+  return tool === toolName || tool === `colony.${toolName}` || tool === `mcp__colony__${toolName}`;
+}
+
+function isOmxNotepadWrite(tool: string): boolean {
+  return /(^|[_:.])notepad_write(_|$)/.test(tool) || /omx.*notepad.*write/i.test(tool);
+}
+
+function ratio(numerator: number, denominator: number): number | null {
+  return denominator > 0 ? numerator / denominator : null;
 }
 
 function agentFromIde(ide: string): string {
