@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultSettings } from '@colony/config';
-import { MemoryStore } from '@colony/core';
+import { MemoryStore, TaskThread } from '@colony/core';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -303,6 +303,198 @@ describe('MCP server', () => {
     expect(payload.memory_hits[0]).toHaveProperty('id');
     expect(payload.memory_hits[0]).toHaveProperty('snippet');
     expect(payload.memory_hits[0]).not.toHaveProperty('content');
+  });
+
+  it('hivemind_context keeps huge active-session sets compact by default', async () => {
+    const repoRoot = join(dir, 'repo-huge-context');
+    const activeSessionDir = join(repoRoot, '.omx', 'state', 'active-sessions');
+    const lockStateDir = join(repoRoot, '.omx', 'state');
+    mkdirSync(activeSessionDir, { recursive: true });
+    mkdirSync(lockStateDir, { recursive: true });
+    const now = Date.now();
+    const locks: Record<string, Record<string, unknown>> = {};
+
+    for (let i = 0; i < 25; i += 1) {
+      const branch = `agent/codex/context-${i}`;
+      const worktreePath = join(repoRoot, '.omx', 'agent-worktrees', `agent__codex__context-${i}`);
+      const heartbeat = new Date(now - i * 1000).toISOString();
+      mkdirSync(worktreePath, { recursive: true });
+      writeFileSync(
+        join(activeSessionDir, `agent__codex__context-${i}.json`),
+        `${JSON.stringify(
+          {
+            schemaVersion: 1,
+            repoRoot,
+            branch,
+            taskName: `Context task ${i}`,
+            latestTaskPreview: `Compact local context lane ${i}`,
+            agentName: 'codex',
+            worktreePath,
+            pid: process.pid,
+            cliName: 'codex',
+            startedAt: heartbeat,
+            lastHeartbeatAt: heartbeat,
+            state: 'working',
+          },
+          null,
+          2,
+        )}\n`,
+        'utf8',
+      );
+      locks[`src/file-${i}.ts`] = {
+        branch,
+        claimed_at: heartbeat,
+        allow_delete: false,
+      };
+    }
+
+    writeFileSync(
+      join(lockStateDir, 'agent-file-locks.json'),
+      `${JSON.stringify({ locks }, null, 2)}\n`,
+      'utf8',
+    );
+
+    store.startSession({ id: 'ctx', ide: 'test', cwd: repoRoot });
+    for (let i = 0; i < 6; i += 1) {
+      store.addObservation({
+        session_id: 'ctx',
+        kind: 'note',
+        content: `compact local sentinel memory hit ${i}`,
+      });
+    }
+
+    const compactRes = await client.callTool({
+      name: 'hivemind_context',
+      arguments: { repo_root: repoRoot, query: 'compact local sentinel' },
+    });
+    const compactText =
+      (compactRes.content as Array<{ type: string; text: string }>)[0]?.text ?? '{}';
+    const compact = JSON.parse(compactText) as {
+      summary: {
+        lane_count: number;
+        total_lane_count: number;
+        lanes_truncated: boolean;
+        memory_hit_count: number;
+        claim_count: number;
+      };
+      lanes: Array<Record<string, unknown>>;
+      ownership: {
+        claims: Array<Record<string, unknown>>;
+        claims_truncated: boolean;
+        hot_files: Array<Record<string, unknown>>;
+      };
+      memory_hits: Array<Record<string, unknown>>;
+    };
+
+    expect(compact.summary.total_lane_count).toBe(25);
+    expect(compact.summary.lane_count).toBe(8);
+    expect(compact.summary.lanes_truncated).toBe(true);
+    expect(compact.summary.memory_hit_count).toBe(3);
+    expect(compact.summary.claim_count).toBe(8);
+    expect(compact.lanes).toHaveLength(8);
+    expect(compact.memory_hits).toHaveLength(3);
+    expect(compact.ownership.claims.length).toBeLessThanOrEqual(12);
+    expect(compact.ownership.hot_files.length).toBeLessThanOrEqual(8);
+    expect(compact.ownership.claims_truncated).toBe(false);
+    expect(compact.memory_hits[0]).not.toHaveProperty('content');
+
+    const expandedRes = await client.callTool({
+      name: 'hivemind_context',
+      arguments: {
+        repo_root: repoRoot,
+        query: 'compact local sentinel',
+        limit: 15,
+        memory_limit: 5,
+        max_claims: 20,
+        max_hot_files: 12,
+      },
+    });
+    const expandedText =
+      (expandedRes.content as Array<{ type: string; text: string }>)[0]?.text ?? '{}';
+    const expanded = JSON.parse(expandedText) as {
+      summary: { lane_count: number; memory_hit_count: number };
+      ownership: {
+        claims: Array<Record<string, unknown>>;
+        hot_files: Array<Record<string, unknown>>;
+      };
+      memory_hits: Array<Record<string, unknown>>;
+    };
+
+    expect(expanded.summary.lane_count).toBe(15);
+    expect(expanded.summary.memory_hit_count).toBe(5);
+    expect(expanded.ownership.claims).toHaveLength(15);
+    expect(expanded.ownership.hot_files).toHaveLength(12);
+    expect(expanded.memory_hits).toHaveLength(5);
+  });
+
+  it('hivemind_context includes local current-session attention counts without bodies', async () => {
+    const repoRoot = join(dir, 'repo-context-attention');
+    const otherRoot = join(dir, 'repo-context-attention-other');
+    store.startSession({ id: 'claude', ide: 'claude-code', cwd: repoRoot });
+    store.startSession({ id: 'codex', ide: 'codex', cwd: repoRoot });
+    const thread = TaskThread.open(store, {
+      repo_root: repoRoot,
+      branch: 'agent/claude/attention',
+      session_id: 'claude',
+    });
+    thread.join('claude', 'claude');
+    thread.join('codex', 'codex');
+    const handoffId = thread.handOff({
+      from_session_id: 'claude',
+      from_agent: 'claude',
+      to_agent: 'codex',
+      summary: 'take local context lane',
+      transferred_files: ['src/local.ts'],
+    });
+    const messageId = thread.postMessage({
+      from_session_id: 'claude',
+      from_agent: 'claude',
+      to_agent: 'codex',
+      content: 'blocking body should require hydration',
+      urgency: 'blocking',
+    });
+
+    const otherThread = TaskThread.open(store, {
+      repo_root: otherRoot,
+      branch: 'agent/claude/other-attention',
+      session_id: 'claude',
+    });
+    otherThread.join('claude', 'claude');
+    otherThread.join('codex', 'codex');
+    otherThread.postMessage({
+      from_session_id: 'claude',
+      from_agent: 'claude',
+      to_agent: 'codex',
+      content: 'other repo blocker must stay out',
+      urgency: 'blocking',
+    });
+
+    const res = await client.callTool({
+      name: 'hivemind_context',
+      arguments: { repo_root: repoRoot, session_id: 'codex', agent: 'codex' },
+    });
+    const text = (res.content as Array<{ type: string; text: string }>)[0]?.text ?? '{}';
+    const payload = JSON.parse(text) as {
+      attention: {
+        counts: {
+          pending_handoff_count: number;
+          unread_message_count: number;
+          blocked: boolean;
+        };
+        observation_ids: number[];
+        hydration: string;
+      };
+      summary: { next_action: string };
+    };
+
+    expect(payload.attention.counts.pending_handoff_count).toBe(1);
+    expect(payload.attention.counts.unread_message_count).toBe(1);
+    expect(payload.attention.counts.blocked).toBe(true);
+    expect(payload.attention.observation_ids).toEqual([messageId, handoffId]);
+    expect(payload.attention.hydration).toContain('get_observations');
+    expect(payload.summary.next_action).toMatch(/blocking task messages/i);
+    expect(text).not.toContain('blocking body should require hydration');
+    expect(text).not.toContain('other repo blocker must stay out');
   });
 
   it('hivemind falls back to worktree AGENT.lock task previews', async () => {

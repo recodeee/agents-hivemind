@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import type { TaskClaimRow } from '@colony/storage';
 import {
   type HivemindActivity,
@@ -383,12 +384,23 @@ function resolveTaskIds(store: MemoryStore, opts: AttentionInboxOptions): number
   // findActiveTaskForSession (which returns one id); the inbox wants every
   // lane the session could hear from.
   const rows = store.storage.listTasks(200);
+  const repoRoots = attentionRepoRoots(opts);
   const participating: number[] = [];
   for (const task of rows) {
+    if (repoRoots.size > 0 && !repoRoots.has(resolve(task.repo_root))) continue;
     const agent = store.storage.getParticipantAgent(task.id, opts.session_id);
     if (agent !== undefined) participating.push(task.id);
   }
   return participating;
+}
+
+function attentionRepoRoots(opts: AttentionInboxOptions): Set<string> {
+  return new Set(
+    [opts.repo_root, ...(opts.repo_roots ?? [])]
+      .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
+      .filter(Boolean)
+      .map((entry) => resolve(entry)),
+  );
 }
 
 function compactHandoff(
