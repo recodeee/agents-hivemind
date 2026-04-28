@@ -73,7 +73,19 @@ describe('colony coordination CLI', () => {
     const json = JSON.parse(output) as {
       dry_run: boolean;
       summary: Record<string, number>;
-      stale_claims: Array<{ file_path: string; age_minutes: number }>;
+      fresh_claims: Array<{ file_path: string; age_minutes: number; cleanup_action: string }>;
+      stale_claims: Array<{ file_path: string; age_minutes: number; current_strength: number }>;
+      expired_weak_claims: Array<{
+        file_path: string;
+        cleanup_action: string;
+        cleanup_summary: string;
+      }>;
+      top_stale_branches: Array<{
+        branch: string;
+        stale_claim_count: number;
+        expired_weak_claim_count: number;
+      }>;
+      suggested_cleanup_action: string;
       expired_handoffs: Array<{ summary: string; expired_minutes: number }>;
       expired_messages: Array<{ preview: string; urgency: string }>;
       decayed_proposals: Array<{ summary: string; strength: number; noise_floor: number }>;
@@ -83,14 +95,34 @@ describe('colony coordination CLI', () => {
 
     expect(json.dry_run).toBe(true);
     expect(json.summary).toMatchObject({
-      stale_claim_count: 1,
+      fresh_claim_count: 1,
+      stale_claim_count: 2,
+      expired_weak_claim_count: 1,
       expired_handoff_count: 1,
       expired_message_count: 1,
       decayed_proposal_count: 1,
       stale_hot_file_count: 1,
       blocked_downstream_task_count: 1,
     });
-    expect(json.stale_claims[0]).toMatchObject({ file_path: 'src/stale.ts' });
+    expect(json.fresh_claims[0]).toMatchObject({
+      file_path: 'src/fresh.ts',
+      cleanup_action: 'keep_fresh',
+    });
+    expect(json.stale_claims.map((claim) => claim.file_path)).toContain('src/stale.ts');
+    expect(json.stale_claims.map((claim) => claim.file_path)).toContain('src/stale-active.ts');
+    expect(json.expired_weak_claims[0]).toMatchObject({
+      file_path: 'src/stale.ts',
+      cleanup_action: 'expire_weak_claim',
+    });
+    expect(json.expired_weak_claims[0]?.cleanup_summary).toContain(
+      'audit observations stay intact',
+    );
+    expect(json.top_stale_branches[0]).toMatchObject({
+      branch: 'main',
+      stale_claim_count: 2,
+      expired_weak_claim_count: 1,
+    });
+    expect(json.suggested_cleanup_action).toContain('1 expired/weak advisory claim');
     expect(json.expired_handoffs[0]).toMatchObject({ summary: 'expired handoff' });
     expect(json.expired_messages[0]).toMatchObject({
       preview: 'expired blocking message',
@@ -115,10 +147,18 @@ describe('colony coordination CLI', () => {
       { from: 'node' },
     );
 
-    expect(output).toContain('Coordination sweep: 6 stale biological signal(s)');
-    expect(output).toContain('mode: read-only');
+    expect(output).toContain('Coordination sweep: 7 stale biological signal(s)');
+    expect(output).toContain('mode: dry-run, read-only');
+    expect(output).toContain('audit: observations retained; advisory claims only');
+    expect(output).toContain('fresh claims: 1  stale claims: 2  expired/weak claims: 1');
+    expect(output).toContain('suggested cleanup: dry-run: 1 expired/weak advisory claim');
+    expect(output).toContain('Fresh claims:');
     expect(output).toContain('Stale claims:');
-    expect(output).toContain('confirm, release, or hand off');
+    expect(output).toContain('review owner activity, then release or hand off if inactive');
+    expect(output).toContain('Expired/weak claims:');
+    expect(output).toContain('would expire advisory claim; audit observations stay intact');
+    expect(output).toContain('Top branches with stale claims:');
+    expect(output).toContain('expire 1 weak advisory claim(s); keep audit observations');
     expect(output).toContain('Expired handoffs:');
     expect(output).toContain('send a fresh handoff if still needed');
     expect(output).toContain('Decayed proposals:');
@@ -130,7 +170,7 @@ describe('colony coordination CLI', () => {
     await withStore(settings, (store) => {
       const mainTaskId = taskIdByBranch(store, 'main');
       expect(store.storage.listProposals(repoRoot)).toHaveLength(1);
-      expect(store.storage.listClaims(mainTaskId)).toHaveLength(1);
+      expect(store.storage.listClaims(mainTaskId)).toHaveLength(3);
       expect(store.storage.taskObservationsByKind(mainTaskId, 'handoff')).toHaveLength(1);
       expect(store.storage.taskObservationsByKind(mainTaskId, 'message')).toHaveLength(1);
     });
@@ -152,11 +192,24 @@ async function seedSweepSignals(): Promise<void> {
     thread.join('codex@stale', 'codex');
     thread.join('claude@target', 'claude');
     thread.claimFile({ session_id: 'codex@stale', file_path: 'src/stale.ts' });
+    thread.claimFile({ session_id: 'codex@stale', file_path: 'src/stale-active.ts' });
     store.storage.upsertPheromone({
       task_id: thread.task_id,
       file_path: 'src/hot.ts',
       session_id: 'codex@stale',
       strength: 2,
+      deposited_at: Date.now(),
+    });
+
+    setMinutesAgo(10);
+    thread.claimFile({ session_id: 'codex@stale', file_path: 'src/fresh.ts' });
+
+    setMinutesAgo(5);
+    store.storage.upsertPheromone({
+      task_id: thread.task_id,
+      file_path: 'src/stale-active.ts',
+      session_id: 'codex@stale',
+      strength: 1,
       deposited_at: Date.now(),
     });
 

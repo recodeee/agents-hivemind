@@ -28,14 +28,20 @@ export interface CoordinationSweepResult {
     proposal_noise_floor: number;
   };
   summary: {
+    fresh_claim_count: number;
     stale_claim_count: number;
+    expired_weak_claim_count: number;
     expired_handoff_count: number;
     expired_message_count: number;
     decayed_proposal_count: number;
     stale_hot_file_count: number;
     blocked_downstream_task_count: number;
   };
+  fresh_claims: FreshClaimSignal[];
   stale_claims: StaleClaimSignal[];
+  expired_weak_claims: ExpiredWeakClaimSignal[];
+  top_stale_branches: StaleClaimBranchSummary[];
+  suggested_cleanup_action: string;
   expired_handoffs: ExpiredHandoffSignal[];
   expired_messages: ExpiredMessageSignal[];
   decayed_proposals: DecayedProposalSignal[];
@@ -43,7 +49,9 @@ export interface CoordinationSweepResult {
   blocked_downstream_tasks: BlockedDownstreamTaskSignal[];
 }
 
-export interface StaleClaimSignal {
+export type ClaimCleanupAction = 'keep_fresh' | 'review_stale_claim' | 'expire_weak_claim';
+
+export interface ClaimSignal {
   task_id: number;
   task_title: string;
   repo_root: string;
@@ -52,6 +60,32 @@ export interface StaleClaimSignal {
   session_id: string;
   claimed_at: number;
   age_minutes: number;
+  original_strength: number;
+  current_strength: number;
+  latest_deposited_at: number | null;
+  cleanup_action: ClaimCleanupAction;
+  cleanup_summary: string;
+}
+
+export interface FreshClaimSignal extends ClaimSignal {
+  cleanup_action: 'keep_fresh';
+}
+
+export interface StaleClaimSignal extends ClaimSignal {
+  cleanup_action: 'review_stale_claim' | 'expire_weak_claim';
+}
+
+export interface ExpiredWeakClaimSignal extends ClaimSignal {
+  cleanup_action: 'expire_weak_claim';
+}
+
+export interface StaleClaimBranchSummary {
+  repo_root: string;
+  branch: string;
+  stale_claim_count: number;
+  expired_weak_claim_count: number;
+  oldest_claim_age_minutes: number;
+  suggested_cleanup_action: string;
 }
 
 export interface ExpiredHandoffSignal {
@@ -148,7 +182,7 @@ export function buildCoordinationSweep(
     .listTasks(2_000)
     .filter((task) => opts.repo_root === undefined || task.repo_root === opts.repo_root);
 
-  const stale_claims = collectStaleClaims(store, tasks, now, thresholds.stale_claim_minutes);
+  const claimBuckets = collectClaimBuckets(store, tasks, now, thresholds);
   const expired_handoffs = collectExpiredHandoffs(store, tasks, now);
   const expired_messages = collectExpiredMessages(store, tasks, now);
   const decayed_proposals = collectDecayedProposals(store, proposalSystem, opts.repo_root, now);
@@ -160,14 +194,20 @@ export function buildCoordinationSweep(
     repo_root: opts.repo_root ?? null,
     thresholds,
     summary: {
-      stale_claim_count: stale_claims.length,
+      fresh_claim_count: claimBuckets.fresh_claims.length,
+      stale_claim_count: claimBuckets.stale_claims.length,
+      expired_weak_claim_count: claimBuckets.expired_weak_claims.length,
       expired_handoff_count: expired_handoffs.length,
       expired_message_count: expired_messages.length,
       decayed_proposal_count: decayed_proposals.length,
       stale_hot_file_count: stale_hot_files.length,
       blocked_downstream_task_count: blocked_downstream_tasks.length,
     },
-    stale_claims,
+    fresh_claims: claimBuckets.fresh_claims,
+    stale_claims: claimBuckets.stale_claims,
+    expired_weak_claims: claimBuckets.expired_weak_claims,
+    top_stale_branches: claimBuckets.top_stale_branches,
+    suggested_cleanup_action: suggestClaimCleanup(claimBuckets),
     expired_handoffs,
     expired_messages,
     decayed_proposals,
@@ -176,18 +216,50 @@ export function buildCoordinationSweep(
   };
 }
 
-function collectStaleClaims(
+function collectClaimBuckets(
   store: MemoryStore,
   tasks: TaskRow[],
   now: number,
-  staleClaimMinutes: number,
-): StaleClaimSignal[] {
-  const staleAfterMs = staleClaimMinutes * 60_000;
-  const out: StaleClaimSignal[] = [];
+  thresholds: CoordinationSweepResult['thresholds'],
+): {
+  fresh_claims: FreshClaimSignal[];
+  stale_claims: StaleClaimSignal[];
+  expired_weak_claims: ExpiredWeakClaimSignal[];
+  top_stale_branches: StaleClaimBranchSummary[];
+} {
+  const staleAfterMs = thresholds.stale_claim_minutes * 60_000;
+  const fresh_claims: FreshClaimSignal[] = [];
+  const stale_claims: StaleClaimSignal[] = [];
+  const expired_weak_claims: ExpiredWeakClaimSignal[] = [];
   for (const task of tasks) {
     for (const claim of store.storage.listClaims(task.id)) {
-      if (now - claim.claimed_at < staleAfterMs) continue;
-      out.push({
+      const strength = claimPheromoneStrength(
+        store,
+        task.id,
+        claim.file_path,
+        claim.session_id,
+        now,
+      );
+      const ageMinutes = elapsedMinutes(now, claim.claimed_at);
+      if (now - claim.claimed_at < staleAfterMs) {
+        fresh_claims.push({
+          task_id: task.id,
+          task_title: task.title,
+          repo_root: task.repo_root,
+          branch: task.branch,
+          file_path: claim.file_path,
+          session_id: claim.session_id,
+          claimed_at: claim.claimed_at,
+          age_minutes: ageMinutes,
+          ...strength,
+          cleanup_action: 'keep_fresh',
+          cleanup_summary: 'keep active; claim is inside the fresh window',
+        });
+        continue;
+      }
+
+      const isExpiredWeak = strength.current_strength < thresholds.hot_file_noise_floor;
+      const signal: StaleClaimSignal = {
         task_id: task.id,
         task_title: task.title,
         repo_root: task.repo_root,
@@ -195,13 +267,106 @@ function collectStaleClaims(
         file_path: claim.file_path,
         session_id: claim.session_id,
         claimed_at: claim.claimed_at,
-        age_minutes: elapsedMinutes(now, claim.claimed_at),
-      });
+        age_minutes: ageMinutes,
+        ...strength,
+        cleanup_action: isExpiredWeak ? 'expire_weak_claim' : 'review_stale_claim',
+        cleanup_summary: isExpiredWeak
+          ? 'would expire advisory claim; audit observations stay intact'
+          : 'review owner activity, then release or hand off if inactive',
+      };
+      stale_claims.push(signal);
+      if (isExpiredWeak) expired_weak_claims.push(signal as ExpiredWeakClaimSignal);
     }
   }
-  return out.sort(
+
+  fresh_claims.sort(
     (a, b) => b.age_minutes - a.age_minutes || a.file_path.localeCompare(b.file_path),
   );
+  stale_claims.sort(
+    (a, b) => b.age_minutes - a.age_minutes || a.file_path.localeCompare(b.file_path),
+  );
+  expired_weak_claims.sort(
+    (a, b) => b.age_minutes - a.age_minutes || a.file_path.localeCompare(b.file_path),
+  );
+
+  return {
+    fresh_claims,
+    stale_claims,
+    expired_weak_claims,
+    top_stale_branches: topStaleBranches(stale_claims),
+  };
+}
+
+function claimPheromoneStrength(
+  store: MemoryStore,
+  taskId: number,
+  filePath: string,
+  sessionId: string,
+  now: number,
+): Pick<ClaimSignal, 'original_strength' | 'current_strength' | 'latest_deposited_at'> {
+  const row = store.storage.getPheromone(taskId, filePath, sessionId);
+  if (!row) {
+    return { original_strength: 0, current_strength: 0, latest_deposited_at: null };
+  }
+  return {
+    original_strength: roundStrength(row.strength),
+    current_strength: roundStrength(PheromoneSystem.decay(row.strength, row.deposited_at, now)),
+    latest_deposited_at: row.deposited_at,
+  };
+}
+
+function topStaleBranches(staleClaims: StaleClaimSignal[]): StaleClaimBranchSummary[] {
+  const byBranch = new Map<string, StaleClaimBranchSummary>();
+  for (const claim of staleClaims) {
+    const key = `${claim.repo_root}\u0000${claim.branch}`;
+    const summary =
+      byBranch.get(key) ??
+      ({
+        repo_root: claim.repo_root,
+        branch: claim.branch,
+        stale_claim_count: 0,
+        expired_weak_claim_count: 0,
+        oldest_claim_age_minutes: 0,
+        suggested_cleanup_action: '',
+      } satisfies StaleClaimBranchSummary);
+    summary.stale_claim_count += 1;
+    if (claim.cleanup_action === 'expire_weak_claim') summary.expired_weak_claim_count += 1;
+    summary.oldest_claim_age_minutes = Math.max(
+      summary.oldest_claim_age_minutes,
+      claim.age_minutes,
+    );
+    summary.suggested_cleanup_action =
+      summary.expired_weak_claim_count > 0
+        ? `expire ${summary.expired_weak_claim_count} weak advisory claim(s); keep audit observations`
+        : `review ${summary.stale_claim_count} stale advisory claim(s)`;
+    byBranch.set(key, summary);
+  }
+  return [...byBranch.values()]
+    .sort(
+      (a, b) =>
+        b.stale_claim_count - a.stale_claim_count ||
+        b.expired_weak_claim_count - a.expired_weak_claim_count ||
+        b.oldest_claim_age_minutes - a.oldest_claim_age_minutes ||
+        a.branch.localeCompare(b.branch),
+    )
+    .slice(0, 10);
+}
+
+function suggestClaimCleanup(args: {
+  fresh_claims: FreshClaimSignal[];
+  stale_claims: StaleClaimSignal[];
+  expired_weak_claims: ExpiredWeakClaimSignal[];
+}): string {
+  if (args.expired_weak_claims.length > 0) {
+    return `dry-run: ${args.expired_weak_claims.length} expired/weak advisory claim(s) would be released; audit observations stay intact`;
+  }
+  if (args.stale_claims.length > 0) {
+    return `dry-run: review ${args.stale_claims.length} stale advisory claim(s) for owner activity before release or handoff`;
+  }
+  if (args.fresh_claims.length > 0) {
+    return `dry-run: no cleanup; ${args.fresh_claims.length} fresh claim(s) remain active`;
+  }
+  return 'dry-run: no cleanup; no live claims found';
 }
 
 function collectExpiredHandoffs(
