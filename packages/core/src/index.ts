@@ -171,11 +171,16 @@ export { buildDiscrepancyReport, type DiscrepancyReport } from './discrepancy.js
 export {
   buildCoordinationSweep,
   type BlockedDownstreamTaskSignal,
+  type ClaimCleanupAction,
+  type ClaimSignal,
   type CoordinationSweepOptions,
   type CoordinationSweepResult,
   type DecayedProposalSignal,
+  type ExpiredWeakClaimSignal,
   type ExpiredHandoffSignal,
   type ExpiredMessageSignal,
+  type FreshClaimSignal,
+  type StaleClaimBranchSummary,
   type StaleClaimSignal,
   type StaleHotFileSignal,
 } from './coordination-sweep.js';

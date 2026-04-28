@@ -20,7 +20,7 @@ export function registerCoordinationCommand(program: Command): void {
     .command('sweep')
     .description('Report stale claims, expired messages, decayed proposals, and stale trails')
     .option('--repo-root <path>', 'repo root to scan (defaults to process.cwd())')
-    .option('--dry-run', 'scan only; no cleanup is performed')
+    .option('--dry-run', 'scan only; this is the default until cleanup has an explicit apply path')
     .option('--json', 'emit sweep result as JSON')
     .action(async (opts: SweepOpts) => {
       const repoRoot = resolve(opts.repoRoot ?? process.cwd());
@@ -28,30 +28,32 @@ export function registerCoordinationCommand(program: Command): void {
       await withStore(settings, (store) => {
         const result = buildCoordinationSweep(store, { repo_root: repoRoot });
         if (opts.json) {
-          process.stdout.write(
-            `${JSON.stringify({ ...result, dry_run: opts.dryRun === true }, null, 2)}\n`,
-          );
+          process.stdout.write(`${JSON.stringify({ ...result, dry_run: true }, null, 2)}\n`);
           return;
         }
-        process.stdout.write(`${renderCoordinationSweep(result, opts)}\n`);
+        process.stdout.write(`${renderCoordinationSweep(result)}\n`);
       });
     });
 }
 
-function renderCoordinationSweep(result: CoordinationSweepResult, opts: SweepOpts): string {
-  const total = Object.values(result.summary).reduce((sum, count) => sum + count, 0);
+function renderCoordinationSweep(result: CoordinationSweepResult): string {
+  const total = staleSignalCount(result);
   const lines: string[] = [];
   if (total === 0) {
     lines.push(kleur.green('Coordination sweep: no stale biological signals'));
     lines.push(kleur.dim('read-only: no audit history deleted'));
-    return lines.join('\n');
+  } else {
+    lines.push(kleur.bold(`Coordination sweep: ${total} stale biological signal(s)`));
   }
-
-  lines.push(kleur.bold(`Coordination sweep: ${total} stale biological signal(s)`));
   lines.push(`  repo: ${result.repo_root ?? 'all'}`);
-  lines.push(`  mode: ${opts.dryRun === true ? 'dry-run, read-only' : 'read-only'}`);
+  lines.push('  mode: dry-run, read-only');
+  lines.push('  audit: observations retained; advisory claims only');
+  lines.push(`  suggested cleanup: ${result.suggested_cleanup_action}`);
   lines.push(
-    `  stale claims: ${result.summary.stale_claim_count}  expired handoffs: ${result.summary.expired_handoff_count}  expired messages: ${result.summary.expired_message_count}`,
+    `  fresh claims: ${result.summary.fresh_claim_count}  stale claims: ${result.summary.stale_claim_count}  expired/weak claims: ${result.summary.expired_weak_claim_count}`,
+  );
+  lines.push(
+    `  expired handoffs: ${result.summary.expired_handoff_count}  expired messages: ${result.summary.expired_message_count}`,
   );
   lines.push(
     `  decayed proposals: ${result.summary.decayed_proposal_count}  stale hot files: ${result.summary.stale_hot_file_count}  blocked downstream: ${result.summary.blocked_downstream_task_count}`,
@@ -59,10 +61,31 @@ function renderCoordinationSweep(result: CoordinationSweepResult, opts: SweepOpt
 
   renderSection(
     lines,
+    'Fresh claims',
+    result.fresh_claims,
+    (claim) =>
+      `task #${claim.task_id} ${claim.branch} ${claim.file_path} held by ${claim.session_id} for ${claim.age_minutes}m -> keep active`,
+  );
+  renderSection(
+    lines,
     'Stale claims',
     result.stale_claims,
     (claim) =>
-      `task #${claim.task_id} ${claim.branch} ${claim.file_path} held by ${claim.session_id} for ${claim.age_minutes}m -> confirm, release, or hand off`,
+      `task #${claim.task_id} ${claim.branch} ${claim.file_path} held by ${claim.session_id} for ${claim.age_minutes}m, pheromone ${claim.current_strength} -> ${claim.cleanup_summary}`,
+  );
+  renderSection(
+    lines,
+    'Expired/weak claims',
+    result.expired_weak_claims,
+    (claim) =>
+      `task #${claim.task_id} ${claim.branch} ${claim.file_path} held by ${claim.session_id} for ${claim.age_minutes}m, pheromone ${claim.current_strength} < ${result.thresholds.hot_file_noise_floor} -> ${claim.cleanup_summary}`,
+  );
+  renderSection(
+    lines,
+    'Top branches with stale claims',
+    result.top_stale_branches,
+    (branch) =>
+      `${branch.branch} stale=${branch.stale_claim_count} expired/weak=${branch.expired_weak_claim_count} oldest=${branch.oldest_claim_age_minutes}m -> ${branch.suggested_cleanup_action}`,
   );
   renderSection(
     lines,
@@ -101,6 +124,17 @@ function renderCoordinationSweep(result: CoordinationSweepResult, opts: SweepOpt
   );
 
   return lines.join('\n');
+}
+
+function staleSignalCount(result: CoordinationSweepResult): number {
+  return (
+    result.summary.stale_claim_count +
+    result.summary.expired_handoff_count +
+    result.summary.expired_message_count +
+    result.summary.decayed_proposal_count +
+    result.summary.stale_hot_file_count +
+    result.summary.blocked_downstream_task_count
+  );
 }
 
 function renderSection<T>(
