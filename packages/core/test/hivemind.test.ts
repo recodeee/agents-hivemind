@@ -90,6 +90,36 @@ describe('readHivemind', () => {
     });
   });
 
+  it('keeps explicit repoRoot local instead of merging env repo roots', () => {
+    dir = mkdtempSync(join(tmpdir(), 'colony-hivemind-'));
+    const repoRoot = join(dir, 'repo-local');
+    const envRepoRoot = join(dir, 'repo-env');
+    const now = new Date().toISOString();
+    writeActiveSession(repoRoot, {
+      branch: 'agent/codex/local-task',
+      fileName: 'local.json',
+      taskName: 'Local task',
+    });
+    writeActiveSession(envRepoRoot, {
+      branch: 'agent/codex/env-task',
+      fileName: 'env.json',
+      taskName: 'Env task',
+    });
+
+    const previous = process.env.COLONY_HIVEMIND_REPO_ROOTS;
+    process.env.COLONY_HIVEMIND_REPO_ROOTS = envRepoRoot;
+    try {
+      const snapshot = readHivemind({ repoRoot, now: Date.parse(now) });
+
+      expect(snapshot.repo_roots).toEqual([repoRoot]);
+      expect(snapshot.session_count).toBe(1);
+      expect(snapshot.sessions[0]?.branch).toBe('agent/codex/local-task');
+    } finally {
+      if (previous === undefined) delete process.env.COLONY_HIVEMIND_REPO_ROOTS;
+      else process.env.COLONY_HIVEMIND_REPO_ROOTS = previous;
+    }
+  });
+
   it('surfaces bare managed worktrees as stranded lanes', () => {
     dir = mkdtempSync(join(tmpdir(), 'colony-hivemind-'));
     const repoRoot = join(dir, 'repo');
@@ -126,3 +156,34 @@ describe('readHivemind', () => {
     expect(snapshot.sessions[0]?.activity_summary).toContain('Stranded managed worktree');
   });
 });
+
+function writeActiveSession(
+  repoRoot: string,
+  options: { branch: string; fileName: string; taskName: string },
+): void {
+  const activeSessionDir = join(repoRoot, '.omx', 'state', 'active-sessions');
+  const worktreePath = join(repoRoot, '.omx', 'agent-worktrees', options.fileName);
+  const now = new Date().toISOString();
+  mkdirSync(activeSessionDir, { recursive: true });
+  mkdirSync(worktreePath, { recursive: true });
+  writeFileSync(
+    join(activeSessionDir, options.fileName),
+    `${JSON.stringify(
+      {
+        schemaVersion: 1,
+        repoRoot,
+        branch: options.branch,
+        taskName: options.taskName,
+        agentName: 'codex',
+        cliName: 'codex',
+        worktreePath,
+        startedAt: now,
+        lastHeartbeatAt: now,
+        state: 'working',
+      },
+      null,
+      2,
+    )}\n`,
+    'utf8',
+  );
+}

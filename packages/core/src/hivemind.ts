@@ -98,11 +98,15 @@ export function readHivemind(options: HivemindOptions = {}): HivemindSnapshot {
 }
 
 function resolveRepoRoots(options: HivemindOptions): string[] {
-  const roots = [options.repoRoot, ...(options.repoRoots ?? []), ...envRepoRoots()]
+  const explicitRoots = [options.repoRoot, ...(options.repoRoots ?? [])]
     .map((entry) => (typeof entry === 'string' ? entry.trim() : ''))
     .filter(Boolean);
 
-  const selectedRoots = roots.length > 0 ? roots : [process.cwd()];
+  const envRoots = envRepoRoots()
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const selectedRoots =
+    explicitRoots.length > 0 ? explicitRoots : envRoots.length > 0 ? envRoots : [process.cwd()];
   return [...new Set(selectedRoots.map((entry) => resolve(entry)))];
 }
 

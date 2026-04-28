@@ -1,4 +1,5 @@
 import type {
+  AttentionInbox,
   HivemindOptions,
   HivemindSession,
   HivemindSnapshot,
@@ -12,6 +13,20 @@ export interface HivemindToolOptions {
   repo_roots: string[] | undefined;
   include_stale: boolean | undefined;
   limit: number | undefined;
+}
+
+export interface HivemindContextBuildOptions {
+  maxClaims?: number;
+  maxHotFiles?: number;
+  attention?: HivemindContextAttentionInput;
+}
+
+export interface HivemindContextAttentionInput {
+  session_id: string;
+  agent: string;
+  summary: AttentionInbox['summary'];
+  observation_ids: number[];
+  observation_ids_truncated: boolean;
 }
 
 export interface HivemindContextLane {
@@ -36,14 +51,61 @@ export interface HivemindContext {
   repo_roots: string[];
   summary: {
     lane_count: number;
+    total_lane_count: number;
+    lanes_truncated: boolean;
     memory_hit_count: number;
     needs_attention_count: number;
+    claim_count: number;
+    hot_file_count: number;
     next_action: string;
   };
   counts: HivemindSnapshot['counts'];
   query: string;
   lanes: HivemindContextLane[];
+  ownership: HivemindContextOwnership;
+  attention: HivemindContextAttention;
   memory_hits: SearchResult[];
+}
+
+export interface HivemindContextClaim {
+  file_path: string;
+  branch: string;
+  owner: string;
+  source: HivemindSession['source'];
+  worktree_path: string;
+}
+
+export interface HivemindContextHotFile {
+  file_path: string;
+  claim_count: number;
+  branches: string[];
+  owners: string[];
+}
+
+export interface HivemindContextOwnership {
+  claim_count: number;
+  claims: HivemindContextClaim[];
+  claims_truncated: boolean;
+  hot_files: HivemindContextHotFile[];
+  hot_files_truncated: boolean;
+}
+
+export interface HivemindContextAttention {
+  session_id: string | null;
+  agent: string | null;
+  counts: {
+    lane_needs_attention_count: number;
+    pending_handoff_count: number;
+    pending_wake_count: number;
+    unread_message_count: number;
+    stalled_lane_count: number;
+    recent_other_claim_count: number;
+    blocked: boolean;
+  };
+  observation_ids: number[];
+  observation_ids_truncated: boolean;
+  hydration: string;
+  next_action: string;
 }
 
 export function toHivemindOptions(input: HivemindToolOptions): HivemindOptions {
@@ -112,22 +174,31 @@ export function buildHivemindContext(
   snapshot: HivemindSnapshot,
   memoryHits: SearchResult[],
   query: string,
+  options: HivemindContextBuildOptions = {},
 ): HivemindContext {
   const lanes = snapshot.sessions.map(toContextLane);
   const needsAttentionCount = lanes.filter((lane) => lane.needs_attention).length;
+  const ownership = buildOwnership(lanes, options.maxClaims, options.maxHotFiles);
+  const attention = buildAttention(needsAttentionCount, options.attention);
 
   return {
     generated_at: snapshot.generated_at,
     repo_roots: snapshot.repo_roots,
     summary: {
       lane_count: lanes.length,
+      total_lane_count: snapshot.session_count,
+      lanes_truncated: snapshot.session_count > lanes.length,
       memory_hit_count: memoryHits.length,
       needs_attention_count: needsAttentionCount,
-      next_action: nextAction(lanes, memoryHits),
+      claim_count: ownership.claim_count,
+      hot_file_count: ownership.hot_files.length,
+      next_action: nextAction(lanes, memoryHits, attention),
     },
     counts: snapshot.counts,
     query,
     lanes,
+    ownership,
+    attention,
     memory_hits: memoryHits,
   };
 }
@@ -160,7 +231,98 @@ function laneRisk(session: HivemindSession): string {
   return 'none';
 }
 
-function nextAction(lanes: HivemindContextLane[], memoryHits: SearchResult[]): string {
+function buildOwnership(
+  lanes: HivemindContextLane[],
+  maxClaims = 12,
+  maxHotFiles = 8,
+): HivemindContextOwnership {
+  const claims = lanes.flatMap((lane) =>
+    lane.locked_file_preview.map((filePath) => ({
+      file_path: filePath,
+      branch: lane.branch,
+      owner: lane.owner,
+      source: lane.source,
+      worktree_path: lane.worktree_path,
+    })),
+  );
+  const claimCount = lanes.reduce((total, lane) => total + lane.locked_file_count, 0);
+  const allHotFiles = buildHotFiles(claims);
+  const hotFiles = allHotFiles.slice(0, maxHotFiles);
+
+  return {
+    claim_count: claimCount,
+    claims: claims.slice(0, maxClaims),
+    claims_truncated: claimCount > Math.min(claims.length, maxClaims),
+    hot_files: hotFiles,
+    hot_files_truncated: allHotFiles.length > hotFiles.length,
+  };
+}
+
+function buildHotFiles(claims: HivemindContextClaim[]): HivemindContextHotFile[] {
+  const byFile = new Map<
+    string,
+    { claim_count: number; branches: Set<string>; owners: Set<string> }
+  >();
+  for (const claim of claims) {
+    const entry = byFile.get(claim.file_path) ?? {
+      claim_count: 0,
+      branches: new Set<string>(),
+      owners: new Set<string>(),
+    };
+    entry.claim_count += 1;
+    entry.branches.add(claim.branch);
+    entry.owners.add(claim.owner);
+    byFile.set(claim.file_path, entry);
+  }
+
+  return [...byFile.entries()]
+    .map(([file_path, entry]) => ({
+      file_path,
+      claim_count: entry.claim_count,
+      branches: [...entry.branches].sort(),
+      owners: [...entry.owners].sort(),
+    }))
+    .sort((left, right) => {
+      const countDelta = right.claim_count - left.claim_count;
+      return countDelta !== 0 ? countDelta : left.file_path.localeCompare(right.file_path);
+    });
+}
+
+function buildAttention(
+  laneNeedsAttentionCount: number,
+  input: HivemindContextAttentionInput | undefined,
+): HivemindContextAttention {
+  return {
+    session_id: input?.session_id ?? null,
+    agent: input?.agent ?? null,
+    counts: {
+      lane_needs_attention_count: laneNeedsAttentionCount,
+      pending_handoff_count: input?.summary.pending_handoff_count ?? 0,
+      pending_wake_count: input?.summary.pending_wake_count ?? 0,
+      unread_message_count: input?.summary.unread_message_count ?? 0,
+      stalled_lane_count: Math.max(input?.summary.stalled_lane_count ?? 0, laneNeedsAttentionCount),
+      recent_other_claim_count: input?.summary.recent_other_claim_count ?? 0,
+      blocked: input?.summary.blocked ?? false,
+    },
+    observation_ids: input?.observation_ids ?? [],
+    observation_ids_truncated: input?.observation_ids_truncated ?? false,
+    hydration: 'Call get_observations with observation_ids for bodies; context stays compact.',
+    next_action: input?.summary.next_action ?? '',
+  };
+}
+
+function nextAction(
+  lanes: HivemindContextLane[],
+  memoryHits: SearchResult[],
+  attention: HivemindContextAttention,
+): string {
+  if (
+    attention.counts.blocked ||
+    attention.counts.pending_handoff_count > 0 ||
+    attention.counts.pending_wake_count > 0
+  ) {
+    return attention.next_action;
+  }
   if (lanes.some((lane) => lane.needs_attention)) {
     return 'Inspect lanes with needs_attention before taking over or editing nearby files.';
   }

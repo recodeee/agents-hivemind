@@ -1,12 +1,12 @@
 import { type HookInput, type HookName, upsertActiveSession } from '@colony/hooks';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
-interface McpClientIdentity {
+export interface McpClientIdentity {
   sessionId: string;
   ide: string;
 }
 
-function detectMcpClientIdentity(env: NodeJS.ProcessEnv = process.env): McpClientIdentity {
+export function detectMcpClientIdentity(env: NodeJS.ProcessEnv = process.env): McpClientIdentity {
   const codexId = env.CODEX_SESSION_ID?.trim();
   if (codexId) return { sessionId: codexId, ide: 'codex' };
   const claudeId = env.CLAUDECODE_SESSION_ID?.trim() ?? env.CLAUDE_SESSION_ID?.trim();
