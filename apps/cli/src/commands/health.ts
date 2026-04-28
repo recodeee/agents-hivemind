@@ -17,6 +17,7 @@ import type {
 } from '@colony/storage';
 import type { Command } from 'commander';
 import kleur from 'kleur';
+import { readCodexMcpToolCallsSince } from '../lib/codex-rollouts.js';
 
 const DEFAULT_HOURS = 24;
 const HEALTH_TOOL_LIMIT = 5;
@@ -44,6 +45,10 @@ interface SharePayload {
   share_of_all_tool_calls: number | null;
   share_of_mcp_tool_calls: number | null;
   top_tools: Array<{ tool: string; calls: number }>;
+  source_breakdown: {
+    colony_observations: number;
+    codex_rollouts: number;
+  };
 }
 
 interface ConversionPayload {
@@ -155,10 +160,27 @@ export function buildColonyHealthPayload(
     | 'listProposalsForBranch'
     | 'listReinforcements'
   >,
-  options: { since: number; window_hours: number; now?: number },
+  options: {
+    since: number;
+    window_hours: number;
+    now?: number;
+    codex_sessions_root?: string;
+  },
 ): ColonyHealthPayload {
   const now = options.now ?? Date.now();
-  const calls = storage.toolCallsSince(options.since);
+  const colonyCalls = storage.toolCallsSince(options.since);
+  // Codex CLI doesn't fire colony's PostToolUse hook, so its MCP traffic never
+  // reaches the colony observations table — see the recodee dashboard backend
+  // at `app/modules/cavemem_hivemind/service.py::_count_codex_mcp_tool_calls`
+  // for the parallel ingest path. Merge both sources so `colony health`
+  // matches what dashboard surfaces.
+  const codexCalls = readCodexMcpToolCallsSince(options.since, {
+    now,
+    root: options.codex_sessions_root,
+  });
+  const calls: ToolCallRow[] = [...colonyCalls, ...codexCalls].sort(
+    (a, b) => a.ts - b.ts || a.id - b.id,
+  );
   const tasks = storage.listTasks(2000);
   const totalToolCalls = calls.length;
   const mcpToolCalls = calls.filter((call) => isMcpTool(call.tool)).length;
@@ -185,6 +207,10 @@ export function buildColonyHealthPayload(
       share_of_all_tool_calls: ratio(colonyMcpToolCalls, totalToolCalls),
       share_of_mcp_tool_calls: ratio(colonyMcpToolCalls, mcpToolCalls),
       top_tools: topToolsByCount(calls, HEALTH_TOOL_LIMIT),
+      source_breakdown: {
+        colony_observations: colonyCalls.length,
+        codex_rollouts: codexCalls.length,
+      },
     },
     conversions: Object.fromEntries(conversionEntries) as Record<ConversionName, ConversionPayload>,
     task_list_vs_task_ready_for_agent: taskSelection,
@@ -237,6 +263,14 @@ export function formatColonyHealthOutput(
       payload.colony_mcp_share.share_of_mcp_tool_calls,
     )}`,
   ];
+
+  if (payload.colony_mcp_share.source_breakdown.codex_rollouts > 0) {
+    lines.push(
+      kleur.dim(
+        `  sources:   colony obs ${payload.colony_mcp_share.source_breakdown.colony_observations}, codex rollouts ${payload.colony_mcp_share.source_breakdown.codex_rollouts}`,
+      ),
+    );
+  }
 
   // When the window has tool calls but none look like MCP, the recording layer
   // is almost certainly bypassing colony's PostToolUse hook for this editor —

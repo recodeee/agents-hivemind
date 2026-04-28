@@ -1,9 +1,16 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import kleur from 'kleur';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildColonyHealthPayload, formatColonyHealthOutput } from '../src/commands/health.js';
 
 const NOW = 1_800_000_000_000;
 const SINCE = NOW - 24 * 3_600_000;
+// Most tests don't exercise codex rollout merging — point the reader at a
+// path that can't exist so they never accidentally read the user's real
+// ~/.codex/sessions during CI or local runs.
+const NO_CODEX_ROOT = '/var/empty/colony-health-test-no-codex';
 
 interface TestToolCall {
   id: number;
@@ -77,6 +84,7 @@ describe('colony health payload', () => {
         since: SINCE,
         window_hours: 24,
         now: NOW,
+        codex_sessions_root: NO_CODEX_ROOT,
       },
     );
 
@@ -204,6 +212,7 @@ describe('colony health payload', () => {
         since: SINCE,
         window_hours: 24,
         now: NOW,
+        codex_sessions_root: NO_CODEX_ROOT,
       },
     );
 
@@ -240,6 +249,7 @@ describe('colony health payload', () => {
         since: SINCE,
         window_hours: 24,
         now: NOW,
+        codex_sessions_root: NO_CODEX_ROOT,
       },
     );
 
@@ -272,7 +282,7 @@ describe('colony health payload', () => {
           edits_claimed_before: 0,
         },
       }),
-      { since: SINCE, window_hours: 24, now: NOW },
+      { since: SINCE, window_hours: 24, now: NOW, codex_sessions_root: NO_CODEX_ROOT },
     );
 
     expect(payload.colony_mcp_share).toMatchObject({
@@ -301,7 +311,7 @@ describe('colony health payload', () => {
           edits_claimed_before: 0,
         },
       }),
-      { since: SINCE, window_hours: 24, now: NOW },
+      { since: SINCE, window_hours: 24, now: NOW, codex_sessions_root: NO_CODEX_ROOT },
     );
 
     expect(payload.colony_mcp_share.top_tools).toEqual([]);
@@ -323,6 +333,7 @@ describe('colony health payload', () => {
         since: SINCE,
         window_hours: 24,
         now: NOW,
+        codex_sessions_root: NO_CODEX_ROOT,
       },
     );
 
@@ -335,7 +346,81 @@ describe('colony health payload', () => {
     expect(formatColonyHealthOutput(payload)).toContain('not available');
     expect(payload.task_post_vs_omx_notepad.status).toBe('unavailable');
   });
+
+  it('merges Codex rollout mcp_tool_call_end events into the share view', () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'colony-health-codex-'));
+    try {
+      // NOW = 1_800_000_000_000 → 2027-01-15T08:00:00Z. Window is the prior 24h.
+      const dir = path.join(tmpRoot, '2027', '01', '15');
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(
+        dir,
+        'rollout-2027-01-15T07-00-00-019dd000-1111-2222-3333-444455556666.jsonl',
+      );
+      fs.writeFileSync(
+        file,
+        [
+          codexRolloutLine(NOW - 60 * 60_000, 'colony', 'hivemind_context'),
+          codexRolloutLine(NOW - 50 * 60_000, 'colony', 'hivemind_context'),
+          codexRolloutLine(NOW - 40 * 60_000, 'colony', 'task_post'),
+          codexRolloutLine(NOW - 30 * 60_000, 'omx_state', 'state_get_status'),
+        ].join('\n'),
+      );
+      // Pin the mtime inside the synthetic window so the reader's
+      // mtime-predates-window short-circuit doesn't skip the fixture.
+      const insideWindow = new Date(NOW - 30 * 60_000);
+      fs.utimesSync(file, insideWindow, insideWindow);
+
+      const payload = buildColonyHealthPayload(
+        fakeStorage({
+          calls: [
+            call(1, 'claude-session', 'Bash', NOW - 90_000),
+            call(2, 'claude-session', 'Edit', NOW - 80_000),
+          ],
+          claimBeforeEdit: {
+            edit_tool_calls: 1,
+            edits_with_file_path: 0,
+            edits_claimed_before: 0,
+          },
+        }),
+        {
+          since: SINCE,
+          window_hours: 24,
+          now: NOW,
+          codex_sessions_root: tmpRoot,
+        },
+      );
+
+      expect(payload.colony_mcp_share).toMatchObject({
+        total_tool_calls: 6,
+        mcp_tool_calls: 4,
+        colony_mcp_tool_calls: 3,
+        source_breakdown: { colony_observations: 2, codex_rollouts: 4 },
+      });
+      expect(payload.task_post_vs_task_message.task_post_calls).toBe(1);
+
+      const text = formatColonyHealthOutput(payload);
+      expect(text).toContain('all tools: 3 / 6');
+      expect(text).toContain('MCP tools: 3 / 4');
+      expect(text).toContain('sources:   colony obs 2, codex rollouts 4');
+      expect(text).not.toContain('no mcp__ tool calls in window');
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
 });
+
+function codexRolloutLine(tsMs: number, server: string, tool: string): string {
+  return JSON.stringify({
+    timestamp: new Date(tsMs).toISOString(),
+    type: 'event_msg',
+    payload: {
+      type: 'mcp_tool_call_end',
+      call_id: `call_${tool}`,
+      invocation: { server, tool, arguments: {} },
+    },
+  });
+}
 
 function fakeStorage(args: {
   calls: TestToolCall[];
