@@ -961,6 +961,37 @@ Find the next task to claim for this agent. Use this when deciding what to work 
 
 Returns `{ ready, total_available }`. Each `ready` entry includes `plan_slug`, `subtask_index`, `title`, `capability_hint`, `file_scope`, `fit_score`, compact `reason`, and `reasoning`. `reason` is one of `continue_current_task`, `urgent_override`, or `ready_high_score`. Blocked work is filtered out, and conflicting active file claims lower the score. Claim new selected work with `task_plan_claim_subtask`; if the top reason is `continue_current_task`, keep working the already-claimed sub-task.
 
+## `rescue_stranded_scan`
+
+Find stranded sessions or abandoned file claims without changing state.
+
+```json
+{
+  "name": "rescue_stranded_scan",
+  "input": { "stranded_after_minutes": 10 }
+}
+```
+
+Returns `{ dry_run: true, stranded, rescued }`. `rescued` is ordered by blocking urgency, stale age, downstream blocked count, then pending message state. Plan sub-task entries may include `plan_slug`, `wave_index`, `blocked_downstream_count`, `blocking_urgency`, `stale_age_minutes`, `message_attention_state`, and `suggested_action`. `blocked_downstream_count` ignores downstream sub-tasks that are already `completed`.
+
+`rescue_stranded_scan` is read-only at the MCP boundary: it rolls back the core dry-run transaction, so it does not emit relays, observer notes, or release claims.
+
+## `rescue_stranded_run`
+
+Rescue stranded sessions after explicit confirmation. This mutates state by emitting rescue relays and releasing the stranded session's claims; it does not auto-reassign to a specific agent.
+
+```json
+{
+  "name": "rescue_stranded_run",
+  "input": {
+    "stranded_after_minutes": 10,
+    "confirm": true
+  }
+}
+```
+
+Without `confirm: true`, returns `RESCUE_CONFIRM_REQUIRED`.
+
 ## `task_plan_claim_subtask`
 
 Claim an available sub-task. The handler runs scan-before-stamp inside a SQLite transaction so two concurrent claims serialize through the write lock; the first commit wins, the second sees the prior claim observation and rejects.

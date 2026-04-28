@@ -47,7 +47,7 @@ afterEach(async () => {
 });
 
 describe('rescue stranded MCP tools', () => {
-  it('rescue_stranded_scan returns a dry-run outcome without mutating state', async () => {
+  it('rescue_stranded_scan returns a dry-run outcome and remains read-only', async () => {
     const outcome = await call<RescueOutcome>('rescue_stranded_scan', {
       stranded_after_minutes: 5,
     });

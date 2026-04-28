@@ -165,36 +165,56 @@ describe('rescueStrandedSessions', () => {
     ).toBe(false);
   });
 
-  it('adds ordered-plan context and prioritizes claims that block later waves', () => {
-    const normal = seedTask('feat/ordinary', ['src/ordinary.ts']);
-    const planSubtask = seedOrderedPlan(normal.session_id);
-    configureStorage([candidate(normal.session_id)]);
-    markAlive(normal.session_id);
+  it('stale wave 1 claim outranks a stale leaf claim', () => {
+    const session_id = seedSession();
+    const plan = seedOrderedPlan(session_id, { claimed: [0, 4] });
+    configureStorage([candidate(session_id)]);
+    markAlive(session_id);
 
     const outcome = rescueStrandedSessions(store, { dry_run: true });
 
     expect(outcome.rescued).toHaveLength(2);
     expect(outcome.rescued[0]).toMatchObject({
-      task_id: planSubtask.task_id,
+      task_id: plan.task_ids[0],
       plan_slug: 'ordered-rescue',
       wave_index: 0,
       blocked_downstream_count: 4,
+      blocking_urgency: 'blocks_downstream',
       suggested_action:
         'message stalled owner or reassign this sub-task before later waves can continue',
     });
-    expect(outcome.rescued[1]).not.toHaveProperty('plan_slug');
-    expect(store.storage.getClaim(planSubtask.task_id, 'src/foundation.ts')?.session_id).toBe(
-      normal.session_id,
+    expect(outcome.rescued[1]).toMatchObject({
+      task_id: plan.task_ids[4],
+      plan_slug: 'ordered-rescue',
+      blocked_downstream_count: 0,
+      blocking_urgency: 'local_claim',
+    });
+    expect(store.storage.getClaim(plan.task_ids[0] ?? -1, 'src/foundation.ts')?.session_id).toBe(
+      session_id,
     );
 
     const observer = store.storage
-      .taskObservationsByKind(planSubtask.task_id, 'observer-note', 10)
+      .taskObservationsByKind(plan.task_ids[0] ?? -1, 'observer-note', 10)
       .at(0);
     expect(observer?.content).toContain('blocks 4 downstream sub-task(s)');
     expect(JSON.parse(observer?.metadata ?? '{}')).toMatchObject({
       plan_slug: 'ordered-rescue',
       wave_index: 0,
       blocked_downstream_count: 4,
+    });
+  });
+
+  it('does not count completed downstream subtasks as blocked', () => {
+    const session_id = seedSession();
+    const plan = seedOrderedPlan(session_id, { claimed: [0], completed: [3, 4] });
+    configureStorage([candidate(session_id)]);
+    markAlive(session_id);
+
+    const outcome = rescueStrandedSessions(store, { dry_run: true });
+
+    expect(outcome.rescued[0]).toMatchObject({
+      task_id: plan.task_ids[0],
+      blocked_downstream_count: 2,
     });
   });
 
@@ -225,7 +245,15 @@ function seedTask(branch: string, files: string[]): { thread: TaskThread; sessio
   return { thread, session_id };
 }
 
-function seedOrderedPlan(session_id: string): { task_id: number } {
+function seedSession(session_id = 'codex-stranded-session'): string {
+  store.startSession({ id: session_id, ide: 'codex', cwd: '/repo' });
+  return session_id;
+}
+
+function seedOrderedPlan(
+  session_id: string,
+  options: { claimed?: number[]; completed?: number[] } = {},
+): { task_ids: number[] } {
   const slug = 'ordered-rescue';
   const parent = TaskThread.open(store, {
     repo_root: '/repo',
@@ -248,13 +276,16 @@ function seedOrderedPlan(session_id: string): { task_id: number } {
     { title: 'Tooling docs', file: 'docs/tooling.md', depends_on: [2] },
   ];
 
-  let claimedTaskId = -1;
+  const claimed = new Set(options.claimed ?? [0]);
+  const completed = new Set(options.completed ?? []);
+  const taskIds: number[] = [];
   subtasks.forEach((subtask, index) => {
     const thread = TaskThread.open(store, {
       repo_root: '/repo',
       branch: `spec/${slug}/sub-${index}`,
       session_id,
     });
+    taskIds[index] = thread.task_id;
     store.addObservation({
       session_id,
       task_id: thread.task_id,
@@ -272,14 +303,41 @@ function seedOrderedPlan(session_id: string): { task_id: number } {
         status: 'available',
       },
     });
-    if (index === 0) {
+    if (claimed.has(index)) {
       thread.join(session_id, 'codex');
       thread.claimFile({ session_id, file_path: subtask.file });
-      claimedTaskId = thread.task_id;
+      store.addObservation({
+        session_id,
+        task_id: thread.task_id,
+        kind: 'plan-subtask-claim',
+        content: `claimed sub-task ${index}`,
+        metadata: {
+          kind: 'plan-subtask-claim',
+          subtask_index: index,
+          status: 'claimed',
+          session_id,
+          agent: 'codex',
+        },
+      });
+    }
+    if (completed.has(index)) {
+      store.addObservation({
+        session_id,
+        task_id: thread.task_id,
+        kind: 'plan-subtask-claim',
+        content: `completed sub-task ${index}`,
+        metadata: {
+          kind: 'plan-subtask-claim',
+          subtask_index: index,
+          status: 'completed',
+          session_id,
+          agent: 'codex',
+        },
+      });
     }
   });
 
-  return { task_id: claimedTaskId };
+  return { task_ids: taskIds };
 }
 
 function configureStorage(candidates: StrandedCandidate[], errors: ToolError[] = []): void {
