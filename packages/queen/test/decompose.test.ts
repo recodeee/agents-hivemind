@@ -191,6 +191,103 @@ describe('planGoal', () => {
       'test_work',
     ]);
   });
+
+  it('keeps the first hinted wave parallel', () => {
+    const plan = planGoal({
+      title: 'Add parallel profile surfaces',
+      waves: [
+        {
+          files: ['apps/api/src/profile.ts', 'apps/web/src/profile/ProfilePage.tsx'],
+        },
+        {
+          files: ['apps/api/test/profile.test.ts'],
+        },
+      ],
+    });
+
+    expectValidPlan(plan);
+    expect(plan.subtasks.map((subtask) => subtask.title)).toEqual([
+      'Implement API scope',
+      'Implement web scope',
+      'Add targeted tests',
+    ]);
+    expect(plan.subtasks[0]?.depends_on).toEqual([]);
+    expect(plan.subtasks[1]?.depends_on).toEqual([]);
+  });
+
+  it('makes the second hinted wave depend on the first wave by default', () => {
+    const plan = planGoal({
+      title: 'Coordinate profile implementation',
+      waves: [
+        {
+          files: ['apps/api/src/profile.ts', 'apps/web/src/profile/ProfilePage.tsx'],
+        },
+        {
+          files: ['apps/api/test/profile.test.ts'],
+        },
+      ],
+    });
+
+    expectValidPlan(plan);
+    expect(plan.subtasks[2]).toMatchObject({
+      title: 'Add targeted tests',
+      depends_on: [0, 1],
+      capability_hint: 'test_work',
+    });
+  });
+
+  it('makes final docs and integration waves depend on every previous wave', () => {
+    const plan = planGoal({
+      title: 'Ship profile integration',
+      waves: [
+        {
+          files: ['apps/api/src/profile.ts', 'apps/web/src/profile/ProfilePage.tsx'],
+        },
+        {
+          files: ['packages/process/src/profile-sync.ts', 'apps/api/test/profile.test.ts'],
+        },
+        {
+          files: ['docs/README.md'],
+        },
+      ],
+    });
+
+    expectValidPlan(plan);
+    expect(plan.subtasks.map((subtask) => subtask.title)).toEqual([
+      'Implement API scope',
+      'Implement web scope',
+      'Update shared infrastructure scope',
+      'Add targeted tests',
+      'Update README documentation',
+    ]);
+    expect(plan.subtasks[2]?.depends_on).toEqual([0, 1]);
+    expect(plan.subtasks[3]?.depends_on).toEqual([0, 1]);
+    expect(plan.subtasks[4]).toMatchObject({
+      capability_hint: 'doc_work',
+      depends_on: [0, 1, 2, 3],
+    });
+  });
+
+  it('allows a later wave to depend on selected earlier waves', () => {
+    const plan = planGoal({
+      title: 'Verify selected profile scope',
+      waves: [
+        {
+          files: ['apps/api/src/profile.ts'],
+        },
+        {
+          files: ['apps/web/src/profile/ProfilePage.tsx'],
+        },
+        {
+          files: ['apps/api/test/profile.test.ts'],
+          depends_on: [0],
+        },
+      ],
+    });
+
+    expectValidPlan(plan);
+    expect(plan.subtasks.map((subtask) => subtask.depends_on)).toEqual([[], [0], [0]]);
+  });
 });
 
 describe('orderedPlanFromWaves', () => {
