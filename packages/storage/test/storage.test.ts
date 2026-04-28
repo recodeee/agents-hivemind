@@ -371,4 +371,57 @@ describe('Storage', () => {
     expect(limited).toHaveLength(2);
     expect(limited[0]?.tool).toBe('Bash');
   });
+
+  it('claimCoverageSnapshot counts claim kinds and Edit/Write tool uses in SQL', () => {
+    storage.createSession({
+      id: 'sess-claim-coverage',
+      ide: 'codex',
+      cwd: null,
+      started_at: 1,
+      metadata: null,
+    });
+    const observedKinds = [
+      { kind: 'tool_use', content: 'edit', metadata: { tool: 'Edit' } },
+      { kind: 'tool_use', content: 'write', metadata: { tool: 'Write' } },
+      { kind: 'tool_use', content: 'read', metadata: { tool: 'Read' } },
+      { kind: 'auto-claim', content: 'auto', metadata: { source: 'post-tool-use' } },
+      { kind: 'claim', content: 'claim', metadata: { file_path: 'src/a.ts' } },
+      { kind: 'claim-conflict', content: 'conflict', metadata: { file_path: 'src/b.ts' } },
+      { kind: 'git-op', content: 'git checkout', metadata: { tool: 'Bash' } },
+      { kind: 'file-op', content: 'mv src/a.ts src/b.ts', metadata: { tool: 'Bash' } },
+    ];
+    for (const row of observedKinds) {
+      storage.insertObservation({
+        session_id: 'sess-claim-coverage',
+        kind: row.kind,
+        content: row.content,
+        compressed: false,
+        intensity: null,
+        ts: 2_000,
+        metadata: row.metadata,
+      });
+    }
+    storage.insertObservation({
+      session_id: 'sess-claim-coverage',
+      kind: 'tool_use',
+      content: 'old edit',
+      compressed: false,
+      intensity: null,
+      ts: 100,
+      metadata: { tool: 'Edit' },
+    });
+
+    const snapshot = storage.claimCoverageSnapshot(1_000);
+    expect(snapshot).toMatchObject({
+      since: 1_000,
+      edit_write_count: 2,
+      auto_claim_count: 1,
+      explicit_claim_count: 1,
+      claim_conflict_count: 1,
+      bash_git_op_count: 1,
+      bash_file_op_count: 1,
+      bash_git_file_op_count: 2,
+    });
+    expect(snapshot.until).toBeGreaterThanOrEqual(snapshot.since);
+  });
 });

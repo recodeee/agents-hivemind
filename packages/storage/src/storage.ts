@@ -106,6 +106,18 @@ export interface ClaimBeforeEditStats {
   edits_claimed_before: number;
 }
 
+export interface ClaimCoverageSnapshot {
+  since: number;
+  until: number;
+  edit_write_count: number;
+  auto_claim_count: number;
+  explicit_claim_count: number;
+  claim_conflict_count: number;
+  bash_git_op_count: number;
+  bash_file_op_count: number;
+  bash_git_file_op_count: number;
+}
+
 const DEFAULT_STRANDED_AFTER_MS = 10 * 60_000;
 const DEFAULT_CLAIM_WINDOW_MS = 5 * 60_000;
 const DEFAULT_IDLE_WINDOW_MS = 30 * 60_000;
@@ -1467,6 +1479,39 @@ export class Storage {
       auto_claim_count: sumKindCounts(auto_claim_kinds),
       explicit_claim_kinds,
       auto_claim_kinds,
+    };
+  }
+
+  /** Viewer diagnostic snapshot, computed in one grouped SQL scan. */
+  claimCoverageSnapshot(since_ts: number): ClaimCoverageSnapshot {
+    const rows = this.db
+      .prepare(
+        `SELECT kind, COUNT(*) AS count
+         FROM observations
+         WHERE ts > ?
+           AND (
+             kind IN ('auto-claim', 'claim', 'claim-conflict', 'git-op', 'file-op')
+             OR (
+               kind = 'tool_use'
+               AND json_extract(metadata, '$.tool') IN ('Edit', 'Write')
+             )
+           )
+         GROUP BY kind`,
+      )
+      .all(since_ts) as KindCount[];
+    const count = (kind: string): number => rows.find((row) => row.kind === kind)?.count ?? 0;
+    const bash_git_op_count = count('git-op');
+    const bash_file_op_count = count('file-op');
+    return {
+      since: since_ts,
+      until: Date.now(),
+      edit_write_count: count('tool_use'),
+      auto_claim_count: count('auto-claim'),
+      explicit_claim_count: count('claim'),
+      claim_conflict_count: count('claim-conflict'),
+      bash_git_op_count,
+      bash_file_op_count,
+      bash_git_file_op_count: bash_git_op_count + bash_file_op_count,
     };
   }
 

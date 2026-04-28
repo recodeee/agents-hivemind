@@ -1,0 +1,116 @@
+import {
+  type HivemindSnapshot,
+  type MemoryStore,
+  buildDiscrepancyReport,
+  inferIdeFromSessionId,
+} from '@colony/core';
+import type { SessionRow } from '@colony/storage';
+import { html, layout, raw } from './html.js';
+import { renderAttentionSidebar } from './sections/attention.js';
+import {
+  type BuildDiscrepancyReport,
+  renderCoordinationBehavior,
+} from './sections/coordination-behavior.js';
+import { renderDiagnostic, renderToolUsageHistogram } from './sections/diagnostic.js';
+import { renderRecentClaimsHeatMap } from './sections/heat-map.js';
+import { renderHivemindDashboard } from './sections/hivemind.js';
+import { type StrandedSessionSummary, renderStrandedSessions } from './sections/stranded.js';
+
+export type ClaimCoverageSnapshot = ReturnType<MemoryStore['storage']['claimCoverageSnapshot']>;
+export type { StrandedSessionSummary };
+
+export function buildClaimCoverageSnapshot(
+  store: MemoryStore,
+  since: number,
+): ClaimCoverageSnapshot {
+  return store.storage.claimCoverageSnapshot(since);
+}
+
+export function renderIndex(
+  sessions: SessionRow[],
+  snapshot: HivemindSnapshot | undefined,
+  store: MemoryStore,
+  strandedSessions: StrandedSessionSummary[] = [],
+  reportBuilder: BuildDiscrepancyReport = buildDiscrepancyReport,
+): string {
+  const stranded = renderStrandedSessions(strandedSessions);
+  const dashboard = snapshot ? renderHivemindDashboard(snapshot) : '';
+  const colonyState = renderColonyState(store, reportBuilder);
+  if (sessions.length === 0) {
+    return layout(
+      'agents-hivemind',
+      html`${raw(stranded)}${raw(dashboard)}${raw(colonyState)}<p>No memory sessions yet.</p>`,
+    );
+  }
+  const ownerCounts = new Map<string, number>();
+  const items = sessions
+    .map((s) => {
+      const owner = resolveOwner(s.ide, s.id);
+      ownerCounts.set(owner.ide, (ownerCounts.get(owner.ide) ?? 0) + 1);
+      const cwdHtml = s.cwd ? html` · ${s.cwd}` : '';
+      return html`
+      <div class="card">
+        <div>${raw(ownerChip(owner.ide, owner.derived))}<a href="/sessions/${s.id}"><strong>${s.id}</strong></a></div>
+        <div class="meta">${new Date(s.started_at).toISOString()}${raw(cwdHtml)}</div>
+      </div>`;
+    })
+    .join('');
+  const summary = [...ownerCounts.entries()]
+    .sort(([, a], [, b]) => b - a)
+    .map(([ide, n]) => html`<span class="owner" data-owner="${ide}">${ide} · ${n}</span>`)
+    .join(' ');
+  return layout(
+    'agents-hivemind · sessions',
+    html`${raw(stranded)}${raw(dashboard)}${raw(colonyState)}<h2>Recent memory sessions</h2><p class="meta">${raw(summary)}</p>${raw(items)}`,
+  );
+}
+
+export function renderSession(
+  session: SessionRow,
+  observations: Array<{ id: number; kind: string; ts: number; content: string }>,
+): string {
+  const rows = observations
+    .map(
+      (o) => html`
+      <div class="card">
+        <div class="meta">#${o.id} · ${o.kind} · ${new Date(o.ts).toISOString()}</div>
+        <pre>${o.content}</pre>
+      </div>`,
+    )
+    .join('');
+  const owner = resolveOwner(session.ide, session.id);
+  return layout(
+    `agents-hivemind · ${session.id}`,
+    html`<h2>${raw(ownerChip(owner.ide, owner.derived))}${session.id}</h2><p><a href="/">&larr; all sessions</a></p>${raw(rows)}`,
+  );
+}
+
+function renderColonyState(store: MemoryStore, reportBuilder: BuildDiscrepancyReport): string {
+  const storage = store.storage;
+  const tasks = storage.listTasks(200).filter((task) => task.status === 'open');
+  return html`
+    <section>
+      <h2>Canonical colony state</h2>
+      <div class="viewer-grid">
+        <div class="viewer-main">
+          ${raw(renderDiagnostic(store))}
+          ${raw(renderCoordinationBehavior(store, reportBuilder))}
+          ${raw(renderRecentClaimsHeatMap(storage, tasks))}
+          ${raw(renderToolUsageHistogram())}
+        </div>
+        ${raw(renderAttentionSidebar(tasks))}
+      </div>
+    </section>`;
+}
+
+function resolveOwner(storedIde: string, sessionId: string): { ide: string; derived: boolean } {
+  if (storedIde && storedIde !== 'unknown') return { ide: storedIde, derived: false };
+  const inferred = inferIdeFromSessionId(sessionId);
+  if (inferred) return { ide: inferred, derived: true };
+  return { ide: 'unknown', derived: false };
+}
+
+function ownerChip(ide: string, derived: boolean): string {
+  const label = derived ? `${ide}?` : ide;
+  return html`<span class="owner" data-owner="${ide}" data-derived="${String(derived)}">${label}</span>`;
+}
