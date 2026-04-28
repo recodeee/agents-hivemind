@@ -1,13 +1,7 @@
 import path from 'node:path';
-import {
-  type MemoryStore,
-  PheromoneSystem,
-  ProposalSystem,
-  TaskThread,
-  detectRepoBranch,
-  inferIdeFromSessionId,
-} from '@colony/core';
+import { type MemoryStore, PheromoneSystem, ProposalSystem, detectRepoBranch } from '@colony/core';
 import { type BashCoordinationEvent, parseBashCoordinationEvents } from '../bash-parser.js';
+import { ensureHookTaskForSession, mirrorTaskToolUse } from '../task-mirror.js';
 import type { HookInput } from '../types.js';
 
 /**
@@ -17,7 +11,6 @@ import type { HookInput } from '../types.js';
  * parseBashCoordinationEvents so ordinary Write/Edit handling stays simple.
  */
 const WRITE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
-const TASK_MIRROR_TOOLS = new Set(['TaskCreate', 'TaskUpdate']);
 
 type BashPathContext = { cwd?: string | undefined; repoRoot?: string | undefined };
 
@@ -216,50 +209,6 @@ function normalizeSlashes(value: string): string {
 }
 
 /**
- * Mirror built-in task tools into the task thread without making the hook
- * depend on that mirror write. TaskCreate/TaskUpdate already happened by the
- * time PostToolUse runs; losing the mirror is acceptable, breaking the hook
- * path is not.
- */
-export function mirrorTaskToolUse(
-  store: MemoryStore,
-  input: Pick<HookInput, 'session_id' | 'tool_name' | 'tool' | 'tool_input' | 'cwd' | 'ide'>,
-): { mirrored: boolean; observation_id?: number; task_id?: number | null; error?: string } {
-  const toolName = input.tool_name ?? input.tool ?? '';
-  if (!TASK_MIRROR_TOOLS.has(toolName)) return { mirrored: false };
-
-  try {
-    const task_id = resolveMirrorTaskId(store, input);
-    const status_delta =
-      toolName === 'TaskUpdate' ? taskUpdateStatusDelta(input.tool_input) : undefined;
-    const metadata: Record<string, unknown> = {
-      mirror_schema: 1,
-      source_tool: toolName,
-      source_tool_input: input.tool_input,
-    };
-    if (status_delta) metadata.status_delta = status_delta;
-
-    const observation_id = store.addObservation({
-      session_id: input.session_id,
-      kind: toolName === 'TaskCreate' ? 'task-create-mirror' : 'task-update-mirror',
-      content:
-        toolName === 'TaskCreate'
-          ? taskCreateTitle(input.tool_input)
-          : taskUpdateContent(status_delta),
-      metadata,
-      task_id,
-    });
-    if (task_id !== null) store.storage.touchTask(task_id);
-    return { mirrored: observation_id >= 0, observation_id, task_id };
-  } catch (err) {
-    return {
-      mirrored: false,
-      error: err instanceof Error ? err.message : String(err),
-    };
-  }
-}
-
-/**
  * Extract file paths that a tool call mutated. Returns `[]` when the tool
  * isn't a write tool or the input shape isn't recognisable — silent-skip
  * rather than throw, because PostToolUse runs on every tool call and any
@@ -293,7 +242,7 @@ export function autoClaimFromToolUse(
   const files = extractTouchedFiles(toolName, input.tool_input);
   if (files.length === 0) return { claimed: [], conflicts: [] };
 
-  const task_id = ensureAutoClaimTask(store, input);
+  const task_id = ensureHookTaskForSession(store, input);
 
   const claimed: string[] = [];
   const conflicts: Array<{ file_path: string; other_session: string }> = [];
@@ -332,31 +281,6 @@ export function autoClaimFromToolUse(
   }
 
   return { claimed, conflicts };
-}
-
-function ensureAutoClaimTask(
-  store: MemoryStore,
-  input: Pick<HookInput, 'session_id' | 'ide' | 'cwd'>,
-): number {
-  const active = store.storage.findActiveTaskForSession(input.session_id);
-  if (active !== undefined) return active;
-
-  const session = store.storage.getSession(input.session_id);
-  const cwd = input.cwd ?? session?.cwd ?? null;
-  const detected = cwd ? detectRepoBranch(cwd) : null;
-  const ide = input.ide ?? session?.ide ?? inferIdeFromSessionId(input.session_id) ?? 'unknown';
-  const branch = `agent/${slugSegment(ide)}/${slugSegment(input.session_id).slice(0, 12)}`;
-  const thread = TaskThread.open(store, {
-    repo_root: detected?.repo_root ?? cwd ?? 'synthetic',
-    branch,
-    session_id: input.session_id,
-  });
-  thread.join(input.session_id, ide);
-  return thread.task_id;
-}
-
-function slugSegment(value: string): string {
-  return value.replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'unknown';
 }
 
 /**
@@ -423,120 +347,6 @@ export function reinforceAdjacentProposals(
     }
   }
   return { reinforced };
-}
-
-function resolveMirrorTaskId(
-  store: MemoryStore,
-  input: Pick<HookInput, 'session_id' | 'cwd' | 'ide'>,
-): number | null {
-  const active = store.storage.findActiveTaskForSession(input.session_id);
-  if (active !== undefined) return active;
-
-  const cwd = input.cwd ?? store.storage.getSession(input.session_id)?.cwd ?? undefined;
-  if (!cwd) return null;
-  const detected = detectRepoBranch(cwd);
-  if (!detected) return null;
-
-  store.startSession({
-    id: input.session_id,
-    ide: input.ide ?? 'unknown',
-    cwd,
-  });
-  const thread = TaskThread.open(store, {
-    repo_root: detected.repo_root,
-    branch: detected.branch,
-    session_id: input.session_id,
-  });
-  thread.join(input.session_id, mirrorAgent(input.ide, input.session_id, detected.branch));
-  return thread.task_id;
-}
-
-function taskCreateTitle(toolInput: unknown): string {
-  if (isRecord(toolInput)) {
-    const title =
-      readNonEmptyString(toolInput.title) ??
-      readNonEmptyString(toolInput.task_title) ??
-      readNonEmptyString(toolInput.name) ??
-      readNonEmptyString(toolInput.summary) ??
-      readNonEmptyString(toolInput.task);
-    if (title) return title;
-  }
-  return stringifyShort(toolInput) || 'TaskCreate';
-}
-
-function taskUpdateStatusDelta(toolInput: unknown): Record<string, unknown> {
-  if (!isRecord(toolInput)) return { inferred: false };
-
-  const delta: Record<string, unknown> = {};
-  const taskId = readFirstPresent(toolInput, ['task_id', 'taskId', 'id']);
-  const fromStatus = readFirstPresent(toolInput, [
-    'from_status',
-    'old_status',
-    'previous_status',
-    'prev_status',
-    'before_status',
-  ]);
-  const toStatus = readFirstPresent(toolInput, [
-    'to_status',
-    'new_status',
-    'next_status',
-    'after_status',
-    'status',
-  ]);
-  const updates = readFirstPresent(toolInput, ['updates', 'tasks', 'items']);
-
-  if (taskId !== undefined) delta.task_id = taskId;
-  if (fromStatus !== undefined) delta.from_status = fromStatus;
-  if (toStatus !== undefined) delta.to_status = toStatus;
-  if (Array.isArray(updates)) {
-    delta.updates = updates.map((update) => taskUpdateStatusDelta(update));
-  }
-  if (Object.keys(delta).length === 0) delta.inferred = false;
-  return delta;
-}
-
-function taskUpdateContent(statusDelta: Record<string, unknown> | undefined): string {
-  if (!statusDelta) return 'TaskUpdate';
-  const taskId = scalarText(statusDelta.task_id);
-  const fromStatus = scalarText(statusDelta.from_status);
-  const toStatus = scalarText(statusDelta.to_status);
-  const prefix = taskId ? `TaskUpdate ${taskId}:` : 'TaskUpdate:';
-  if (fromStatus && toStatus) return `${prefix} ${fromStatus} -> ${toStatus}`;
-  if (toStatus) return `${prefix} status -> ${toStatus}`;
-  return 'TaskUpdate';
-}
-
-function mirrorAgent(ide: string | undefined, sessionId: string, branch: string): string {
-  if (ide === 'claude-code') return 'claude';
-  if (ide === 'codex') return 'codex';
-  const prefix = sessionId.split('@')[0]?.toLowerCase();
-  if (prefix === 'claude' || prefix === 'claude-code') return 'claude';
-  if (prefix === 'codex') return 'codex';
-  const branchParts = branch.split('/').filter(Boolean);
-  if (branchParts.includes('claude')) return 'claude';
-  if (branchParts.includes('codex')) return 'codex';
-  return ide ?? 'agent';
-}
-
-function readFirstPresent(input: Record<string, unknown>, keys: string[]): unknown {
-  for (const key of keys) {
-    if (Object.hasOwn(input, key) && input[key] !== undefined) return input[key];
-  }
-  return undefined;
-}
-
-function readNonEmptyString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.trim().length > 0 ? value : undefined;
-}
-
-function scalarText(value: unknown): string | undefined {
-  if (typeof value === 'string' && value.length > 0) return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  return undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 function stringifyShort(v: unknown): string {

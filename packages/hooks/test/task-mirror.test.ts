@@ -3,8 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultSettings } from '@colony/config';
 import { MemoryStore, TaskThread } from '@colony/core';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runHook } from '../src/runner.js';
+import { mirrorTaskToolUse } from '../src/task-mirror.js';
 
 let dir: string;
 let store: MemoryStore;
@@ -52,36 +53,33 @@ describe('TaskCreate/TaskUpdate mirrors', () => {
     expect(mirror?.task_id).toBe(thread.task_id);
     expect(mirror?.content).toBe('Mirror TaskCreate calls');
     expect(mirror?.metadata).toMatchObject({
-      mirror_schema: 1,
-      source_tool: 'TaskCreate',
-      source_tool_input: toolInput,
+      source: 'task-mirror',
+      tool_input: toolInput,
+      mirrored_at: expect.any(Number),
     });
+    expect(mirror?.metadata).not.toHaveProperty('file_path');
+    expect(mirror?.metadata).not.toHaveProperty('task_id');
   });
 
-  it('ensures a branch task from cwd when TaskUpdate has no active task yet', async () => {
+  it('ensures a synthetic task when TaskUpdate has no active task yet', () => {
     const repo = join(dir, 'repo');
     mkdirSync(join(repo, '.git'), { recursive: true });
-    writeFileSync(join(repo, '.git', 'HEAD'), 'ref: refs/heads/agent/codex/task-update\n', 'utf8');
+    writeFileSync(join(repo, '.git', 'HEAD'), 'ref: refs/heads/feature/not-the-task\n', 'utf8');
 
-    const result = await runHook(
-      'post-tool-use',
-      {
-        session_id: 'codex@late-task',
-        ide: 'codex',
-        cwd: repo,
-        tool_name: 'TaskUpdate',
-        tool_input: {
-          task_id: 'task-7',
-          previous_status: 'in_progress',
-          status: 'completed',
-        },
-        tool_response: { ok: true },
+    const result = mirrorTaskToolUse(store, {
+      session_id: 'codex@late-task',
+      ide: 'codex',
+      cwd: repo,
+      tool_name: 'TaskUpdate',
+      tool_input: {
+        task_id: 'task-7',
+        previous_status: 'in_progress',
+        status: 'completed',
       },
-      { store },
-    );
+    });
 
-    expect(result.ok).toBe(true);
-    const task = store.storage.findTaskByBranch(repo, 'agent/codex/task-update');
+    expect(result.mirrored).toBe(true);
+    const task = store.storage.findTaskByBranch(repo, 'agent/codex/codex-late-t');
     expect(task).toBeDefined();
     expect(store.storage.getParticipantAgent(task?.id ?? -1, 'codex@late-task')).toBe('codex');
 
@@ -89,13 +87,40 @@ describe('TaskCreate/TaskUpdate mirrors', () => {
     expect(rows).toHaveLength(1);
     const [mirror] = store.getObservations([rows[0]?.id ?? -1], { expand: true });
     expect(mirror?.metadata).toMatchObject({
-      mirror_schema: 1,
-      source_tool: 'TaskUpdate',
+      source: 'task-mirror',
+      tool_input: {
+        task_id: 'task-7',
+        previous_status: 'in_progress',
+        status: 'completed',
+      },
+      mirrored_at: expect.any(Number),
       status_delta: {
         task_id: 'task-7',
         from_status: 'in_progress',
         to_status: 'completed',
       },
     });
+  });
+
+  it('logs mirror failures without blocking the hook path', () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const failingStore = {
+      storage: {
+        findActiveTaskForSession: () => {
+          throw new Error('storage unavailable');
+        },
+      },
+    } as unknown as MemoryStore;
+
+    const result = mirrorTaskToolUse(failingStore, {
+      session_id: 'codex@mirror-error',
+      ide: 'codex',
+      tool_name: 'TaskCreate',
+      tool_input: { title: 'Still let the hook finish' },
+    });
+
+    expect(result).toEqual({ mirrored: false, error: 'storage unavailable' });
+    expect(errorSpy).toHaveBeenCalledWith('[colony hooks] task-mirror failed: storage unavailable');
+    errorSpy.mockRestore();
   });
 });
