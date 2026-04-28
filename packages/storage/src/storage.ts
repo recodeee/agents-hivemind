@@ -2,6 +2,11 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 import { COLUMN_MIGRATIONS, POST_MIGRATION_SQL, SCHEMA_SQL } from './schema.js';
+import {
+  COORDINATION_COMMIT_TOOLS,
+  COORDINATION_READ_TOOLS,
+  FILE_EDIT_TOOLS,
+} from './tool-classes.js';
 import type {
   AgentProfileRow,
   ExampleRow,
@@ -48,7 +53,33 @@ export interface StrandedSessionRow {
   last_tool_error: string | null;
 }
 
+export interface CoordinationActivity {
+  commits: number;
+  reads: number;
+  commits_by_session: Map<string, number>;
+  reads_by_session: Map<string, number>;
+}
+
+export interface EditsWithoutClaimsRow {
+  session_id: string;
+  file_path: string;
+  edit_ts: number;
+  has_sibling_claim_within_window: boolean;
+}
+
+export interface SessionsEndedWithoutHandoffRow {
+  session_id: string;
+  last_observation_ts: number;
+  had_active_claims: boolean;
+  had_pending_handoff: boolean;
+}
+
 const DEFAULT_STRANDED_AFTER_MS = 10 * 60_000;
+const DEFAULT_CLAIM_WINDOW_MS = 5 * 60_000;
+const DEFAULT_IDLE_WINDOW_MS = 30 * 60_000;
+const COORDINATION_COMMIT_TOOLS_JSON = JSON.stringify(Array.from(COORDINATION_COMMIT_TOOLS));
+const COORDINATION_READ_TOOLS_JSON = JSON.stringify(Array.from(COORDINATION_READ_TOOLS));
+const FILE_EDIT_TOOLS_JSON = JSON.stringify(Array.from(FILE_EDIT_TOOLS));
 
 export class Storage {
   private db: Database.Database;
@@ -57,6 +88,9 @@ export class Storage {
   private countTaskObservationsStmt!: Database.Statement;
   private findStrandedSessionsStmt!: Database.Statement;
   private recentToolErrorsStmt!: Database.Statement;
+  private coordinationActivityStmt!: Database.Statement;
+  private editsWithoutClaimsStmt!: Database.Statement;
+  private sessionsEndedWithoutHandoffStmt!: Database.Statement;
 
   constructor(dbPath: string, opts: StorageOptions = {}) {
     mkdirSync(dirname(dbPath), { recursive: true });
@@ -138,6 +172,75 @@ export class Storage {
          )
        ORDER BY ts DESC
        LIMIT ?`,
+    );
+    this.coordinationActivityStmt = this.db.prepare(
+      `WITH tool_classes(tool, class) AS (
+         SELECT value AS tool, 'commit' AS class FROM json_each(?)
+         UNION ALL
+         SELECT value AS tool, 'read' AS class FROM json_each(?)
+       )
+       SELECT o.session_id,
+              tc.class,
+              COUNT(*) AS count
+       FROM observations o
+       JOIN tool_classes tc
+         ON tc.tool = COALESCE(
+           json_extract(o.metadata, '$.tool_name'),
+           json_extract(o.metadata, '$.tool')
+         )
+       WHERE o.ts >= ?
+         AND o.kind = 'tool_use'
+       GROUP BY o.session_id, tc.class
+       ORDER BY tc.class ASC, count DESC, o.session_id ASC`,
+    );
+    this.editsWithoutClaimsStmt = this.db.prepare(
+      `WITH edit_tools(tool) AS (
+         SELECT value AS tool FROM json_each(?)
+       )
+       SELECT o.session_id,
+              json_extract(o.metadata, '$.file_path') AS file_path,
+              o.ts AS edit_ts,
+              EXISTS (
+                SELECT 1 FROM observations c
+                WHERE c.kind = 'claim'
+                  AND c.session_id = o.session_id
+                  AND json_extract(c.metadata, '$.file_path') = json_extract(o.metadata, '$.file_path')
+                  AND c.ts BETWEEN o.ts - ? AND o.ts + ?
+              ) AS has_sibling_claim_within_window
+       FROM observations o
+       JOIN edit_tools et
+         ON et.tool = COALESCE(
+           json_extract(o.metadata, '$.tool_name'),
+           json_extract(o.metadata, '$.tool')
+         )
+       WHERE o.ts >= ?
+         AND o.kind = 'tool_use'
+         AND json_extract(o.metadata, '$.file_path') IS NOT NULL
+       ORDER BY o.ts DESC, o.id DESC`,
+    );
+    this.sessionsEndedWithoutHandoffStmt = this.db.prepare(
+      `WITH last_obs AS (
+         SELECT session_id,
+                MAX(ts) AS last_observation_ts
+         FROM observations
+         WHERE ts >= ?
+         GROUP BY session_id
+       )
+       SELECT l.session_id,
+              l.last_observation_ts,
+              EXISTS (
+                SELECT 1 FROM task_claims tc
+                WHERE tc.session_id = l.session_id
+              ) AS had_active_claims,
+              EXISTS (
+                SELECT 1 FROM observations h
+                WHERE h.session_id = l.session_id
+                  AND h.kind IN ('handoff', 'relay')
+                  AND h.ts <= l.last_observation_ts
+              ) AS had_pending_handoff
+       FROM last_obs l
+       WHERE l.last_observation_ts <= ?
+       ORDER BY l.last_observation_ts ASC, l.session_id ASC`,
     );
     if (!readonly) {
       this.upsertTaskEmbeddingStmt = this.db.prepare(
@@ -239,6 +342,70 @@ export class Storage {
 
   recentToolErrors(session_id: string, since_ts: number, limit = 20): ObservationRow[] {
     return this.recentToolErrorsStmt.all(session_id, since_ts, limit) as ObservationRow[];
+  }
+
+  coordinationActivity(since: number): CoordinationActivity {
+    const rows = this.coordinationActivityStmt.all(
+      COORDINATION_COMMIT_TOOLS_JSON,
+      COORDINATION_READ_TOOLS_JSON,
+      since,
+    ) as Array<{ session_id: string; class: 'commit' | 'read'; count: number }>;
+    const commits_by_session = new Map<string, number>();
+    const reads_by_session = new Map<string, number>();
+    let commits = 0;
+    let reads = 0;
+    for (const row of rows) {
+      if (row.class === 'commit') {
+        commits += row.count;
+        commits_by_session.set(row.session_id, row.count);
+      } else {
+        reads += row.count;
+        reads_by_session.set(row.session_id, row.count);
+      }
+    }
+    return { commits, reads, commits_by_session, reads_by_session };
+  }
+
+  editsWithoutClaims(
+    since: number,
+    claim_window_ms = DEFAULT_CLAIM_WINDOW_MS,
+  ): EditsWithoutClaimsRow[] {
+    const rows = this.editsWithoutClaimsStmt.all(
+      FILE_EDIT_TOOLS_JSON,
+      claim_window_ms,
+      claim_window_ms,
+      since,
+    ) as Array<{
+      session_id: string;
+      file_path: string;
+      edit_ts: number;
+      has_sibling_claim_within_window: 0 | 1;
+    }>;
+    return rows.map((row) => ({
+      session_id: row.session_id,
+      file_path: row.file_path,
+      edit_ts: row.edit_ts,
+      has_sibling_claim_within_window: row.has_sibling_claim_within_window === 1,
+    }));
+  }
+
+  sessionsEndedWithoutHandoff(
+    since: number,
+    idle_window_ms = DEFAULT_IDLE_WINDOW_MS,
+  ): SessionsEndedWithoutHandoffRow[] {
+    const idleCutoff = Date.now() - idle_window_ms;
+    const rows = this.sessionsEndedWithoutHandoffStmt.all(since, idleCutoff) as Array<{
+      session_id: string;
+      last_observation_ts: number;
+      had_active_claims: 0 | 1;
+      had_pending_handoff: 0 | 1;
+    }>;
+    return rows.map((row) => ({
+      session_id: row.session_id,
+      last_observation_ts: row.last_observation_ts,
+      had_active_claims: row.had_active_claims === 1,
+      had_pending_handoff: row.had_pending_handoff === 1,
+    }));
   }
 
   // --- observations ---

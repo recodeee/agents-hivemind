@@ -1,4 +1,16 @@
 export { Storage } from './storage.js';
+export {
+  COORDINATION_COMMIT_TOOLS,
+  COORDINATION_READ_TOOLS,
+  FILE_EDIT_TOOLS,
+  classifyTool,
+} from './tool-classes.js';
+export type {
+  CoordinationActivity,
+  EditsWithoutClaimsRow,
+  SessionsEndedWithoutHandoffRow,
+} from './storage.js';
+export type { ToolClass } from './tool-classes.js';
 export type {
   SessionRow,
   ObservationRow,
