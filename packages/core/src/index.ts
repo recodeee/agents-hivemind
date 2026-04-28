@@ -106,3 +106,12 @@ export {
   type TaskStatus,
 } from './similarity-search.js';
 export { ABANDONED_TASK_DAYS, SUGGESTION_THRESHOLDS } from './suggestion-thresholds.js';
+export {
+  buildSuggestionPayload,
+  type BuildSuggestionPayloadOptions,
+  type SuggestionFileRanking,
+  type SuggestionPattern,
+  type SuggestionPayload,
+  type SuggestionResolutionHints,
+  type WarnPatternKind,
+} from './suggestion-payload.js';
