@@ -14,6 +14,7 @@ import type {
   NewReinforcement,
   NewSummary,
   NewTask,
+  NewTaskEmbedding,
   NewTaskLink,
   ObservationRow,
   PheromoneRow,
@@ -24,6 +25,7 @@ import type {
   SessionRow,
   SummaryRow,
   TaskClaimRow,
+  TaskEmbeddingRow,
   TaskLinkRow,
   TaskParticipantRow,
   TaskRow,
@@ -386,6 +388,83 @@ export class Storage {
       return row.n;
     }
     const row = this.db.prepare('SELECT COUNT(*) AS n FROM embeddings').get() as { n: number };
+    return row.n;
+  }
+
+  // True iff an embedding row exists for this observation. Optional model
+  // filter — without it, any model's row counts (only one model lives in
+  // the table at a time anyway thanks to dropEmbeddingsWhereModelNot).
+  hasEmbedding(observation_id: number, model?: string): boolean {
+    if (model) {
+      const row = this.db
+        .prepare('SELECT 1 AS x FROM embeddings WHERE observation_id = ? AND model = ? LIMIT 1')
+        .get(observation_id, model) as { x: number } | undefined;
+      return row !== undefined;
+    }
+    const row = this.db
+      .prepare('SELECT 1 AS x FROM embeddings WHERE observation_id = ? LIMIT 1')
+      .get(observation_id) as { x: number } | undefined;
+    return row !== undefined;
+  }
+
+  // --- task embeddings ---
+
+  // The task embedding cache. Read on every similarity query, written
+  // lazily when the cache is stale (drift > 20% on observation_count or
+  // model mismatch). Conceptually a memoization table — the source of
+  // truth is the task's observations + their embeddings.
+  upsertTaskEmbedding(p: NewTaskEmbedding): void {
+    const buf = Buffer.from(p.vec.buffer, p.vec.byteOffset, p.vec.byteLength);
+    this.db
+      .prepare(
+        `INSERT INTO task_embeddings(task_id, model, dim, vec, observation_count, computed_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(task_id) DO UPDATE SET
+           model = excluded.model,
+           dim = excluded.dim,
+           vec = excluded.vec,
+           observation_count = excluded.observation_count,
+           computed_at = excluded.computed_at`,
+      )
+      .run(p.task_id, p.model, p.dim, buf, p.observation_count, p.computed_at ?? Date.now());
+  }
+
+  getTaskEmbedding(task_id: number): TaskEmbeddingRow | undefined {
+    const row = this.db
+      .prepare(
+        'SELECT task_id, model, dim, vec, observation_count, computed_at FROM task_embeddings WHERE task_id = ?',
+      )
+      .get(task_id) as
+      | {
+          task_id: number;
+          model: string;
+          dim: number;
+          vec: Buffer;
+          observation_count: number;
+          computed_at: number;
+        }
+      | undefined;
+    if (!row) return undefined;
+    // Copy out of the better-sqlite3 buffer into an owned Float32Array —
+    // see the same pattern in allEmbeddings(). The underlying buffer is
+    // freed once the row goes out of scope, so we cannot alias it.
+    const vec = new Float32Array(
+      new Uint8Array(row.vec.buffer, row.vec.byteOffset, row.vec.byteLength).slice().buffer,
+    );
+    return {
+      task_id: row.task_id,
+      model: row.model,
+      dim: row.dim,
+      vec,
+      observation_count: row.observation_count,
+      computed_at: row.computed_at,
+    };
+  }
+
+  countTaskObservations(task_id: number): number {
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS n FROM observations WHERE task_id = ?')
+      .get(task_id) as { n: number };
     return row.n;
   }
 

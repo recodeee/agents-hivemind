@@ -206,3 +206,21 @@ export interface NewExample {
   observation_count?: number;
   last_scanned_at?: number;
 }
+
+export interface TaskEmbeddingRow {
+  task_id: number;
+  model: string;
+  dim: number;
+  vec: Float32Array;
+  observation_count: number;
+  computed_at: number;
+}
+
+export interface NewTaskEmbedding {
+  task_id: number;
+  model: string;
+  dim: number;
+  vec: Float32Array;
+  observation_count: number;
+  computed_at?: number;
+}

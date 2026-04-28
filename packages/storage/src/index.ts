@@ -26,4 +26,6 @@ export type {
   ExampleRow,
   NewExample,
   ExampleManifestKind,
+  TaskEmbeddingRow,
+  NewTaskEmbedding,
 } from './types.js';

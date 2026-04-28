@@ -199,7 +199,31 @@ CREATE TABLE IF NOT EXISTS examples (
 );
 CREATE INDEX IF NOT EXISTS idx_examples_repo ON examples(repo_root);
 
-INSERT OR IGNORE INTO schema_version(version) VALUES (8);
+-- Task-level embeddings: per-task vector representing the task's "meaning"
+-- in the same embedding space the observations live in. Computed lazily
+-- the first time a task is queried for similarity (predictive suggestions
+-- lane). The vector is a kind-weighted centroid of the task's observation
+-- embeddings, so handoffs and decisions count more than tool-use noise.
+--
+-- observation_count is the cache invalidation key: we recompute when the
+-- task's actual observation count drifts more than 20% from the cached
+-- value, so older tasks don't pay re-embedding cost on every query while
+-- in-flight tasks still see fresh signal as they grow.
+--
+-- model is the embedder identifier (e.g. 'Xenova/all-MiniLM-L6-v2').
+-- Mixing models in the same vector space is meaningless, so a model
+-- mismatch invalidates the cache the same way drift does.
+CREATE TABLE IF NOT EXISTS task_embeddings (
+  task_id INTEGER PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+  model TEXT NOT NULL,
+  dim INTEGER NOT NULL,
+  vec BLOB NOT NULL,
+  observation_count INTEGER NOT NULL,
+  computed_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_task_embeddings_model ON task_embeddings(model, dim);
+
+INSERT OR IGNORE INTO schema_version(version) VALUES (9);
 `;
 
 /**

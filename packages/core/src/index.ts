@@ -90,3 +90,10 @@ export {
   type SubtaskInfo,
   type SubtaskStatus,
 } from './plan.js';
+export {
+  CACHE_DRIFT_TOLERANCE,
+  KIND_WEIGHTS,
+  MIN_EMBEDDED_OBSERVATIONS,
+  computeTaskEmbedding,
+  getOrComputeTaskEmbedding,
+} from './task-embeddings.js';
