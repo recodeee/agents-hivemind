@@ -98,11 +98,14 @@ export {
   findSubtaskBySpecRow,
   listPlans,
   readSubtaskByBranch,
+  synthesizePlanFromProposal,
   type ListPlansOptions,
   type PlanInfo,
+  type ProposalForSynthesis,
   type SubtaskInfo,
   type SubtaskLookup,
   type SubtaskStatus,
+  type SynthesizedPlan,
 } from './plan.js';
 export {
   CACHE_DRIFT_TOLERANCE,

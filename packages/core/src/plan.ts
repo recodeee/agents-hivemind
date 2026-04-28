@@ -1,4 +1,5 @@
 import type { MemoryStore } from './memory-store.js';
+import { TaskThread } from './task-thread.js';
 
 export type SubtaskStatus = 'available' | 'claimed' | 'completed' | 'blocked';
 
@@ -210,4 +211,176 @@ export function listPlans(store: MemoryStore, opts: ListPlansOptions = {}): Plan
         p.next_available.some((s) => s.capability_hint === opts.capability_match),
     )
     .slice(0, limit);
+}
+
+/**
+ * Auto-published plan synthesized from a foraging proposal that crossed
+ * the promotion threshold. Two intentional differences from
+ * `task_plan_publish`:
+ *
+ *   1. No `openspec/changes/<slug>/CHANGE.md` is written. The plan exists
+ *      entirely in the observation timeline; humans can scaffold OpenSpec
+ *      docs later if the auto-promoted plan proves out. This avoids
+ *      filesystem side effects on a code path the foraging system fires
+ *      autonomously.
+ *
+ *   2. `auto_archive` defaults to `false` so a human reviews the first
+ *      wave of auto-published plans before silent state transitions
+ *      occur on the final sub-task completion.
+ *
+ * Idempotency is the caller's job: `ProposalSystem.maybePromote` flips
+ * `proposal.status` from `'pending'` to `'active'` BEFORE invoking this
+ * function, so any subsequent reinforcement-driven promotion attempt for
+ * the same proposal short-circuits at the status guard and never reaches
+ * synthesis a second time.
+ *
+ * Empty `touches_files` returns early with `skipped_reason:
+ * 'no_touches_files'`. The proposal's promoted TaskThread (a sibling on
+ * `<branch>/proposal-<id>`) is unaffected — the lite plan is a bonus,
+ * not a replacement.
+ */
+export interface SynthesizedPlan {
+  plan_slug: string;
+  parent_task_id: number | null;
+  subtask_count: number;
+  skipped_reason?: 'no_touches_files';
+}
+
+export interface ProposalForSynthesis {
+  id: number;
+  repo_root: string;
+  summary: string;
+  rationale: string;
+  /** JSON-serialized string array, matching `proposals.touches_files`. */
+  touches_files: string;
+  proposed_by: string;
+}
+
+/**
+ * Maximum sub-tasks per auto-promoted plan. Mirrors `task_plan_publish`'s
+ * upper bound — keeps the lite path inside the same envelope as explicit
+ * publishes so downstream UIs and the listPlans rollup don't need a
+ * separate cap.
+ */
+const MAX_AUTO_SUBTASKS = 20;
+
+export function synthesizePlanFromProposal(
+  store: MemoryStore,
+  proposal: ProposalForSynthesis,
+  options?: { auto_archive?: boolean },
+): SynthesizedPlan {
+  const planSlug = `proposal-${proposal.id}`;
+  const parsedFiles = parseTouchesFilesArray(proposal.touches_files);
+
+  if (parsedFiles.length === 0) {
+    return {
+      plan_slug: planSlug,
+      parent_task_id: null,
+      subtask_count: 0,
+      skipped_reason: 'no_touches_files',
+    };
+  }
+
+  // listPlans matches /^spec\/[a-z0-9-]+$/ on the parent — no further
+  // path segments — so the synthesized root must live on `spec/<slug>`.
+  const parentBranch = `spec/${planSlug}`;
+  const parent = TaskThread.open(store, {
+    repo_root: proposal.repo_root,
+    branch: parentBranch,
+    session_id: proposal.proposed_by,
+    title: proposal.summary,
+  });
+
+  const autoArchive = options?.auto_archive ?? false;
+  store.addObservation({
+    session_id: proposal.proposed_by,
+    task_id: parent.task_id,
+    kind: 'plan-config',
+    content: `auto-promoted plan ${planSlug} (auto_archive=${autoArchive})`,
+    metadata: {
+      plan_slug: planSlug,
+      auto_archive: autoArchive,
+      source: 'auto-promoted',
+      promoted_from_proposal_id: proposal.id,
+    },
+  });
+
+  // Naive partition: one sub-task per touched file, capped at
+  // MAX_AUTO_SUBTASKS. Smarter partitioning (group by module, infer
+  // capability_hint from path heuristics) is v2 work — this v1 keeps
+  // the bridge mechanical so lifecycle behavior is the only variable.
+  const groups = parsedFiles.slice(0, MAX_AUTO_SUBTASKS).map((file) => ({
+    title: `Address ${file}`,
+    description: `Auto-derived from proposal #${proposal.id}: ${proposal.summary}`,
+    file_scope: [file],
+  }));
+
+  for (let i = 0; i < groups.length; i++) {
+    const group = groups[i];
+    if (!group) continue;
+    const subBranch = `spec/${planSlug}/sub-${i}`;
+    const sub = TaskThread.open(store, {
+      repo_root: proposal.repo_root,
+      branch: subBranch,
+      session_id: proposal.proposed_by,
+    });
+    store.addObservation({
+      session_id: proposal.proposed_by,
+      task_id: sub.task_id,
+      kind: 'plan-subtask',
+      content: `${group.title}\n\n${group.description}`,
+      metadata: {
+        parent_plan_slug: planSlug,
+        parent_plan_title: proposal.summary,
+        parent_spec_task_id: parent.task_id,
+        subtask_index: i,
+        file_scope: group.file_scope,
+        depends_on: [],
+        spec_row_id: null,
+        capability_hint: null,
+        status: 'available',
+      },
+    });
+  }
+
+  // Co-stamp a `proposal-promoted` event observation on the parent so
+  // the events feed (Plans page side panel) gets a distinct line:
+  // "Proposal #847 colony-foraging-cleanup crossed strength 2.5 and
+  //  auto-promoted to a plan with N sub-tasks."
+  store.addObservation({
+    session_id: proposal.proposed_by,
+    task_id: parent.task_id,
+    kind: 'proposal-promoted',
+    content:
+      `Proposal #${proposal.id} ${proposal.summary} crossed strength ` +
+      `${ProposalSystem_PROMOTION_THRESHOLD_LABEL} and auto-promoted to a plan with ` +
+      `${groups.length} sub-task${groups.length === 1 ? '' : 's'}.`,
+    metadata: {
+      plan_slug: planSlug,
+      source: 'auto-promoted',
+      promoted_from_proposal_id: proposal.id,
+      subtask_count: groups.length,
+      proposal_summary: proposal.summary,
+    },
+  });
+
+  return {
+    plan_slug: planSlug,
+    parent_task_id: parent.task_id,
+    subtask_count: groups.length,
+  };
+}
+
+// Avoid a circular import (proposal-system → plan → proposal-system) by
+// duplicating the threshold label as a string literal here. The numeric
+// value lives in ProposalSystem.PROMOTION_THRESHOLD; keep this in sync.
+const ProposalSystem_PROMOTION_THRESHOLD_LABEL = '2.5';
+
+function parseTouchesFilesArray(raw: string): string[] {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
 }

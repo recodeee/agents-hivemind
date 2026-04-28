@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { defaultSettings } from '@colony/config';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryStore } from '../src/memory-store.js';
+import { listPlans } from '../src/plan.js';
 import { ProposalSystem } from '../src/proposal-system.js';
 
 let dir: string;
@@ -285,5 +286,144 @@ describe('ProposalSystem.foragingReport', () => {
 
     const report = proposals.foragingReport('/r', 'b');
     expect(report.pending.find((p) => p.id === id)).toBeUndefined();
+  });
+});
+
+describe('ProposalSystem promotion-to-plan bridge', () => {
+  it('synthesizes a lite plan when a proposal with touches_files crosses threshold', () => {
+    seed('A', 'B', 'C');
+    const proposals = new ProposalSystem(store);
+    const id = proposals.propose({
+      repo_root: '/r',
+      branch: 'b',
+      summary: 'colony foraging cleanup',
+      rationale: 'three agents agree this needs attention',
+      touches_files: ['packages/core/src/foraging.ts', 'packages/core/src/proposal-system.ts'],
+      session_id: 'A',
+    });
+    proposals.reinforce({ proposal_id: id, session_id: 'B', kind: 'explicit' });
+    const result = proposals.reinforce({ proposal_id: id, session_id: 'C', kind: 'explicit' });
+    expect(result.promoted).toBe(true);
+
+    // listPlans must surface the synthesized plan with one sub-task per
+    // file in touches_files.
+    const plans = listPlans(store, { repo_root: '/r' });
+    const promoted = plans.find((p) => p.plan_slug === `proposal-${id}`);
+    expect(promoted).toBeDefined();
+    if (!promoted) return;
+    expect(promoted.title).toBe('colony foraging cleanup');
+    expect(promoted.subtasks).toHaveLength(2);
+    expect(promoted.subtasks.map((s) => s.subtask_index)).toEqual([0, 1]);
+    expect(promoted.subtask_counts.available).toBe(2);
+    expect(promoted.subtasks[0]?.file_scope).toEqual(['packages/core/src/foraging.ts']);
+    expect(promoted.subtasks[1]?.file_scope).toEqual(['packages/core/src/proposal-system.ts']);
+  });
+
+  it('stamps a proposal-promoted observation on the synthesized plan root', () => {
+    seed('A', 'B', 'C');
+    const proposals = new ProposalSystem(store);
+    const id = proposals.propose({
+      repo_root: '/r',
+      branch: 'b',
+      summary: 'pheromone overlap',
+      rationale: 'r',
+      touches_files: ['src/x.ts'],
+      session_id: 'A',
+    });
+    proposals.reinforce({ proposal_id: id, session_id: 'B', kind: 'explicit' });
+    proposals.reinforce({ proposal_id: id, session_id: 'C', kind: 'explicit' });
+
+    const plans = listPlans(store, { repo_root: '/r' });
+    const promoted = plans.find((p) => p.plan_slug === `proposal-${id}`);
+    expect(promoted).toBeDefined();
+    if (!promoted) return;
+
+    const events = store.storage.taskObservationsByKind(
+      promoted.spec_task_id,
+      'proposal-promoted',
+      10,
+    );
+    expect(events).toHaveLength(1);
+    const meta = JSON.parse(events[0]?.metadata ?? '{}');
+    expect(meta.plan_slug).toBe(`proposal-${id}`);
+    expect(meta.promoted_from_proposal_id).toBe(id);
+    expect(meta.subtask_count).toBe(1);
+  });
+
+  it('skips plan synthesis when touches_files is empty (TaskThread still opens)', () => {
+    seed('A', 'B', 'C');
+    const proposals = new ProposalSystem(store);
+    const id = proposals.propose({
+      repo_root: '/r',
+      branch: 'b',
+      summary: 'pure-prose proposal',
+      rationale: 'r',
+      touches_files: [],
+      session_id: 'A',
+    });
+    proposals.reinforce({ proposal_id: id, session_id: 'B', kind: 'explicit' });
+    const result = proposals.reinforce({ proposal_id: id, session_id: 'C', kind: 'explicit' });
+    expect(result.promoted).toBe(true);
+
+    // Promotion proceeded — task thread exists on the synthetic branch.
+    const proposal = store.storage.getProposal(id);
+    expect(proposal?.status).toBe('active');
+    expect(proposal?.task_id).not.toBeNull();
+
+    // …but no plan was synthesized because touches_files was empty.
+    const plans = listPlans(store, { repo_root: '/r' });
+    expect(plans.find((p) => p.plan_slug === `proposal-${id}`)).toBeUndefined();
+  });
+
+  it('is idempotent: the synthesized plan is created exactly once per proposal', () => {
+    seed('A', 'B', 'C', 'D');
+    const proposals = new ProposalSystem(store);
+    const id = proposals.propose({
+      repo_root: '/r',
+      branch: 'b',
+      summary: 's',
+      rationale: 'r',
+      touches_files: ['src/x.ts'],
+      session_id: 'A',
+    });
+    proposals.reinforce({ proposal_id: id, session_id: 'B', kind: 'explicit' });
+    proposals.reinforce({ proposal_id: id, session_id: 'C', kind: 'explicit' });
+
+    // Crossing-threshold reinforcement #1: synthesize plan.
+    let plans = listPlans(store, { repo_root: '/r' });
+    const planAfterFirst = plans.find((p) => p.plan_slug === `proposal-${id}`);
+    expect(planAfterFirst).toBeDefined();
+    const firstSpecTaskId = planAfterFirst?.spec_task_id;
+
+    // Re-reinforce after promotion. maybePromote short-circuits at the
+    // status guard before reaching synthesizePlanFromProposal again, so
+    // no duplicate plan is created and no extra sub-tasks appear.
+    proposals.reinforce({ proposal_id: id, session_id: 'D', kind: 'explicit' });
+
+    plans = listPlans(store, { repo_root: '/r' });
+    const planAfterSecond = plans.find((p) => p.plan_slug === `proposal-${id}`);
+    expect(planAfterSecond?.spec_task_id).toBe(firstSpecTaskId);
+    expect(planAfterSecond?.subtasks).toHaveLength(1);
+  });
+
+  it('caps synthesized sub-tasks at the explicit-publish maximum (20)', () => {
+    seed('A', 'B', 'C');
+    const proposals = new ProposalSystem(store);
+    // 25 files — should clamp to 20 sub-tasks to match task_plan_publish.
+    const files = Array.from({ length: 25 }, (_, i) => `src/file-${i}.ts`);
+    const id = proposals.propose({
+      repo_root: '/r',
+      branch: 'b',
+      summary: 'wide refactor',
+      rationale: 'r',
+      touches_files: files,
+      session_id: 'A',
+    });
+    proposals.reinforce({ proposal_id: id, session_id: 'B', kind: 'explicit' });
+    proposals.reinforce({ proposal_id: id, session_id: 'C', kind: 'explicit' });
+
+    const plans = listPlans(store, { repo_root: '/r' });
+    const promoted = plans.find((p) => p.plan_slug === `proposal-${id}`);
+    expect(promoted?.subtasks).toHaveLength(20);
   });
 });

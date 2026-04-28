@@ -1,5 +1,6 @@
 import type { ReinforcementKind } from '@colony/storage';
 import type { MemoryStore } from './memory-store.js';
+import { synthesizePlanFromProposal } from './plan.js';
 import { TaskThread } from './task-thread.js';
 
 export interface PendingProposal {
@@ -236,6 +237,36 @@ export class ProposalSystem {
       promoted_at: Date.now(),
       task_id: thread.task_id,
     });
+
+    // Bridge: also synthesize a "lite" plan so the Plans page surfaces the
+    // promoted task with sub-task progress tracking. The promotion
+    // (TaskThread + status flip) is the load-bearing contract; this is a
+    // bonus. If synthesis throws — schema drift, partition edge case, etc.
+    // — we log and continue so a buggy bridge can't unwind a successful
+    // promotion. The proposal.status flip above is the idempotency anchor:
+    // a re-entry of this method returns false at the status guard before
+    // ever calling synthesize again.
+    try {
+      synthesizePlanFromProposal(this.store, {
+        id: proposal.id,
+        repo_root: proposal.repo_root,
+        summary: proposal.summary,
+        rationale: proposal.rationale,
+        touches_files: proposal.touches_files,
+        proposed_by: proposal.proposed_by,
+      });
+    } catch (err) {
+      this.store.addObservation({
+        session_id: proposal.proposed_by,
+        task_id: thread.task_id,
+        kind: 'plan-synthesis-failed',
+        content: `bridge failed: ${err instanceof Error ? err.message : String(err)}`,
+        metadata: {
+          promoted_from_proposal_id: proposal.id,
+        },
+      });
+    }
+
     return true;
   }
 }
