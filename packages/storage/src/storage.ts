@@ -37,14 +37,30 @@ export interface StorageOptions {
 
 export class Storage {
   private db: Database.Database;
+  private getTaskEmbeddingStmt!: Database.Statement;
+  private upsertTaskEmbeddingStmt: Database.Statement | undefined;
+  private countTaskObservationsStmt!: Database.Statement;
 
   constructor(dbPath: string, opts: StorageOptions = {}) {
     mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath, opts.readonly ? { readonly: true } : {});
     this.db.exec(SCHEMA_SQL);
     if (!opts.readonly) {
+      this.applyTableMigrations();
       this.applyColumnMigrations();
       this.db.exec(POST_MIGRATION_SQL);
+    }
+    this.prepareTaskEmbeddingStatements(opts.readonly ?? false);
+  }
+
+  private applyTableMigrations(): void {
+    const cols = this.db.prepare('PRAGMA table_info(task_embeddings)').all() as Array<{
+      name: string;
+    }>;
+    const hasVec = cols.some((c) => c.name === 'vec');
+    const hasEmbedding = cols.some((c) => c.name === 'embedding');
+    if (hasVec && !hasEmbedding) {
+      this.db.exec('ALTER TABLE task_embeddings RENAME COLUMN vec TO embedding');
     }
   }
 
@@ -58,6 +74,27 @@ export class Storage {
       const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
       if (cols.some((c) => c.name === column)) continue;
       this.db.exec(sql);
+    }
+  }
+
+  private prepareTaskEmbeddingStatements(readonly: boolean): void {
+    this.getTaskEmbeddingStmt = this.db.prepare(
+      'SELECT task_id, model, dim, embedding, observation_count, computed_at FROM task_embeddings WHERE task_id = ?',
+    );
+    this.countTaskObservationsStmt = this.db.prepare(
+      'SELECT COUNT(*) AS n FROM observations WHERE task_id = ?',
+    );
+    if (!readonly) {
+      this.upsertTaskEmbeddingStmt = this.db.prepare(
+        `INSERT INTO task_embeddings(task_id, model, dim, embedding, observation_count, computed_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(task_id) DO UPDATE SET
+           model = excluded.model,
+           dim = excluded.dim,
+           embedding = excluded.embedding,
+           observation_count = excluded.observation_count,
+           computed_at = excluded.computed_at`,
+      );
     }
   }
 
@@ -119,9 +156,9 @@ export class Storage {
     scanned: number;
     updated: number;
   } {
-    const rows = this.db
-      .prepare("SELECT id FROM sessions WHERE ide = 'unknown'")
-      .all() as Array<{ id: string }>;
+    const rows = this.db.prepare("SELECT id FROM sessions WHERE ide = 'unknown'").all() as Array<{
+      id: string;
+    }>;
     const update = this.db.prepare('UPDATE sessions SET ide = ? WHERE id = ? AND ide = ?');
     let updated = 0;
     const tx = this.db.transaction((pending: Array<{ id: string; ide: string }>) => {
@@ -415,31 +452,24 @@ export class Storage {
   // truth is the task's observations + their embeddings.
   upsertTaskEmbedding(p: NewTaskEmbedding): void {
     const buf = Buffer.from(p.vec.buffer, p.vec.byteOffset, p.vec.byteLength);
-    this.db
-      .prepare(
-        `INSERT INTO task_embeddings(task_id, model, dim, vec, observation_count, computed_at)
-         VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(task_id) DO UPDATE SET
-           model = excluded.model,
-           dim = excluded.dim,
-           vec = excluded.vec,
-           observation_count = excluded.observation_count,
-           computed_at = excluded.computed_at`,
-      )
-      .run(p.task_id, p.model, p.dim, buf, p.observation_count, p.computed_at ?? Date.now());
+    if (!this.upsertTaskEmbeddingStmt) throw new Error('storage is readonly');
+    this.upsertTaskEmbeddingStmt.run(
+      p.task_id,
+      p.model,
+      p.dim,
+      buf,
+      p.observation_count,
+      p.computed_at ?? Date.now(),
+    );
   }
 
   getTaskEmbedding(task_id: number): TaskEmbeddingRow | undefined {
-    const row = this.db
-      .prepare(
-        'SELECT task_id, model, dim, vec, observation_count, computed_at FROM task_embeddings WHERE task_id = ?',
-      )
-      .get(task_id) as
+    const row = this.getTaskEmbeddingStmt.get(task_id) as
       | {
           task_id: number;
           model: string;
           dim: number;
-          vec: Buffer;
+          embedding: Buffer;
           observation_count: number;
           computed_at: number;
         }
@@ -449,7 +479,11 @@ export class Storage {
     // see the same pattern in allEmbeddings(). The underlying buffer is
     // freed once the row goes out of scope, so we cannot alias it.
     const vec = new Float32Array(
-      new Uint8Array(row.vec.buffer, row.vec.byteOffset, row.vec.byteLength).slice().buffer,
+      new Uint8Array(
+        row.embedding.buffer,
+        row.embedding.byteOffset,
+        row.embedding.byteLength,
+      ).slice().buffer,
     );
     return {
       task_id: row.task_id,
@@ -462,9 +496,7 @@ export class Storage {
   }
 
   countTaskObservations(task_id: number): number {
-    const row = this.db
-      .prepare('SELECT COUNT(*) AS n FROM observations WHERE task_id = ?')
-      .get(task_id) as { n: number };
+    const row = this.countTaskObservationsStmt.get(task_id) as { n: number };
     return row.n;
   }
 
@@ -1034,10 +1066,7 @@ export class Storage {
    *  in the same list — the prefix is enough to tell them apart visually.
    *  Surfaced by `debrief` so build/cut decisions about MCP tool surface area
    *  can lean on actual call counts instead of intuition. */
-  toolInvocationDistribution(
-    since_ts: number,
-    limit = 50,
-  ): Array<{ tool: string; count: number }> {
+  toolInvocationDistribution(since_ts: number, limit = 50): Array<{ tool: string; count: number }> {
     return this.db
       .prepare(
         `SELECT json_extract(metadata, '$.tool') AS tool, COUNT(*) AS count

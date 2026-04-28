@@ -18,6 +18,7 @@ export const KIND_WEIGHTS: Record<string, number> = {
   note: 1.0,
   // Tool-use observations are noisy by volume.
   'tool-use': 0.25,
+  tool_use: 0.25,
 };
 
 const DEFAULT_KIND_WEIGHT = 1.0;
@@ -47,22 +48,16 @@ export function computeTaskEmbedding(
 ): Float32Array | null {
   const observations = store.storage.taskTimeline(task_id, 1000);
 
-  // Filter to observations whose embedding rows exist. hasEmbedding
-  // returns true iff a row matches both the observation id and the
-  // current model — mixing models in the centroid would produce a
-  // vector that doesn't live in any single embedding space.
-  const embedded = observations.filter((o) => store.storage.hasEmbedding(o.id, embedder.model));
-  if (embedded.length < MIN_EMBEDDED_OBSERVATIONS) return null;
-
   const dim = embedder.dim;
   const centroid = new Float32Array(dim);
   let totalWeight = 0;
+  let embeddedCount = 0;
 
-  for (const obs of embedded) {
+  for (const obs of observations) {
+    const row = store.storage.getEmbedding(obs.id);
+    if (!row || row.model !== embedder.model || row.dim !== dim) continue;
     const weight = KIND_WEIGHTS[obs.kind] ?? DEFAULT_KIND_WEIGHT;
     if (weight <= 0) continue;
-    const row = store.storage.getEmbedding(obs.id);
-    if (!row || row.dim !== dim) continue;
     const vec = row.vec;
     // The `?? 0` guards are unreachable at runtime — `Float32Array` always
     // returns `number` for in-range indices — but TypeScript's
@@ -72,8 +67,10 @@ export function computeTaskEmbedding(
       centroid[i] = (centroid[i] ?? 0) + (vec[i] ?? 0) * weight;
     }
     totalWeight += weight;
+    embeddedCount += 1;
   }
 
+  if (embeddedCount < MIN_EMBEDDED_OBSERVATIONS) return null;
   if (totalWeight === 0) return null;
   for (let i = 0; i < dim; i++) {
     centroid[i] = (centroid[i] ?? 0) / totalWeight;
@@ -118,7 +115,7 @@ export function getOrComputeTaskEmbedding(
       cached.observation_count > 0
         ? Math.abs(cached.observation_count - currentObsCount) / cached.observation_count
         : Number.POSITIVE_INFINITY;
-    if (drift < CACHE_DRIFT_TOLERANCE) {
+    if (drift <= CACHE_DRIFT_TOLERANCE) {
       // Return a fresh copy so callers can mutate without poisoning
       // the cache row's underlying buffer.
       return new Float32Array(cached.vec);

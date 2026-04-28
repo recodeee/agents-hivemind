@@ -66,6 +66,20 @@ function addEmbeddedObservation(p: {
   return obs_id;
 }
 
+function normalize(vec: Float32Array): Float32Array {
+  let norm = 0;
+  for (let i = 0; i < vec.length; i++) {
+    const v = vec[i] ?? 0;
+    norm += v * v;
+  }
+  norm = Math.sqrt(norm);
+  const out = new Float32Array(vec.length);
+  for (let i = 0; i < vec.length; i++) {
+    out[i] = (vec[i] ?? 0) / norm;
+  }
+  return out;
+}
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'colony-task-embeddings-'));
   store = new MemoryStore({ dbPath: join(dir, 'data.db'), settings: defaultSettings });
@@ -86,59 +100,49 @@ describe('computeTaskEmbedding', () => {
 
   it('returns null when fewer than 5 observations have embeddings', () => {
     const task_id = createTask('sparse/task');
-    // Three observations with embeddings, one without — total 4 embedded.
-    for (let i = 0; i < 3; i++) {
+    // Four observations with embeddings, two without — still sparse.
+    for (let i = 0; i < 4; i++) {
       addEmbeddedObservation({ task_id, kind: 'note', axis: 0, model: 'm1' });
     }
-    store.addObservation({
-      session_id: 'claude',
-      task_id,
-      kind: 'note',
-      content: 'no embedding for this one',
-    });
+    for (let i = 0; i < 2; i++) {
+      store.addObservation({
+        session_id: 'claude',
+        task_id,
+        kind: 'note',
+        content: `no embedding for this one ${i}`,
+      });
+    }
     const result = computeTaskEmbedding(store, task_id, new FakeEmbedder('m1'));
     expect(result).toBeNull();
   });
 
   it('biases the centroid toward heavily-weighted kinds (decisions over tool-use)', () => {
-    // Two synthetic tasks with the SAME shape:
-    //   - 1 observation aligned with axis 0, kind 'decision' (weight 2.0)
-    //   - 10 observations aligned with axis 1, kind 'tool-use' (weight 0.25)
-    // With kind weights, axis 0's contribution is 1 * 2.0 = 2.0 and axis 1's
-    // is 10 * 0.25 = 2.5 — comparable magnitudes, so the centroid is roughly
-    // balanced between axes. With UNIFORM weights it would be 1 vs 10,
-    // strongly pulling toward axis 1.
-    //
-    // The test asserts the kind-weighted centroid is closer to axis 0 than
-    // a uniform-mean centroid would have been — i.e. the bias toward
-    // decision actually shows up.
-    const task_id = createTask('weighted/task');
-    addEmbeddedObservation({ task_id, kind: 'decision', axis: 0, model: 'm1' });
+    const weightedTask = createTask('weighted/task');
+    addEmbeddedObservation({ task_id: weightedTask, kind: 'decision', axis: 0, model: 'm1' });
     for (let i = 0; i < 10; i++) {
-      addEmbeddedObservation({ task_id, kind: 'tool-use', axis: 1, model: 'm1' });
+      addEmbeddedObservation({ task_id: weightedTask, kind: 'tool-use', axis: 1, model: 'm1' });
     }
-    const weighted = computeTaskEmbedding(store, task_id, new FakeEmbedder('m1'));
+
+    const uniformTask = createTask('uniform/task');
+    addEmbeddedObservation({ task_id: uniformTask, kind: 'note', axis: 0, model: 'm1' });
+    for (let i = 0; i < 10; i++) {
+      addEmbeddedObservation({ task_id: uniformTask, kind: 'note', axis: 1, model: 'm1' });
+    }
+
+    const weighted = computeTaskEmbedding(store, weightedTask, new FakeEmbedder('m1'));
+    const uniformFromTask = computeTaskEmbedding(store, uniformTask, new FakeEmbedder('m1'));
     expect(weighted).not.toBeNull();
-    if (!weighted) return;
+    expect(uniformFromTask).not.toBeNull();
+    if (!weighted || !uniformFromTask) return;
 
-    // Manually compute the uniform-mean centroid for comparison.
-    const uniform = new Float32Array(DIM);
-    // 1 axis-0 vector + 10 axis-1 vectors, mean.
-    uniform[0] = 1 / 11;
-    uniform[1] = 10 / 11;
-    // Normalize uniform.
-    let n = 0;
-    for (let i = 0; i < DIM; i++) {
-      const u = uniform[i] ?? 0;
-      n += u * u;
-    }
-    n = Math.sqrt(n);
-    for (let i = 0; i < DIM; i++) {
-      uniform[i] = (uniform[i] ?? 0) / n;
-    }
+    const handWeighted = normalize(new Float32Array([2, 2.5, 0, 0]));
+    const handUniform = normalize(new Float32Array([1, 10, 0, 0]));
 
-    // weighted[0] should be larger (closer to axis-0) than uniform[0].
-    expect(weighted[0] ?? 0).toBeGreaterThan(uniform[0] ?? 0);
+    expect(Array.from(weighted)).toEqual(Array.from(handWeighted).map((x) => expect.closeTo(x, 5)));
+    expect(Array.from(uniformFromTask)).toEqual(
+      Array.from(handUniform).map((x) => expect.closeTo(x, 5)),
+    );
+    expect(weighted[0] ?? 0).toBeGreaterThan(uniformFromTask[0] ?? 0);
   });
 
   it('returned embeddings are unit-length (cosine reduces to dot product)', () => {
@@ -159,10 +163,10 @@ describe('computeTaskEmbedding', () => {
 });
 
 describe('getOrComputeTaskEmbedding', () => {
-  it('caches on first call and serves the cache when the count has not drifted', () => {
-    const task_id = createTask('cache/fresh');
+  it('serves cache at count 11 from 10, then recomputes at count 13', () => {
+    const task_id = createTask('cache/drift-threshold');
     for (let i = 0; i < 10; i++) {
-      addEmbeddedObservation({ task_id, kind: 'note', axis: i % DIM, model: 'm1' });
+      addEmbeddedObservation({ task_id, kind: 'note', axis: 0, model: 'm1' });
     }
     const first = getOrComputeTaskEmbedding(store, task_id, new FakeEmbedder('m1'));
     expect(first).not.toBeNull();
@@ -172,9 +176,8 @@ describe('getOrComputeTaskEmbedding', () => {
     expect(cached?.observation_count).toBe(10);
     const cachedComputedAt = cached?.computed_at;
 
-    // Add one observation — count goes to 11. 1/10 = 10% drift, well
-    // below the 20% tolerance, so the cache should still serve.
-    addEmbeddedObservation({ task_id, kind: 'note', axis: 0, model: 'm1' });
+    // Count 11: 10% drift, so cache still serves.
+    addEmbeddedObservation({ task_id, kind: 'note', axis: 1, model: 'm1' });
     expect(CACHE_DRIFT_TOLERANCE).toBe(0.2);
     const second = getOrComputeTaskEmbedding(store, task_id, new FakeEmbedder('m1'));
     expect(second).not.toBeNull();
@@ -183,24 +186,14 @@ describe('getOrComputeTaskEmbedding', () => {
     // computed_at should be unchanged: cache served, not recomputed.
     expect(stillCached?.computed_at).toBe(cachedComputedAt);
     expect(stillCached?.observation_count).toBe(10);
-  });
 
-  it('recomputes when observation count drifts above the tolerance', () => {
-    const task_id = createTask('cache/drift');
-    for (let i = 0; i < 5; i++) {
-      addEmbeddedObservation({ task_id, kind: 'note', axis: 0, model: 'm1' });
-    }
-    getOrComputeTaskEmbedding(store, task_id, new FakeEmbedder('m1'));
-    const cached = store.storage.getTaskEmbedding(task_id);
-    expect(cached?.observation_count).toBe(5);
-
-    // Add 3 more observations → count 8, drift = 3/5 = 60% > 20%.
-    for (let i = 0; i < 3; i++) {
+    // Count 13: 30% drift, so recompute and refresh cache metadata.
+    for (let i = 0; i < 2; i++) {
       addEmbeddedObservation({ task_id, kind: 'note', axis: 1, model: 'm1' });
     }
     getOrComputeTaskEmbedding(store, task_id, new FakeEmbedder('m1'));
     const recomputed = store.storage.getTaskEmbedding(task_id);
-    expect(recomputed?.observation_count).toBe(8);
+    expect(recomputed?.observation_count).toBe(13);
   });
 
   it('recomputes when the embedder model differs from the cached model', () => {

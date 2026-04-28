@@ -97,3 +97,9 @@ export {
   computeTaskEmbedding,
   getOrComputeTaskEmbedding,
 } from './task-embeddings.js';
+export {
+  findSimilarTasks,
+  type FindSimilarTasksOptions,
+  type SimilarTaskResult,
+  type SimilarTaskStatus,
+} from './similarity-search.js';
