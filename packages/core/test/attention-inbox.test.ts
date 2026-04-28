@@ -125,6 +125,60 @@ describe('buildAttentionInbox', () => {
     expect(inbox.unread_messages).toHaveLength(0);
   });
 
+  it('shows only live pending handoffs before expiry', () => {
+    seed('claude', 'codex');
+    const thread = TaskThread.open(store, {
+      repo_root: '/r',
+      branch: 'feat/handoff-decay',
+      session_id: 'claude',
+    });
+    thread.join('claude', 'claude');
+    thread.join('codex', 'codex');
+
+    const live = thread.handOff({
+      from_session_id: 'claude',
+      from_agent: 'claude',
+      to_agent: 'codex',
+      summary: 'still live',
+      expires_in_ms: 60_000,
+    });
+    const expired = thread.handOff({
+      from_session_id: 'claude',
+      from_agent: 'claude',
+      to_agent: 'codex',
+      summary: 'already stale',
+      expires_in_ms: 60_000,
+    });
+    const accepted = thread.handOff({
+      from_session_id: 'claude',
+      from_agent: 'claude',
+      to_agent: 'codex',
+      summary: 'accepted already',
+    });
+    const declined = thread.handOff({
+      from_session_id: 'claude',
+      from_agent: 'claude',
+      to_agent: 'codex',
+      summary: 'declined already',
+    });
+
+    const row = store.storage.getObservation(expired);
+    const meta = JSON.parse(row?.metadata ?? '{}') as { expires_at: number };
+    meta.expires_at = Date.now() - 1000;
+    store.storage.updateObservationMetadata(expired, JSON.stringify(meta));
+    thread.acceptHandoff(accepted, 'codex');
+    thread.declineHandoff(declined, 'codex', 'not my lane');
+
+    const inbox = buildAttentionInbox(store, {
+      session_id: 'codex',
+      agent: 'codex',
+      task_ids: [thread.task_id],
+    });
+
+    expect(inbox.pending_handoffs.map((h) => h.id)).toEqual([live]);
+    expect(inbox.summary.pending_handoff_count).toBe(1);
+  });
+
   it('blocking unread messages set summary.blocked and the message-first next_action', () => {
     seed('claude', 'codex');
     const thread = TaskThread.open(store, {

@@ -424,4 +424,69 @@ describe('Storage', () => {
     });
     expect(snapshot.until).toBeGreaterThanOrEqual(snapshot.since);
   });
+
+  it('pendingHandoffs excludes expired rows without deleting audit records', () => {
+    storage.createSession({
+      id: 'claude',
+      ide: 'claude-code',
+      cwd: '/repo',
+      started_at: 1,
+      metadata: null,
+    });
+    const task = storage.findOrCreateTask({
+      title: 'handoff decay',
+      repo_root: '/repo',
+      branch: 'feat/handoff-decay',
+      created_by: 'claude',
+    });
+    const now = Date.now();
+    const liveId = storage.insertObservation({
+      session_id: 'claude',
+      kind: 'handoff',
+      content: 'live',
+      compressed: false,
+      intensity: null,
+      ts: now,
+      task_id: task.id,
+      reply_to: null,
+      metadata: {
+        kind: 'handoff',
+        status: 'pending',
+        expires_at: now + 60_000,
+      },
+    });
+    const expiredId = storage.insertObservation({
+      session_id: 'claude',
+      kind: 'handoff',
+      content: 'expired',
+      compressed: false,
+      intensity: null,
+      ts: now,
+      task_id: task.id,
+      reply_to: null,
+      metadata: {
+        kind: 'handoff',
+        status: 'pending',
+        expires_at: now - 1000,
+      },
+    });
+    const legacyExpiredId = storage.insertObservation({
+      session_id: 'claude',
+      kind: 'handoff',
+      content: 'legacy expired',
+      compressed: false,
+      intensity: null,
+      ts: now - 3 * 60 * 60_000,
+      task_id: task.id,
+      reply_to: null,
+      metadata: {
+        kind: 'handoff',
+        status: 'pending',
+      },
+    });
+
+    expect(storage.pendingHandoffs(task.id).map((row) => row.id)).toEqual([liveId]);
+    expect(storage.getObservation(expiredId)).toBeDefined();
+    expect(storage.getObservation(legacyExpiredId)).toBeDefined();
+  });
 });

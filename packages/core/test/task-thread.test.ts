@@ -193,6 +193,59 @@ describe('TaskThread', () => {
     expect(thread.pendingHandoffsFor('claude', 'claude')).toHaveLength(0);
   });
 
+  it('computes expiry for legacy handoffs missing expires_at', () => {
+    seed('claude', 'codex');
+    const thread = TaskThread.open(store, {
+      repo_root: '/r',
+      branch: 'legacy-handoff',
+      session_id: 'claude',
+    });
+    thread.join('claude', 'claude');
+    thread.join('codex', 'codex');
+
+    const oldTs = Date.now() - 3 * 60 * 60_000;
+    const legacyId = store.storage.insertObservation({
+      session_id: 'claude',
+      kind: 'handoff',
+      content: 'legacy handoff without expires_at',
+      compressed: false,
+      intensity: null,
+      ts: oldTs,
+      task_id: thread.task_id,
+      reply_to: null,
+      metadata: {
+        kind: 'handoff',
+        from_session_id: 'claude',
+        from_agent: 'claude',
+        to_agent: 'codex',
+        to_session_id: null,
+        summary: 'old row',
+        next_steps: [],
+        blockers: [],
+        released_files: [],
+        transferred_files: [],
+        status: 'pending',
+        accepted_by_session_id: null,
+        accepted_at: null,
+      },
+    });
+
+    expect(thread.pendingHandoffsFor('codex', 'codex')).toHaveLength(0);
+
+    try {
+      thread.acceptHandoff(legacyId, 'codex');
+      throw new Error('expected HANDOFF_EXPIRED');
+    } catch (err) {
+      expect(err).toBeInstanceOf(TaskThreadError);
+      expect((err as TaskThreadError).code).toBe(TASK_THREAD_ERROR_CODES.HANDOFF_EXPIRED);
+    }
+
+    const after = store.storage.getObservation(legacyId);
+    const meta = JSON.parse(after?.metadata ?? '{}') as { expires_at: number; status: string };
+    expect(meta.status).toBe('expired');
+    expect(meta.expires_at).toBe(oldTs + 2 * 60 * 60_000);
+  });
+
   it('postMessage(expires_in_ms) hides the message from inbox after TTL passes', () => {
     seed('claude', 'codex');
     const thread = TaskThread.open(store, {

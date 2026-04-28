@@ -91,7 +91,7 @@ Colony MCP follows progressive disclosure: tools return compact IDs, snippets, s
 When an agent joins, resumes, asks "what needs me?", or needs the next task, call these first:
 
 1. `hivemind_context` to see active agents, owned branches, live lanes, and compact memory hits.
-2. `attention_inbox` to see what needs your attention: handoffs, messages, wakes, stalled lanes, and recent claim activity.
+2. `attention_inbox` to see what needs your attention: live handoffs, messages, wakes, stalled lanes, and recent claim activity.
 3. `task_ready_for_agent` to choose available work matched to the current agent.
 
 Use `task_list` for browsing recent task threads. Use `task_ready_for_agent` for choosing what to work on next.
@@ -128,7 +128,7 @@ If the ready item needs implementation context, call `search` with the task titl
 | --- | --- |
 | `hivemind` | See active agents, branches, task previews, and live lanes. |
 | `hivemind_context` | Inspect active lane ownership before editing and before claiming touched files. |
-| `attention_inbox` | See pending handoffs, messages, wakes, stalled lanes, and recent claims. |
+| `attention_inbox` | See live pending handoffs, messages, wakes, stalled lanes, and recent claims. |
 | `task_list` | Browse recent task threads by repo, branch, and status. |
 | `task_timeline` | Read compact task-thread activity. |
 | `task_updates_since` | Check what changed on a task while a session was away. |
@@ -144,8 +144,8 @@ If the ready item needs implementation context, call `search` with the task titl
 | `task_message_claim` | Claim a broadcast message before replying. |
 | `task_message_retract` | Retract a message that has not been replied to. |
 | `task_claim_file` | Claim a file before editing so file ownership is visible and overlaps warn, not lock. |
-| `task_hand_off` | Transfer work and file claims to another agent. |
-| `task_accept_handoff` / `task_decline_handoff` | Accept or decline pending handoffs. |
+| `task_hand_off` | Transfer work and file claims to another agent; pending handoffs expire by default after 120 minutes. |
+| `task_accept_handoff` / `task_decline_handoff` | Accept or decline pending handoffs; expired handoffs return `HANDOFF_EXPIRED`. |
 
 ### Proposals, foraging, and examples
 

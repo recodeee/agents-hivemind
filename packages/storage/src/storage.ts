@@ -1286,9 +1286,10 @@ export class Storage {
         `SELECT * FROM observations
          WHERE task_id = ? AND kind = 'handoff'
            AND json_extract(metadata, '$.status') = 'pending'
+           AND COALESCE(CAST(json_extract(metadata, '$.expires_at') AS INTEGER), ts + 7200000) > ?
          ORDER BY ts DESC LIMIT 50`,
       )
-      .all(task_id) as ObservationRow[];
+      .all(task_id, Date.now()) as ObservationRow[];
   }
 
   /**

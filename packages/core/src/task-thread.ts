@@ -594,7 +594,7 @@ export class TaskThread {
         `handoff belongs to task ${obs.task_id}, not ${this.task_id}`,
       );
     }
-    const meta = parseHandoff(obs.metadata);
+    const meta = parseHandoff(obs.metadata, obs.ts);
     if (!meta) {
       throw taskError(TASK_THREAD_ERROR_CODES.METADATA_MISSING, 'handoff metadata missing');
     }
@@ -604,7 +604,7 @@ export class TaskThread {
         `handoff is ${meta.status}, cannot accept`,
       );
     }
-    if (Date.now() > meta.expires_at) {
+    if (handoffExpired(meta)) {
       meta.status = 'expired';
       this.store.storage.updateObservationMetadata(handoff_observation_id, JSON.stringify(meta));
       throw taskError(TASK_THREAD_ERROR_CODES.HANDOFF_EXPIRED, 'handoff expired');
@@ -655,12 +655,17 @@ export class TaskThread {
     if (obs.task_id !== this.task_id) {
       throw taskError(TASK_THREAD_ERROR_CODES.TASK_MISMATCH, 'handoff belongs to a different task');
     }
-    const meta = parseHandoff(obs.metadata);
+    const meta = parseHandoff(obs.metadata, obs.ts);
     if (!meta) {
       throw taskError(TASK_THREAD_ERROR_CODES.METADATA_MISSING, 'handoff metadata missing');
     }
     if (meta.status !== 'pending') {
       throw taskError(statusErrorCode(meta.status, 'handoff'), `handoff is ${meta.status}`);
+    }
+    if (handoffExpired(meta)) {
+      meta.status = 'expired';
+      this.store.storage.updateObservationMetadata(handoff_observation_id, JSON.stringify(meta));
+      throw taskError(TASK_THREAD_ERROR_CODES.HANDOFF_EXPIRED, 'handoff expired');
     }
     this.store.storage.transaction(() => {
       meta.status = 'cancelled';
@@ -680,12 +685,11 @@ export class TaskThread {
   }
 
   /** Pending, unexpired handoffs visible to `session_id` / `agent`. */
-  pendingHandoffsFor(session_id: string, agent: string): HandoffObservation[] {
-    const now = Date.now();
+  pendingHandoffsFor(session_id: string, agent: string, now = Date.now()): HandoffObservation[] {
     return this.store.storage
       .taskObservationsByKind(this.task_id, 'handoff')
       .map((row) => {
-        const meta = parseHandoff(row.metadata);
+        const meta = parseHandoff(row.metadata, row.ts);
         return meta ? { id: row.id, ts: row.ts, meta } : null;
       })
       .filter((x): x is HandoffObservation => x !== null)
@@ -1454,17 +1458,25 @@ export function isVisibleToBroadcastClaimant(meta: MessageMetadata, session_id: 
   return meta.claimed_by_session_id === session_id;
 }
 
-function parseHandoff(metadata: string | null): HandoffMetadata | null {
+function parseHandoff(metadata: string | null, rowTs = Date.now()): HandoffMetadata | null {
   if (!metadata) return null;
   try {
     const parsed = JSON.parse(metadata) as unknown;
     if (!parsed || typeof parsed !== 'object') return null;
     const m = parsed as Partial<HandoffMetadata>;
     if (m.kind !== 'handoff' || typeof m.status !== 'string') return null;
-    return parsed as HandoffMetadata;
+    const meta = parsed as HandoffMetadata;
+    if (typeof meta.expires_at !== 'number' || !Number.isFinite(meta.expires_at)) {
+      meta.expires_at = rowTs + DEFAULT_HANDOFF_TTL_MS;
+    }
+    return meta;
   } catch {
     return null;
   }
+}
+
+function handoffExpired(meta: HandoffMetadata, now = Date.now()): boolean {
+  return now >= meta.expires_at;
 }
 
 function parseWake(metadata: string | null): WakeRequestMetadata | null {

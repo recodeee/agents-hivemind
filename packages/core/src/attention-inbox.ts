@@ -210,7 +210,7 @@ export function buildAttentionInbox(
 
   for (const task_id of taskIds) {
     const thread = new TaskThread(store, task_id);
-    for (const h of thread.pendingHandoffsFor(opts.session_id, opts.agent)) {
+    for (const h of thread.pendingHandoffsFor(opts.session_id, opts.agent, now)) {
       pending_handoffs.push(compactHandoff(task_id, h.id, h.ts, h.meta));
     }
     for (const w of thread.pendingWakesFor(opts.session_id, opts.agent)) {

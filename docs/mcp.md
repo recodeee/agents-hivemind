@@ -452,7 +452,7 @@ Hand off work to another agent on this task. Atomically transfers file claims fr
 }
 ```
 
-`to_agent` ∈ `claude | codex | any`. Use `any` to broadcast; the router surfaces capability-ranked candidates in the recipient's SessionStart preface. Returns `{ handoff_observation_id, status: 'pending' }`. The handoff is visible to the target at their next SessionStart with inlined `accept with:` / `decline with:` tool-call snippets.
+`to_agent` ∈ `claude | codex | any`. Use `any` to broadcast; the router surfaces capability-ranked candidates in the recipient's SessionStart preface. Returns `{ handoff_observation_id, status: 'pending' }`. The handoff is visible to the target at their next SessionStart with inlined `accept with:` / `decline with:` tool-call snippets. Handoffs expire after 120 minutes by default; use `expires_in_minutes` to shorten or extend the live recruitment window up to the tool limit. Expired handoffs stay in the audit trail but drop out of pending inbox/observe surfaces.
 
 ## `task_accept_handoff`
 
@@ -469,7 +469,7 @@ Returns `{ status: 'accepted' }` on success. Errors include `{ code, error }`, w
 
 ## `task_decline_handoff`
 
-Decline a pending handoff. Records a reason so the sender can reissue, possibly targeting a different agent.
+Decline a pending handoff. Records a reason so the sender can reissue, possibly targeting a different agent. Declining an expired handoff returns stable code `HANDOFF_EXPIRED` and marks the handoff expired instead of cancelling it.
 
 ```json
 {
@@ -636,7 +636,7 @@ Errors include `{ "code": "SESSION_NOT_FOUND", "error": "..." }` when either `ta
 
 ## `attention_inbox`
 
-Compact post-`hivemind_context` attention check for pending handoffs, unread messages, blockers, stalled lanes, pending wakes, and recent other-session file claims. This is the main surface where live `task_message` items show up: expired unread messages are hidden, read/replied messages stop triggering attention, and blocking messages remain prominent until read, replied, retracted, or expired. Use `task_messages` for a focused message-only inbox. Review compact IDs first, then fetch full bodies via `get_observations` only for the entries you need.
+Compact post-`hivemind_context` attention check for live pending handoffs, unread messages, blockers, stalled lanes, pending wakes, and recent other-session file claims. Expired handoffs are hidden from the pending bucket; the original observations remain available via timeline/search for audit. This is the main surface where live `task_message` items show up: expired unread messages are hidden, read/replied messages stop triggering attention, and blocking messages remain prominent until read, replied, retracted, or expired. Use `task_messages` for a focused message-only inbox. Review compact IDs first, then fetch full bodies via `get_observations` only for the entries you need.
 
 ```json
 {
