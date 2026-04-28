@@ -14,6 +14,7 @@ export interface SubtaskInfo {
   wave_index: number;
   wave_name: string;
   blocked_by_count: number;
+  blocked_by: number[];
   spec_row_id: string | null;
   capability_hint: string | null;
   claimed_by_session_id: string | null;
@@ -101,7 +102,8 @@ function readSubtask(store: MemoryStore, task_id: number, plan_slug: string): Su
     depends_on: dependsOn,
     wave_index: 0,
     wave_name: 'Wave 1',
-    blocked_by_count: dependsOn.length,
+    blocked_by_count: status === 'completed' ? 0 : dependsOn.length,
+    blocked_by: status === 'completed' ? [] : dependsOn,
     spec_row_id: typeof meta.spec_row_id === 'string' ? (meta.spec_row_id as string) : null,
     capability_hint:
       typeof meta.capability_hint === 'string' ? (meta.capability_hint as string) : null,
@@ -227,28 +229,39 @@ function annotateWaveMetadata(subtasks: SubtaskInfo[]): SubtaskInfo[] {
   const byIndex = new Map(subtasks.map((subtask) => [subtask.subtask_index, subtask]));
   const waveByIndex = new Map<number, number>();
 
-  const resolveWave = (subtask: SubtaskInfo): number => {
+  const resolveWave = (subtask: SubtaskInfo, visiting = new Set<number>()): number => {
     const cached = waveByIndex.get(subtask.subtask_index);
     if (cached !== undefined) return cached;
+    if (visiting.has(subtask.subtask_index)) return 0;
+    visiting.add(subtask.subtask_index);
 
-    const dependencyWaves = subtask.depends_on
-      .map((idx) => {
-        const dependency = byIndex.get(idx);
-        return dependency ? resolveWave(dependency) : null;
-      })
-      .filter((idx): idx is number => idx !== null);
-    const waveIndex = dependencyWaves.length > 0 ? Math.max(...dependencyWaves) + 1 : 0;
-    waveByIndex.set(subtask.subtask_index, waveIndex);
-    return waveIndex;
+    const wave =
+      subtask.depends_on.length === 0
+        ? 0
+        : Math.max(
+            ...subtask.depends_on.map((depIndex) => {
+              const dep = byIndex.get(depIndex);
+              return dep ? resolveWave(dep, visiting) + 1 : 1;
+            }),
+          );
+
+    visiting.delete(subtask.subtask_index);
+    waveByIndex.set(subtask.subtask_index, wave);
+    return wave;
   };
 
   return subtasks.map((subtask) => {
     const waveIndex = resolveWave(subtask);
+    const blockedBy =
+      subtask.status === 'completed'
+        ? []
+        : subtask.depends_on.filter((depIndex) => byIndex.get(depIndex)?.status !== 'completed');
     return {
       ...subtask,
       wave_index: waveIndex,
       wave_name: `Wave ${waveIndex + 1}`,
-      blocked_by_count: subtask.depends_on.length,
+      blocked_by_count: blockedBy.length,
+      blocked_by: blockedBy,
     };
   });
 }
