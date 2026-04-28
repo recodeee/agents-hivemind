@@ -1,4 +1,5 @@
 import type { MemoryStore } from './memory-store.js';
+import { strandHistory } from './strand-patterns.js';
 import {
   MIN_CORPUS_SIZE,
   MIN_SIMILAR_TASKS_FOR_SUGGESTION,
@@ -26,7 +27,8 @@ export type PatternToWatchKind =
   | 'expired-handoff'
   | 'cancelled-handoff'
   | 'plan-archive-blocked'
-  | 'stalled-subtask';
+  | 'stalled-subtask'
+  | 'stranded-rescue';
 
 export interface PatternToWatch {
   description: string;
@@ -51,6 +53,7 @@ export interface SuggestionPayload {
 
 const FIRST_CLAIM_LIMIT = 3;
 const PATTERN_LIMIT = 5;
+const STRANDING_PATTERN_LIMIT = 2;
 const PATTERN_DESCRIPTION_LIMIT = 100;
 
 export function insufficientSuggestionPayload(reason: string): SuggestionPayload {
@@ -125,7 +128,7 @@ function firstFilesLikelyClaimed(
 function patternsToWatch(store: MemoryStore, similarTasks: SimilarTask[]): PatternToWatch[] {
   const patterns: PatternToWatch[] = [];
 
-  for (const task of similarTasks) {
+  collectExistingPatterns: for (const task of similarTasks) {
     const observations = store.storage.taskTimeline(task.task_id, 500).sort((a, b) => a.ts - b.ts);
     for (const observation of observations) {
       const kind = patternKind(observation.kind, observation.metadata);
@@ -135,7 +138,23 @@ function patternsToWatch(store: MemoryStore, similarTasks: SimilarTask[]): Patte
         seen_in_task_id: task.task_id,
         kind,
       });
-      if (patterns.length >= PATTERN_LIMIT) return patterns;
+      if (patterns.length >= PATTERN_LIMIT) break collectExistingPatterns;
+    }
+  }
+
+  if (patterns.length < PATTERN_LIMIT) {
+    for (const event of strandHistory(
+      store,
+      similarTasks.map((task) => task.task_id),
+    ).slice(0, STRANDING_PATTERN_LIMIT)) {
+      patterns.push({
+        description: truncate(
+          `Task stranded after ${formatHours(event.duration_to_strand_minutes)} due to ${event.rescue_reason}; rescue was ${event.rescue_outcome}`,
+        ),
+        seen_in_task_id: event.task_id,
+        kind: 'stranded-rescue',
+      });
+      if (patterns.length >= PATTERN_LIMIT) break;
     }
   }
 
@@ -221,6 +240,12 @@ function parseMetadata(raw: string | null): Record<string, unknown> {
 function truncate(value: string): string {
   if (value.length <= PATTERN_DESCRIPTION_LIMIT) return value;
   return value.slice(0, PATTERN_DESCRIPTION_LIMIT);
+}
+
+function formatHours(minutes: number): string {
+  const hours = Math.max(0, minutes / 60);
+  if (Number.isInteger(hours)) return `${hours}h`;
+  return `${Number(hours.toFixed(1))}h`;
 }
 
 function roundConfidence(value: number): number {

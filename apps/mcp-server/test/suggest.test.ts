@@ -90,6 +90,52 @@ describe('task_suggest_approach', () => {
     ]);
   });
 
+  it('does not surface stranded-rescue patterns when similar tasks have no rescue history', async () => {
+    seedAuthMiddlewareCorpus();
+
+    const payload = await callSuggest({ query: 'fix auth middleware' });
+
+    expect(payload.patterns_to_watch.some((pattern) => pattern.kind === 'stranded-rescue')).toBe(
+      false,
+    );
+  });
+
+  it('surfaces stranded rescue history from similar tasks', async () => {
+    seedAuthMiddlewareCorpus({
+      rescue: {
+        reason: 'quota',
+        outcome: 'accepted',
+      },
+    });
+
+    const payload = await callSuggest({ query: 'fix auth middleware' });
+    const stranded = payload.patterns_to_watch.filter(
+      (pattern) => pattern.kind === 'stranded-rescue',
+    );
+
+    expect(stranded).toHaveLength(1);
+    expect(stranded[0]?.description).toContain('Task stranded after 2h due to quota');
+    expect(stranded[0]?.description).toContain('rescue was accepted');
+  });
+
+  it('counts stranded rescue patterns toward the shared patterns_to_watch cap', async () => {
+    seedAuthMiddlewareCorpus({
+      rescue: {
+        reason: 'quota',
+        outcome: 'expired',
+      },
+      extraPatterns: ['cancelled-handoff', 'stalled-subtask'],
+    });
+
+    const payload = await callSuggest({ query: 'fix auth middleware' });
+
+    expect(payload.patterns_to_watch).toHaveLength(5);
+    expect(
+      payload.patterns_to_watch.filter((pattern) => pattern.kind === 'stranded-rescue'),
+    ).toHaveLength(1);
+    expect(payload.patterns_to_watch.at(-1)?.description).toContain('rescue was expired');
+  });
+
   it('returns embedder unavailable without throwing', async () => {
     embedder = null;
 
@@ -106,12 +152,19 @@ async function callSuggest(args: Record<string, unknown>): Promise<SuggestionPay
   return JSON.parse(text) as SuggestionPayload;
 }
 
-function seedAuthMiddlewareCorpus(): void {
+function seedAuthMiddlewareCorpus(
+  options: {
+    rescue?: { reason: string; outcome: 'accepted' | 'expired' | 'pending' };
+    extraPatterns?: ExistingPatternKind[];
+  } = {},
+): void {
   seedTask({
     branch: 'auth-middleware-1',
     axis: 0,
     claims: ['apps/api/auth.ts', 'apps/api/middleware.ts', 'packages/core/src/session.ts'],
     completed: true,
+    ...(options.rescue !== undefined ? { rescue: options.rescue } : {}),
+    ...(options.extraPatterns !== undefined ? { extraPatterns: options.extraPatterns } : {}),
   });
   seedTask({
     branch: 'auth-middleware-2',
@@ -136,12 +189,20 @@ function seedAuthMiddlewareCorpus(): void {
   }
 }
 
+type ExistingPatternKind =
+  | 'expired-handoff'
+  | 'cancelled-handoff'
+  | 'plan-archive-blocked'
+  | 'stalled-subtask';
+
 function seedTask(args: {
   branch: string;
   axis: number;
   claims: string[];
   completed?: boolean;
-  pattern?: 'expired-handoff' | 'plan-archive-blocked';
+  pattern?: ExistingPatternKind;
+  extraPatterns?: ExistingPatternKind[];
+  rescue?: { reason: string; outcome: 'accepted' | 'expired' | 'pending' };
 }): number {
   const task = store.storage.findOrCreateTask({
     title: args.branch,
@@ -169,6 +230,22 @@ function seedTask(args: {
   if (args.pattern === 'expired-handoff') {
     insertObservation(task.id, 'expired-handoff', 'handoff expired during auth middleware repair');
   }
+  for (const pattern of args.extraPatterns ?? []) {
+    insertObservation(task.id, pattern, `${pattern} during auth middleware repair`);
+  }
+  if (args.rescue) {
+    insertObservation(
+      task.id,
+      'rescue-relay',
+      'task stranded during auth middleware repair',
+      {
+        rescue_reason: args.rescue.reason,
+        rescue_outcome: args.rescue.outcome,
+      },
+      undefined,
+      task.created_at + 120 * 60_000,
+    );
+  }
   if (args.completed) {
     insertObservation(task.id, 'plan-auto-archive', 'plan archived after auth middleware fix');
   }
@@ -182,6 +259,7 @@ function insertObservation(
   content: string,
   metadata?: Record<string, unknown>,
   axis?: number,
+  ts?: number,
 ): number {
   const id = store.storage.insertObservation({
     session_id: 'seed',
@@ -190,7 +268,7 @@ function insertObservation(
     compressed: false,
     intensity: null,
     task_id: taskId,
-    ts: clock++,
+    ts: ts ?? clock++,
     ...(metadata !== undefined ? { metadata } : {}),
   });
   if (axis !== undefined) {
