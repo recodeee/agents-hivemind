@@ -29,7 +29,7 @@ export function register(
 
   server.tool(
     'rescue_stranded_scan',
-    'Find stranded sessions or abandoned file claims without changing state. Dry-run scan for stuck work before running a rescue.',
+    'Find stranded sessions or abandoned file claims without changes. Dry-run scan surfaces stale claims, stuck work, and rescue candidates before mutation.',
     {
       stranded_after_minutes: z.number().positive().optional(),
     },
@@ -46,7 +46,7 @@ export function register(
 
   server.tool(
     'rescue_stranded_run',
-    'Rescue stranded sessions and emit relays after confirmation. Requires confirm: true because this drops stranded file claims.',
+    'Rescue stranded sessions and emit relays after confirmation. Requires confirm: true because it drops stranded claims and creates relay handoff records.',
     {
       stranded_after_minutes: z.number().positive().optional(),
       confirm: z.boolean().optional(),

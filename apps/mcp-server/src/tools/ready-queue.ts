@@ -49,7 +49,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'task_ready_for_agent',
-    'Find work to claim now for this agent. Returns available sub-tasks ranked by fit and filters out blocked, claimed, or scope-conflicted work.',
+    'Find work to claim, pick a task, or choose available work. Returns ready sub-tasks ranked by fit_score with capability hints, claim conflicts, and blocked work filtered out.',
     {
       session_id: z.string().min(1),
       agent: z.string().min(1),

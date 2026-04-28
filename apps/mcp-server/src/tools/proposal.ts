@@ -8,7 +8,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'task_propose',
-    'Propose future work for a repo branch. Creates a candidate task that becomes claimable only after enough reinforcement.',
+    'Propose future work for a repo branch. Creates a candidate task with rationale, touched files, strength, and promotion threshold before claimable work appears.',
     {
       repo_root: z.string().min(1),
       branch: z.string().min(1),
@@ -45,7 +45,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'task_reinforce',
-    "Support a proposed task so it can become claimable work. kind='explicit' means direct support; 'rediscovered' means you independently found the same need.",
+    "Support a proposed task so it can become claimable work. kind='explicit' means direct support; 'rediscovered' means independent rediscovery toward promotion.",
     {
       proposal_id: z.number().int().positive(),
       session_id: z.string().min(1),

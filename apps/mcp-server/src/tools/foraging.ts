@@ -17,7 +17,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'examples_list',
-    'List example projects indexed for this repo. Use before examples_query when you need available reference sources.',
+    'List example projects available for this repo. Use before examples_query to choose reference sources, manifests, and indexed example names.',
     { repo_root: z.string().min(1) },
     async ({ repo_root }) => {
       const rows = store.storage.listExamples(repo_root);
@@ -33,7 +33,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'examples_query',
-    'Search example code patterns by query. Returns compact hits from indexed examples; fetch full bodies with get_observations.',
+    'Search example code patterns and reference implementations. Returns compact indexed hits; fetch full bodies with get_observations before copying files.',
     {
       query: z.string().min(1),
       example_name: z.string().optional(),
@@ -52,7 +52,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'examples_integrate_plan',
-    'Plan how to integrate an example project into this repo. Returns dependency deltas, files to copy, and config steps.',
+    'Plan how to integrate an example project into this repo. Returns dependency deltas, file copy scope, config steps, and target hints.',
     {
       example_name: z.string().min(1),
       repo_root: z.string().min(1),

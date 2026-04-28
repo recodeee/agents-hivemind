@@ -7,7 +7,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'search',
-    'Search memory for prior decisions, errors, or notes. Returns compact hits; fetch full bodies with get_observations.',
+    'Search memory for prior decisions, errors, or notes. Returns compact hits, observation IDs, and relevance snippets; fetch bodies with get_observations.',
     { query: z.string().min(1), limit: z.number().int().positive().max(50).optional() },
     async ({ query, limit }) => {
       const e = (await resolveEmbedder()) ?? undefined;
@@ -20,7 +20,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'timeline',
-    'See a session timeline around an observation. Returns chronological IDs so you can locate neighboring context before fetching bodies.',
+    'See a session timeline around an observation or recent turn. Returns chronological IDs, kinds, and timestamps for neighboring context before fetching bodies.',
     {
       session_id: z.string().min(1),
       around_id: z.number().int().positive().optional(),
@@ -35,7 +35,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'get_observations',
-    'Read full observation bodies by ID. Use after search, timeline, inbox, or task tools return compact observation IDs.',
+    'Read full observation bodies by ID after compact search results. Use after search, timeline, inbox, task tools, or recall return observation IDs.',
     {
       ids: z.array(z.number().int().positive()).min(1).max(50),
       expand: z.boolean().optional(),
@@ -56,7 +56,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'list_sessions',
-    'Find recent sessions to inspect or recall. Lists sessions in reverse chronological order before you call timeline.',
+    'Find recent sessions to inspect, recall, or debug history. Lists sessions in reverse chronological order with IDE, cwd, start, and end metadata.',
     { limit: z.number().int().positive().max(200).optional() },
     async ({ limit }) => {
       const sessions = store.storage.listSessions(limit ?? 20);

@@ -9,7 +9,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'hivemind',
-    'See what other agents are doing right now. Summarizes active sessions, branches, task ownership, and stale lanes from runtime state.',
+    'See what other agents are doing right now. Summarizes active sessions, branches, task ownership, stale lanes, and runtime state before coordination.',
     {
       repo_root: z.string().min(1).optional(),
       repo_roots: z.array(z.string().min(1)).max(20).optional(),
@@ -29,7 +29,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'hivemind_context',
-    'Use this BEFORE editing to see active lanes, file ownership, and memory hints. Returns compact situational awareness before fetching full observations.',
+    'Check this BEFORE editing — see what other agents are doing and which files they hold. Returns active lanes, file ownership, compact memory hits, and observation IDs for follow-up.',
     {
       repo_root: z.string().min(1).optional(),
       repo_roots: z.array(z.string().min(1)).max(20).optional(),

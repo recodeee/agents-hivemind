@@ -14,7 +14,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
   server.tool(
     'task_relay',
     [
-      'Pass unfinished work to another agent when you are being cut off. Use for quota, rate-limit, or turn-cap exits when you cannot write a thoughtful handoff; the system auto-synthesizes recent edits, claims, decisions, and blockers.',
+      'Pass unfinished work to another agent when you are being cut off. Use for quota, rate-limit, or turn-cap exits when no thoughtful handoff is possible; the system auto-synthesizes edits, claims, decisions, and blockers.',
       'Different from task_hand_off: relays assume the sender is gone, drop sender claims rather than transferring (the receiver re-claims via worktree_recipe.inherit_claims on accept), and bundle a worktree_recipe so a receiver in a different worktree knows how to set up their tree before editing.',
       'Provide fetch_files_at when your work is committed and pushed — receivers can reproduce your tree from git. Omit it when your edits are uncommitted; the relay then flags the touched paths in untracked_files_warning so the receiver knows they may be inheriting dirty work and should coordinate via task_message before editing.',
     ].join(' '),
@@ -71,7 +71,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'task_accept_relay',
-    'Resume work from a pending relay in your own worktree. Re-claims inherited files under your session; consult worktree_recipe before editing.',
+    'Accept a pending relay and resume work in your own worktree. Re-claims inherited files under your session; consult worktree_recipe before editing.',
     {
       relay_observation_id: z.number().int().positive(),
       session_id: z.string().min(1),
@@ -96,7 +96,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'task_decline_relay',
-    'Decline a relay you cannot take so another agent can pick it up. Records the reason and cancels the pending relay.',
+    'Decline a relay you cannot take so another agent can pick it up. Records reason, cancels pending relay, and leaves ownership available for rerouting.',
     {
       relay_observation_id: z.number().int().positive(),
       session_id: z.string().min(1),

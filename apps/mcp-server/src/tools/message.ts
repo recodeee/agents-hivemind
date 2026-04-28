@@ -12,7 +12,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
   server.tool(
     'task_message',
     [
-      'Send a message to other agents on this task. Defaults to broadcast/fyi — use task_post for thread-style notes/blockers/decisions.',
+      'Send a message or note to an agent on a task thread. Send a message to other agents on this task. Defaults to broadcast/fyi — use task_post for thread-style notes/blockers/decisions.',
       "Minimum call: task_message(task_id, session_id, agent, content); it broadcasts to_agent='any' with urgency='fyi'. Use to_agent / to_session_id for direct coordination that doesn't transfer file claims; for 'hand off the work + files', use task_hand_off instead.",
       'Urgency controls preface prominence: fyi (coalesced into a counter), needs_reply (rendered as a summary + expected action), blocking (top-of-preface, never coalesced).',
       'Pass reply_to to chain onto an earlier message; the parent\'s immediate status flips to "replied". Reply chains are 1-deep authoritative: replies-to-replies are allowed but only the immediate parent flips, never a transitively-referenced ancestor.',
@@ -74,7 +74,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'task_messages',
-    'Read unread or recent messages addressed to you. Lists compact previews across your tasks or task_ids with urgency, status, expiry, and broadcast claim state. Fetch full bodies with get_observations; call task_message_mark_read separately.',
+    'Read unread or recent messages addressed to you. Lists compact previews across tasks with urgency, status, expiry, reply chain, and broadcast claim state.',
     {
       session_id: z.string().min(1),
       agent: z.string().min(1),
@@ -98,7 +98,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'task_message_mark_read',
-    'Mark a message as read and send a receipt to the sender. Idempotent for already-read or replied messages; expired or retracted messages return explicit errors.',
+    'Mark a message as read and send a receipt to sender. Idempotent for already-read or replied messages; expired, retracted, and TTL states return explicit errors.',
     {
       message_observation_id: z.number().int().positive(),
       session_id: z.string().min(1),
@@ -123,7 +123,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'task_message_retract',
-    'Retract a message you sent before it is answered. Recipients stop seeing it in inboxes, but storage keeps the body searchable for audit.',
+    'Retract a message you sent before it is answered. Recipients stop seeing it in inboxes; audit storage keeps body text searchable for FTS and reply-chain history.',
     {
       message_observation_id: z.number().int().positive(),
       session_id: z.string().min(1).describe('your session_id (must match the original sender)'),
@@ -151,7 +151,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'task_message_claim',
-    "Claim a broadcast message before replying. Once claimed, a to_agent='any' broadcast drops out of other recipients' inboxes; replying to an unclaimed broadcast auto-claims it.",
+    "Claim a broadcast message before replying or taking ownership. Once claimed, a to_agent='any' broadcast leaves other inboxes; replying auto-claims unclaimed broadcasts.",
     {
       message_observation_id: z.number().int().positive(),
       session_id: z.string().min(1),

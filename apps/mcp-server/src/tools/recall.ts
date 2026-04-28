@@ -25,7 +25,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'recall_session',
-    "Recall another session's timeline without loading full bodies. Returns observation IDs only; fetch bodies via get_observations. The recall is stored as kind:'recall' so future searches show this session consulted the target.",
+    "Recall another session's timeline without loading full bodies. Returns observation IDs, owner IDE, and kind:'recall' audit trail; fetch bodies via get_observations.",
     {
       target_session_id: z.string().min(1).describe('the session whose timeline you want to read'),
       current_session_id: z

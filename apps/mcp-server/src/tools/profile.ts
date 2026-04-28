@@ -13,7 +13,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'agent_upsert_profile',
-    'Set an agent skill profile for routing handoffs or ready work. Capability weights cover ui_work, api_work, test_work, infra_work, and doc_work from 0..1; missing weights keep their current value.',
+    'Set an agent skill profile for routing handoffs or ready work. Capability weights cover ui_work, api_work, test_work, infra_work, and doc_work; missing weights stay unchanged.',
     {
       agent: z.string().min(1),
       capabilities: z
@@ -37,7 +37,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'agent_get_profile',
-    'Read an agent skill profile for routing or fit checks. Unknown agents return the default 0.5 capability weights.',
+    'Read an agent skill profile for routing or fit checks. Unknown agents return default 0.5 capability weights for handoff and ready-work ranking.',
     { agent: z.string().min(1) },
     async ({ agent }) => {
       const profile = loadProfile(store.storage, agent);
