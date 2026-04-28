@@ -16,6 +16,13 @@ export type { SearchResult, GetObservationsOptions, Observation, Session } from 
 export { createSessionId } from './ids.js';
 export { inferIdeFromSessionId } from './infer-ide.js';
 export {
+  claimsForPaths,
+  pairwiseScopeOverlap,
+  scopeOverlap,
+  type ClaimHolder,
+  type ScopeOverlap,
+} from './claim-graph.js';
+export {
   TaskThread,
   TaskThreadError,
   TASK_THREAD_ERROR_CODES,
