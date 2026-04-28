@@ -1,6 +1,11 @@
+# CLAUDE.md
+
+AGENTS.md is the source of truth for this repository.
+Read and follow ./AGENTS.md before doing any work here.
+
 # colony — Agent Playbook
 
-This file is the source of truth for AI coding assistants working on this repository. Follow it before generating code, tests, or documentation. If a request conflicts with this file, pause and ask.
+AGENTS.md is the source of truth for AI coding assistants working on this repository. Use the notes below only as supplemental Claude-specific context. If a request conflicts with AGENTS.md, pause and ask.
 
 ## Project identity
 
