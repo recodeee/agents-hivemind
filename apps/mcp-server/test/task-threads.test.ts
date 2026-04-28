@@ -186,6 +186,38 @@ describe('task threads — handoff lifecycle', () => {
     expect(afterMeta.status).toBe('expired');
   });
 
+  it('rejects decline after the handoff has expired', async () => {
+    const { task_id, sessionA, sessionB } = seedTwoSessionTask();
+
+    const { handoff_observation_id } = await call<{ handoff_observation_id: number }>(
+      'task_hand_off',
+      {
+        task_id,
+        session_id: sessionA,
+        agent: 'claude',
+        to_agent: 'codex',
+        summary: 'too old to decline',
+        expires_in_minutes: 1,
+      },
+    );
+
+    const row = store.storage.getObservation(handoff_observation_id);
+    const meta = JSON.parse(row?.metadata ?? '{}') as { expires_at: number };
+    meta.expires_at = Date.now() - 1000;
+    store.storage.updateObservationMetadata(handoff_observation_id, JSON.stringify(meta));
+
+    const error = await callError('task_decline_handoff', {
+      handoff_observation_id,
+      session_id: sessionB,
+      reason: 'too late',
+    });
+    expect(error.code).toBe(TASK_THREAD_ERROR_CODES.HANDOFF_EXPIRED);
+
+    const after = store.storage.getObservation(handoff_observation_id);
+    const afterMeta = JSON.parse(after?.metadata ?? '{}');
+    expect(afterMeta.status).toBe('expired');
+  });
+
   it("task_updates_since filters out the caller's own posts", async () => {
     const { task_id, sessionA, sessionB } = seedTwoSessionTask();
     const cursor = Date.now() - 1; // strictly before either post

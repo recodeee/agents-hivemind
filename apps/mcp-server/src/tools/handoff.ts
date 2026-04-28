@@ -16,7 +16,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
   server.tool(
     'task_hand_off',
     [
-      'Give work to another agent, transfer ownership, or pass files. Use for handoff routing, released_files, transferred_files, blockers, next_steps, and broadcast ownership transfer.',
+      'Give work to another agent, transfer ownership, or pass files. Pending handoffs expire by default after 120 minutes; set expires_in_minutes when the recruitment signal should decay faster. Use for handoff routing, released_files, transferred_files, blockers, next_steps, and broadcast ownership transfer.',
       RELAY_FALLBACK_RULE,
     ].join(' '),
     {
@@ -60,7 +60,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'task_accept_handoff',
-    'Accept a pending handoff and take over transferred work. Installs claim ownership under your session and preserves handoff status, sender, and reply chain metadata.',
+    'Accept a pending handoff and take over transferred work. Installs claim ownership under your session and preserves handoff status, sender, and reply chain metadata. Expired handoffs fail with HANDOFF_EXPIRED.',
     {
       handoff_observation_id: z.number().int().positive(),
       session_id: z.string().min(1),
@@ -85,7 +85,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'task_decline_handoff',
-    'Decline a handoff you cannot take or should not own. Records reason, cancels pending transfer, and lets the sender reissue broadcast or directed routing.',
+    'Decline a handoff you cannot take or should not own. Records reason, cancels pending transfer, and lets the sender reissue broadcast or directed routing. Expired handoffs fail with HANDOFF_EXPIRED instead of staying pending.',
     {
       handoff_observation_id: z.number().int().positive(),
       session_id: z.string().min(1),
