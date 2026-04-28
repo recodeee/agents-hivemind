@@ -2,6 +2,7 @@ import type { ObservationRow, TaskClaimRow, TaskRow } from '@colony/storage';
 import { type HivemindSession, readHivemind } from './hivemind.js';
 import { inferIdeFromSessionId } from './infer-ide.js';
 import type { MemoryStore } from './memory-store.js';
+import { type PlanInfo, type SubtaskInfo, listPlans } from './plan.js';
 import { type RelayReason, TaskThread } from './task-thread.js';
 
 const DEFAULT_STRANDED_AFTER_MS = 10 * 60_000;
@@ -21,6 +22,10 @@ export interface StrandedRescueOutcome {
     relay_observation_id: number;
     inherited_claims: string[];
     rescue_reason: string;
+    plan_slug?: string;
+    wave_index?: number;
+    blocked_downstream_count?: number;
+    suggested_action?: string;
   }>;
   skipped: Array<{ session_id: string; reason: string }>;
 }
@@ -51,6 +56,26 @@ interface RescueStorage {
   recentToolErrors?: unknown;
 }
 
+interface OrderedPlanContext {
+  plan_slug: string;
+  wave_index: number;
+  blocked_downstream_count: number;
+  suggested_action?: string;
+}
+
+interface RescueJob {
+  session_id: string;
+  task_id: number;
+  claims: TaskClaimRow[];
+  lastToolError: RecentToolErrorRow | null;
+  relayReason: RelayReason;
+  rescue_reason: string;
+  from_agent: string;
+  last_observation_ts: number | null;
+  one_line: string;
+  planContext?: OrderedPlanContext;
+}
+
 export function rescueStrandedSessions(
   store: MemoryStore,
   options: StrandedRescueOptions = {},
@@ -60,6 +85,8 @@ export function rescueStrandedSessions(
   const storage = store.storage as typeof store.storage & RescueStorage;
   const candidates = storage.findStrandedSessions({ stranded_after_ms });
   const outcome: StrandedRescueOutcome = { scanned: candidates.length, rescued: [], skipped: [] };
+  const orderedPlanContexts = orderedPlanContextByTask(store);
+  const jobs: RescueJob[] = [];
 
   for (const candidate of candidates) {
     const session_id = candidateSessionId(candidate);
@@ -92,74 +119,193 @@ export function rescueStrandedSessions(
     const one_line = rescueOneLine(store, session_id);
 
     for (const [task_id, claims] of claimsByTask.entries()) {
-      const inherited_claims = claims.map((claim) => claim.file_path);
-      const observerMetadata = {
-        kind: 'observer-note',
-        action: 'rescue-relay',
-        stranded_session_id: session_id,
-        task_id,
-        last_observation_ts,
-        last_tool_error: renderToolError(lastToolError),
-        claim_count: inherited_claims.length,
-        rescue_reason,
-        dry_run: dryRun,
-      };
-      store.addObservation({
+      const job: RescueJob = {
         session_id,
-        kind: 'observer-note',
         task_id,
-        content: `Preparing rescue relay for stranded session ${session_id} on task ${task_id}; ${inherited_claims.length} claim(s) will be released.`,
-        metadata: observerMetadata,
-      });
-
-      if (dryRun) {
-        outcome.rescued.push({
-          session_id,
-          task_id,
-          relay_observation_id: -1,
-          inherited_claims,
-          rescue_reason,
-        });
-        continue;
-      }
-
-      const task = store.storage.getTask(task_id);
-      const relay_observation_id = new TaskThread(store, task_id).relay({
-        from_session_id: session_id,
+        claims,
+        lastToolError,
+        relayReason,
+        rescue_reason,
         from_agent,
-        reason: relayReason,
         one_line,
-        base_branch: baseBranchFor(task),
-        to_agent: 'any',
-        expires_in_ms: RESCUE_RELAY_TTL_MS,
-      });
-
-      store.addObservation({
-        session_id,
-        kind: 'rescue-relay',
-        task_id,
-        content: `Rescue relay emitted for stranded session ${session_id}; dropped ${inherited_claims.length} claim(s).`,
-        metadata: {
-          stranded_session_id: session_id,
-          last_observation_ts,
-          last_tool_error: renderToolError(lastToolError),
-          claim_count: inherited_claims.length,
-          rescue_reason,
-          relay_observation_id,
-        },
-      });
-
-      outcome.rescued.push({
-        session_id,
-        task_id,
-        relay_observation_id,
-        inherited_claims,
-        rescue_reason,
-      });
+        last_observation_ts,
+      };
+      const planContext = orderedPlanContexts.get(task_id);
+      if (planContext) job.planContext = planContext;
+      jobs.push(job);
     }
   }
 
+  for (const job of jobs.sort(compareRescueJobs)) {
+    const inherited_claims = job.claims.map((claim) => claim.file_path);
+    const planMetadata = orderedPlanMetadata(job.planContext);
+    const observerMetadata = {
+      kind: 'observer-note',
+      action: 'rescue-relay',
+      stranded_session_id: job.session_id,
+      task_id: job.task_id,
+      last_observation_ts: job.last_observation_ts,
+      last_tool_error: renderToolError(job.lastToolError),
+      claim_count: inherited_claims.length,
+      rescue_reason: job.rescue_reason,
+      dry_run: dryRun,
+      ...planMetadata,
+    };
+    store.addObservation({
+      session_id: job.session_id,
+      kind: 'observer-note',
+      task_id: job.task_id,
+      content: `Preparing rescue relay for stranded session ${job.session_id} on task ${job.task_id}; ${inherited_claims.length} claim(s) will be released.${orderedPlanSentence(job.planContext)}`,
+      metadata: observerMetadata,
+    });
+
+    if (dryRun) {
+      outcome.rescued.push({
+        session_id: job.session_id,
+        task_id: job.task_id,
+        relay_observation_id: -1,
+        inherited_claims,
+        rescue_reason: job.rescue_reason,
+        ...planMetadata,
+      });
+      continue;
+    }
+
+    const task = store.storage.getTask(job.task_id);
+    const relay_observation_id = new TaskThread(store, job.task_id).relay({
+      from_session_id: job.session_id,
+      from_agent: job.from_agent,
+      reason: job.relayReason,
+      one_line: job.one_line,
+      base_branch: baseBranchFor(task),
+      to_agent: 'any',
+      expires_in_ms: RESCUE_RELAY_TTL_MS,
+    });
+
+    store.addObservation({
+      session_id: job.session_id,
+      kind: 'rescue-relay',
+      task_id: job.task_id,
+      content: `Rescue relay emitted for stranded session ${job.session_id}; dropped ${inherited_claims.length} claim(s).${orderedPlanSentence(job.planContext)}`,
+      metadata: {
+        stranded_session_id: job.session_id,
+        last_observation_ts: job.last_observation_ts,
+        last_tool_error: renderToolError(job.lastToolError),
+        claim_count: inherited_claims.length,
+        rescue_reason: job.rescue_reason,
+        relay_observation_id,
+        ...planMetadata,
+      },
+    });
+
+    outcome.rescued.push({
+      session_id: job.session_id,
+      task_id: job.task_id,
+      relay_observation_id,
+      inherited_claims,
+      rescue_reason: job.rescue_reason,
+      ...planMetadata,
+    });
+  }
+
   return outcome;
+}
+
+function compareRescueJobs(left: RescueJob, right: RescueJob): number {
+  const impact =
+    (right.planContext?.blocked_downstream_count ?? 0) -
+    (left.planContext?.blocked_downstream_count ?? 0);
+  if (impact !== 0) return impact;
+  return left.task_id - right.task_id;
+}
+
+function orderedPlanContextByTask(store: MemoryStore): Map<number, OrderedPlanContext> {
+  const contexts = new Map<number, OrderedPlanContext>();
+  for (const plan of listPlans(store, { limit: 2_000 })) {
+    const waveIndexes = waveIndexesFor(plan.subtasks);
+    for (const subtask of plan.subtasks) {
+      const blocked_downstream_count = blockedDownstreamCount(plan, subtask);
+      contexts.set(subtask.task_id, {
+        plan_slug: plan.plan_slug,
+        wave_index: waveIndexes.get(subtask.subtask_index) ?? 0,
+        blocked_downstream_count,
+        ...(blocked_downstream_count > 0
+          ? {
+              suggested_action:
+                'message stalled owner or reassign this sub-task before later waves can continue',
+            }
+          : {}),
+      });
+    }
+  }
+  return contexts;
+}
+
+function waveIndexesFor(subtasks: SubtaskInfo[]): Map<number, number> {
+  const byIndex = new Map(subtasks.map((subtask) => [subtask.subtask_index, subtask]));
+  const memo = new Map<number, number>();
+
+  const visit = (index: number): number => {
+    const cached = memo.get(index);
+    if (cached !== undefined) return cached;
+    const subtask = byIndex.get(index);
+    if (!subtask || subtask.depends_on.length === 0) {
+      memo.set(index, 0);
+      return 0;
+    }
+    const wave = Math.max(...subtask.depends_on.map(visit)) + 1;
+    memo.set(index, wave);
+    return wave;
+  };
+
+  for (const subtask of subtasks) visit(subtask.subtask_index);
+  return memo;
+}
+
+function blockedDownstreamCount(plan: PlanInfo, blocker: SubtaskInfo): number {
+  return plan.subtasks.filter((subtask) => {
+    if (subtask.subtask_index === blocker.subtask_index || subtask.status === 'completed') {
+      return false;
+    }
+    return dependsOnTransitive(subtask, blocker.subtask_index, plan.subtasks);
+  }).length;
+}
+
+function dependsOnTransitive(
+  subtask: SubtaskInfo,
+  dependencyIndex: number,
+  allSubtasks: SubtaskInfo[],
+): boolean {
+  const byIndex = new Map(allSubtasks.map((item) => [item.subtask_index, item]));
+  const visited = new Set<number>();
+  const stack = [...subtask.depends_on];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (current === undefined || visited.has(current)) continue;
+    if (current === dependencyIndex) return true;
+    visited.add(current);
+    stack.push(...(byIndex.get(current)?.depends_on ?? []));
+  }
+  return false;
+}
+
+function orderedPlanMetadata(context: OrderedPlanContext | undefined): Partial<OrderedPlanContext> {
+  if (!context) return {};
+  return {
+    plan_slug: context.plan_slug,
+    wave_index: context.wave_index,
+    blocked_downstream_count: context.blocked_downstream_count,
+    ...(context.suggested_action ? { suggested_action: context.suggested_action } : {}),
+  };
+}
+
+function orderedPlanSentence(context: OrderedPlanContext | undefined): string {
+  if (!context) return '';
+  const waveNumber = context.wave_index + 1;
+  if (context.blocked_downstream_count === 0) {
+    return ` Plan ${context.plan_slug} wave ${waveNumber} has no blocked downstream sub-tasks.`;
+  }
+  return ` Plan ${context.plan_slug} wave ${waveNumber} blocks ${context.blocked_downstream_count} downstream sub-task(s).`;
 }
 
 function groupClaimsByTask(store: MemoryStore, session_id: string): Map<number, TaskClaimRow[]> {

@@ -165,6 +165,39 @@ describe('rescueStrandedSessions', () => {
     ).toBe(false);
   });
 
+  it('adds ordered-plan context and prioritizes claims that block later waves', () => {
+    const normal = seedTask('feat/ordinary', ['src/ordinary.ts']);
+    const planSubtask = seedOrderedPlan(normal.session_id);
+    configureStorage([candidate(normal.session_id)]);
+    markAlive(normal.session_id);
+
+    const outcome = rescueStrandedSessions(store, { dry_run: true });
+
+    expect(outcome.rescued).toHaveLength(2);
+    expect(outcome.rescued[0]).toMatchObject({
+      task_id: planSubtask.task_id,
+      plan_slug: 'ordered-rescue',
+      wave_index: 0,
+      blocked_downstream_count: 4,
+      suggested_action:
+        'message stalled owner or reassign this sub-task before later waves can continue',
+    });
+    expect(outcome.rescued[1]).not.toHaveProperty('plan_slug');
+    expect(store.storage.getClaim(planSubtask.task_id, 'src/foundation.ts')?.session_id).toBe(
+      normal.session_id,
+    );
+
+    const observer = store.storage
+      .taskObservationsByKind(planSubtask.task_id, 'observer-note', 10)
+      .at(0);
+    expect(observer?.content).toContain('blocks 4 downstream sub-task(s)');
+    expect(JSON.parse(observer?.metadata ?? '{}')).toMatchObject({
+      plan_slug: 'ordered-rescue',
+      wave_index: 0,
+      blocked_downstream_count: 4,
+    });
+  });
+
   it('skips stranded candidates that are no longer alive in readHivemind', () => {
     const { thread, session_id } = seedTask('feat/dead', ['src/dead.ts']);
     configureStorage([candidate(session_id)]);
@@ -190,6 +223,63 @@ function seedTask(branch: string, files: string[]): { thread: TaskThread; sessio
     thread.claimFile({ session_id, file_path });
   }
   return { thread, session_id };
+}
+
+function seedOrderedPlan(session_id: string): { task_id: number } {
+  const slug = 'ordered-rescue';
+  const parent = TaskThread.open(store, {
+    repo_root: '/repo',
+    branch: `spec/${slug}`,
+    session_id,
+  });
+  store.addObservation({
+    session_id,
+    task_id: parent.task_id,
+    kind: 'plan-config',
+    content: `plan ${slug}`,
+    metadata: { plan_slug: slug, auto_archive: false },
+  });
+
+  const subtasks = [
+    { title: 'Foundation', file: 'src/foundation.ts', depends_on: [] },
+    { title: 'Dashboard', file: 'src/dashboard.ts', depends_on: [0] },
+    { title: 'Tooling', file: 'src/tooling.ts', depends_on: [0] },
+    { title: 'Dashboard docs', file: 'docs/dashboard.md', depends_on: [1] },
+    { title: 'Tooling docs', file: 'docs/tooling.md', depends_on: [2] },
+  ];
+
+  let claimedTaskId = -1;
+  subtasks.forEach((subtask, index) => {
+    const thread = TaskThread.open(store, {
+      repo_root: '/repo',
+      branch: `spec/${slug}/sub-${index}`,
+      session_id,
+    });
+    store.addObservation({
+      session_id,
+      task_id: thread.task_id,
+      kind: 'plan-subtask',
+      content: `${subtask.title}\n\n${subtask.title} work.`,
+      metadata: {
+        parent_plan_slug: slug,
+        parent_plan_title: 'Ordered rescue',
+        parent_spec_task_id: parent.task_id,
+        subtask_index: index,
+        file_scope: [subtask.file],
+        depends_on: subtask.depends_on,
+        spec_row_id: null,
+        capability_hint: index === 0 ? 'api_work' : 'doc_work',
+        status: 'available',
+      },
+    });
+    if (index === 0) {
+      thread.join(session_id, 'codex');
+      thread.claimFile({ session_id, file_path: subtask.file });
+      claimedTaskId = thread.task_id;
+    }
+  });
+
+  return { task_id: claimedTaskId };
 }
 
 function configureStorage(candidates: StrandedCandidate[], errors: ToolError[] = []): void {
