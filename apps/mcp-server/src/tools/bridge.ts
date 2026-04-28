@@ -26,7 +26,7 @@ const BRIDGE_EVIDENCE_LIMIT = 8;
 
 type RuntimeSource = 'omx' | 'colony';
 
-interface BridgeStatus {
+export interface BridgeStatus {
   schema: 'colony.omx_hud_status.v1';
   generated_at: string;
   runtime_source: RuntimeSource;
@@ -105,6 +105,74 @@ interface BridgeStatus {
   } | null;
 }
 
+export interface BridgeStatusOptions {
+  session_id: string;
+  agent: string;
+  repo_root: string;
+  branch?: string;
+  query?: string;
+}
+
+export async function buildBridgeStatusPayload(
+  store: MemoryStore,
+  { session_id, agent, repo_root, branch, query }: BridgeStatusOptions,
+): Promise<BridgeStatus> {
+  const snapshot = readHivemind(
+    toHivemindOptions({
+      repo_root,
+      repo_roots: undefined,
+      include_stale: true,
+      limit: BRIDGE_LANE_LIMIT,
+    }),
+  );
+  const attentionInbox = buildAttentionInbox(store, {
+    session_id,
+    agent,
+    repo_root,
+    recent_claim_limit: BRIDGE_PREVIEW_LIMIT,
+    unread_message_limit: BRIDGE_PREVIEW_LIMIT,
+    file_heat_limit: BRIDGE_PREVIEW_LIMIT,
+  });
+  const attentionIds = bridgeAttentionObservationIds(attentionInbox);
+  const context = buildHivemindContext(
+    snapshot,
+    [],
+    [],
+    buildContextQuery(query, snapshot.sessions),
+    {
+      maxClaims: BRIDGE_PREVIEW_LIMIT,
+      maxHotFiles: BRIDGE_PREVIEW_LIMIT,
+      attention: {
+        session_id,
+        agent,
+        summary: attentionInbox.summary,
+        observation_ids: attentionIds.ids,
+        observation_ids_truncated: attentionIds.truncated,
+      },
+    },
+  );
+  const ready = await buildReadyForAgent(store, {
+    session_id,
+    agent,
+    repo_root,
+    limit: BRIDGE_READY_LIMIT,
+  });
+
+  return buildBridgeStatus({
+    context,
+    store,
+    runtimeSource: snapshot.sessions.some((lane) => lane.source === 'active-session')
+      ? 'omx'
+      : 'colony',
+    branch,
+    sessionId: session_id,
+    repoRoot: repo_root,
+    blockingCount: attentionInbox.unread_messages.filter((m) => m.urgency === 'blocking').length,
+    ready: ready.ready,
+    readyCount: ready.total_available,
+  });
+}
+
 export function register(server: McpServer, ctx: ToolContext): void {
   const wrapHandler = ctx.wrapHandler ?? defaultWrapHandler;
   const { store } = ctx;
@@ -120,61 +188,13 @@ export function register(server: McpServer, ctx: ToolContext): void {
       query: z.string().min(1).optional(),
     },
     wrapHandler('bridge_status', async ({ session_id, agent, repo_root, branch, query }) => {
-      const snapshot = readHivemind(
-        toHivemindOptions({
-          repo_root,
-          repo_roots: undefined,
-          include_stale: true,
-          limit: BRIDGE_LANE_LIMIT,
-        }),
-      );
-      const attentionInbox = buildAttentionInbox(store, {
-        session_id,
-        agent,
-        repo_root,
-        recent_claim_limit: BRIDGE_PREVIEW_LIMIT,
-        unread_message_limit: BRIDGE_PREVIEW_LIMIT,
-        file_heat_limit: BRIDGE_PREVIEW_LIMIT,
-      });
-      const attentionIds = bridgeAttentionObservationIds(attentionInbox);
-      const context = buildHivemindContext(
-        snapshot,
-        [],
-        [],
-        buildContextQuery(query, snapshot.sessions),
-        {
-          maxClaims: BRIDGE_PREVIEW_LIMIT,
-          maxHotFiles: BRIDGE_PREVIEW_LIMIT,
-          attention: {
-            session_id,
-            agent,
-            summary: attentionInbox.summary,
-            observation_ids: attentionIds.ids,
-            observation_ids_truncated: attentionIds.truncated,
-          },
-        },
-      );
-      const ready = await buildReadyForAgent(store, {
-        session_id,
-        agent,
-        repo_root,
-        limit: BRIDGE_READY_LIMIT,
-      });
-
       return jsonReply(
-        buildBridgeStatus({
-          context,
-          store,
-          runtimeSource: snapshot.sessions.some((lane) => lane.source === 'active-session')
-            ? 'omx'
-            : 'colony',
-          branch,
-          sessionId: session_id,
-          repoRoot: repo_root,
-          blockingCount: attentionInbox.unread_messages.filter((m) => m.urgency === 'blocking')
-            .length,
-          ready: ready.ready,
-          readyCount: ready.total_available,
+        await buildBridgeStatusPayload(store, {
+          session_id,
+          agent,
+          repo_root,
+          ...(branch !== undefined ? { branch } : {}),
+          ...(query !== undefined ? { query } : {}),
         }),
       );
     }),

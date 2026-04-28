@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { Command } from 'commander';
 import { maybeReexecAfterAutoBuild } from './auto-build.js';
 import { registerBackfillCommand } from './commands/backfill.js';
+import { registerBridgeCommand } from './commands/bridge.js';
 import { registerCompressCommands } from './commands/compress.js';
 import { registerConfigCommand } from './commands/config.js';
 import { registerCoordinationCommand } from './commands/coordination.js';
@@ -45,6 +46,7 @@ export function createProgram(): Command {
   registerLifecycleCommands(program);
   registerWorkerCommand(program);
   registerMcpCommand(program);
+  registerBridgeCommand(program);
   registerSearchCommand(program);
   registerSuggestCommand(program);
   registerCompressCommands(program);

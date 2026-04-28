@@ -6,6 +6,7 @@ describe('Colony CLI program', () => {
     const program = createProgram();
     const names = program.commands.map((c) => c.name()).sort();
     const expected = [
+      'bridge',
       'coordination',
       'doctor',
       'foraging',
@@ -60,6 +61,8 @@ describe('Colony CLI program', () => {
         worker                              Manage local worker daemon
         mcp                                 Run the MCP stdio server (typically
                                             invoked by the IDE)
+        bridge                              OMX/HUD bridge helpers for compact Colony
+                                            status
         search [options] <query>            Query memory from the terminal
         suggest [options] <description...>  Suggest an approach from similar past
                                             task history
