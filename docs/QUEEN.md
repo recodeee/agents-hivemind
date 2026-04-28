@@ -10,6 +10,12 @@ Queen is NEM/not an orchestrator. It does not start agents, assign agents,
 watch running shells, or decide who should do the work. It only publishes
 claimable work with enough structure for the rest of Colony to route it.
 
+Queen follows the repository's biological coordination contract:
+[`openspec/specs/biological-coordination/spec.md`](../openspec/specs/biological-coordination/spec.md).
+That contract is the durable source for the ant model: local stigmergic traces,
+pheromone reinforcement, evaporation, response thresholds, pull-based work, and
+Queen as plan publisher only.
+
 Conceptually queen has two steps:
 
 1. `planGoal`: derive a bounded, claimable plan from a goal.
@@ -320,6 +326,17 @@ Example: fix flaky tests with tests-only sub-tasks.
 
 Queen is not a sub-agent launcher. It never calls Codex, Claude, Cursor, Gemini,
 or any other agent. Agents pull from Colony after queen publishes.
+
+Queen is not an assignment engine. It must not assign exact agents as commands;
+capability hints and response-threshold rankings are pull signals for agents to
+accept, decline, reinforce, or hand off.
+
+Queen is not a shell scheduler. It must not monitor every running shell or infer
+global worker state from process activity. Startup context, attention inbox,
+ready-work ranking, rescue, sweep, and archive remain the coordination surfaces.
+
+Queen must not preserve stale state. Any live signal it emits or surfaces must
+expire, decay, sweep, archive, or become an explicit durable record.
 
 Queen is not a running process. There is no queen daemon to monitor, restart, or
 keep alive. After publication, the durable state is the `task_plan` substrate.
