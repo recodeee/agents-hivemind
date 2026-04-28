@@ -24,6 +24,15 @@ interface ValidateResult {
     claimed_at: number;
   }>;
   module_warnings: Array<{ a: number; b: number; shared_modules: string[] }>;
+  ordered_wave_errors: Array<{
+    code: string;
+    message: string;
+    subtask_index?: number;
+    dependency_index?: number;
+    wave?: number;
+    shared?: string[];
+    related_subtask_indices?: number[];
+  }>;
   partition_clean: boolean;
 }
 
@@ -40,12 +49,14 @@ function subtask(
   title: string,
   fileScope: string[],
   dependsOn?: number[],
+  capabilityHint?: string,
 ): Record<string, unknown> {
   return {
     title,
     description: `${title} description`,
     file_scope: fileScope,
     ...(dependsOn !== undefined ? { depends_on: dependsOn } : {}),
+    ...(capabilityHint !== undefined ? { capability_hint: capabilityHint } : {}),
   };
 }
 
@@ -78,6 +89,7 @@ describe('task_plan_validate', () => {
     expect(result.pairwise_overlaps).toEqual([]);
     expect(result.live_claim_collisions).toEqual([]);
     expect(result.module_warnings).toEqual([]);
+    expect(result.ordered_wave_errors).toEqual([]);
   });
 
   it('reports one pairwise overlap when independent sub-tasks share a file', async () => {
@@ -88,6 +100,14 @@ describe('task_plan_validate', () => {
 
     expect(result.partition_clean).toBe(false);
     expect(result.pairwise_overlaps).toEqual([{ a: 0, b: 1, shared: ['apps/api/src/widgets.ts'] }]);
+    expect(result.ordered_wave_errors).toMatchObject([
+      {
+        code: 'PLAN_WAVE_SCOPE_OVERLAP',
+        wave: 0,
+        related_subtask_indices: [0, 1],
+        shared: ['apps/api/src/widgets.ts'],
+      },
+    ]);
   });
 
   it('reports a live-claim collision for a currently held scoped file', async () => {
@@ -133,5 +153,53 @@ describe('task_plan_validate', () => {
 
     expect(result.partition_clean).toBe(true);
     expect(result.module_warnings).toEqual([]);
+  });
+
+  it('reports ordered-wave dependency errors before publish', async () => {
+    const result = await callValidate([
+      subtask('API', ['apps/api/src/widgets.ts'], [1]),
+      subtask('UI', ['apps/frontend/src/widgets.tsx']),
+    ]);
+
+    expect(result.partition_clean).toBe(false);
+    expect(result.ordered_wave_errors).toMatchObject([
+      {
+        code: 'PLAN_INVALID_WAVE_DEPENDENCY',
+        subtask_index: 0,
+        dependency_index: 1,
+      },
+    ]);
+    expect(result.ordered_wave_errors[0]?.message).toContain('earlier indices');
+  });
+
+  it('reports finalizers that do not depend on all earlier work', async () => {
+    const result = await callValidate([
+      subtask('Build API', ['apps/api/src/widgets.ts']),
+      subtask('Build UI', ['apps/frontend/src/widgets.tsx']),
+      subtask('Verify release', ['apps/api/test/widgets.test.ts'], [0], 'test_work'),
+    ]);
+
+    expect(result.partition_clean).toBe(false);
+    expect(result.ordered_wave_errors).toMatchObject([
+      {
+        code: 'PLAN_FINALIZER_NOT_LAST',
+        subtask_index: 2,
+        related_subtask_indices: [1],
+      },
+    ]);
+    expect(result.ordered_wave_errors[0]?.message).toContain('must depend on every earlier');
+  });
+
+  it('accepts valid ordered waves with a complete finalizer dependency set', async () => {
+    const result = await callValidate([
+      subtask('Prepare storage', ['packages/storage/src/widgets.ts']),
+      subtask('Build API', ['apps/api/src/widgets.ts'], [0]),
+      subtask('Build UI', ['apps/frontend/src/widgets.tsx'], [0]),
+      subtask('Verify release', ['apps/api/test/widgets.test.ts'], [1, 2], 'test_work'),
+    ]);
+
+    expect(result.partition_clean).toBe(true);
+    expect(result.ordered_wave_errors).toEqual([]);
+    expect(result.pairwise_overlaps).toEqual([]);
   });
 });

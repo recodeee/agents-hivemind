@@ -1,5 +1,6 @@
 import { dirname } from 'node:path/posix';
 import type { MemoryStore } from '@colony/core';
+import { hasDependencyPath, validateOrderedPlan } from '@colony/spec';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { ToolContext } from './context.js';
@@ -51,7 +52,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'task_plan_validate',
-    'Check a multi-agent plan for file conflicts before publish. Returns live claim collisions, pairwise overlaps, module warnings, and partition_clean routing signal.',
+    'Check a multi-agent plan before publish. Returns live claim collisions, pairwise overlaps, ordered-wave errors, module warnings, and partition_clean routing signal.',
     {
       repo_root: z.string().min(1),
       subtasks: z.array(SubtaskInputSchema).min(2).max(20),
@@ -60,12 +61,15 @@ export function register(server: McpServer, ctx: ToolContext): void {
       const pairwise = pairwiseScopeOverlap(subtasks);
       const liveCollisions = liveClaimCollisions(store, repo_root, subtasks);
       const moduleWarnings = computeModuleOverlaps(subtasks);
+      const orderedWaveErrors = validateOrderedPlan(subtasks);
 
       return jsonReply({
         pairwise_overlaps: pairwise,
         live_claim_collisions: liveCollisions,
         module_warnings: moduleWarnings,
-        partition_clean: pairwise.length === 0 && liveCollisions.length === 0,
+        ordered_wave_errors: orderedWaveErrors,
+        partition_clean:
+          pairwise.length === 0 && liveCollisions.length === 0 && orderedWaveErrors.length === 0,
       });
     },
   );
@@ -82,7 +86,7 @@ function pairwiseScopeOverlap(subtasks: SubtaskInput[]): PairwiseOverlap[] {
       const a = subtasks[i];
       const b = subtasks[j];
       if (!a || !b) continue;
-      if (isDependentChain(subtasks, i, j) || isDependentChain(subtasks, j, i)) continue;
+      if (hasDependencyPath(subtasks, i, j) || hasDependencyPath(subtasks, j, i)) continue;
 
       const shared = intersect(a.file_scope, b.file_scope);
       if (shared.length > 0) overlaps.push({ a: i, b: j, shared });
@@ -139,7 +143,7 @@ function computeModuleOverlaps(subtasks: SubtaskInput[]): ModuleWarning[] {
       const a = subtasks[i];
       const b = subtasks[j];
       if (!a || !b) continue;
-      if (isDependentChain(subtasks, i, j) || isDependentChain(subtasks, j, i)) continue;
+      if (hasDependencyPath(subtasks, i, j) || hasDependencyPath(subtasks, j, i)) continue;
       if (intersect(a.file_scope, b.file_scope).length > 0) continue;
 
       const sharedModules = intersect(moduleRoots(a.file_scope), moduleRoots(b.file_scope));
@@ -158,20 +162,6 @@ function moduleRoots(paths: string[]): string[] {
     })
     .filter((root) => root.length > 0 && root !== '.');
   return [...new Set(roots)];
-}
-
-function isDependentChain(subtasks: SubtaskInput[], from: number, to: number): boolean {
-  const visited = new Set<number>();
-  const stack = [from];
-  while (stack.length > 0) {
-    const cur = stack.pop();
-    if (cur === undefined || visited.has(cur)) continue;
-    visited.add(cur);
-    const deps = subtasks[cur]?.depends_on ?? [];
-    if (deps.includes(to)) return true;
-    stack.push(...deps);
-  }
-  return false;
 }
 
 function intersect(left: string[], right: string[]): string[] {

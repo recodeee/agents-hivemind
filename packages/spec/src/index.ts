@@ -49,3 +49,10 @@ export {
   type PublishPlanResult,
   type PublishPlanSubtaskInput,
 } from './plan-publish.js';
+export {
+  hasDependencyPath,
+  validateOrderedPlan,
+  type OrderedPlanSubtaskInput,
+  type PlanValidationErrorCode,
+  type PlanValidationErrorDetail,
+} from './plan-validation.js';

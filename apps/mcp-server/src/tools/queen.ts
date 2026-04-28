@@ -6,9 +6,11 @@ import {
   planGoal,
   publishOrderedPlan,
 } from '@colony/queen';
+import { PublishPlanError } from '@colony/spec';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { ToolContext } from './context.js';
+import { mcpErrorResponse } from './shared.js';
 
 interface QueenToolGoal extends Goal {
   affected_files?: string[];
@@ -115,6 +117,9 @@ export function register(server: McpServer, ctx: ToolContext): void {
       } catch (err) {
         const invalidGoal = invalidGoalResponse(err);
         if (invalidGoal) return invalidGoal;
+        if (err instanceof PublishPlanError) {
+          return mcpErrorResponse(err.code, err.message);
+        }
         throw err;
       }
     },

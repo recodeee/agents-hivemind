@@ -202,7 +202,7 @@ describe('task_plan_publish', () => {
         ],
       }),
     );
-    expect(err.code).toBe('PLAN_SCOPE_OVERLAP');
+    expect(err.code).toBe('PLAN_WAVE_SCOPE_OVERLAP');
   });
 
   it('allows overlapping file scopes when sub-tasks are sequenced via depends_on', async () => {
@@ -248,7 +248,80 @@ describe('task_plan_publish', () => {
         ],
       }),
     );
-    expect(err.code).toBe('PLAN_INVALID_DEPENDENCY');
+    expect(err.code).toBe('PLAN_INVALID_WAVE_DEPENDENCY');
+  });
+
+  it('rejects finalizers that do not depend on all prior ordered work', async () => {
+    const err = await callError(
+      'task_plan_publish',
+      basicPublishArgs({
+        slug: 'finalizer-bad',
+        subtasks: [
+          {
+            title: 'Build API',
+            description: 'a',
+            file_scope: ['apps/api/src/widgets.ts'],
+            capability_hint: 'api_work',
+          },
+          {
+            title: 'Build UI',
+            description: 'b',
+            file_scope: ['apps/frontend/src/widgets.tsx'],
+            capability_hint: 'ui_work',
+          },
+          {
+            title: 'Verify release',
+            description: 'test',
+            file_scope: ['apps/api/test/widgets.test.ts'],
+            depends_on: [0],
+            capability_hint: 'test_work',
+          },
+        ],
+      }),
+    );
+    expect(err.code).toBe('PLAN_FINALIZER_NOT_LAST');
+    expect(err.error).toContain('must depend on every earlier');
+  });
+
+  it('publishes valid ordered wave plans with finalizers last', async () => {
+    const result = await call<PublishResult>(
+      'task_plan_publish',
+      basicPublishArgs({
+        slug: 'ordered-waves-ok',
+        subtasks: [
+          {
+            title: 'Prepare storage',
+            description: 'storage',
+            file_scope: ['packages/storage/src/widgets.ts'],
+            capability_hint: 'infra_work',
+          },
+          {
+            title: 'Build API',
+            description: 'api',
+            file_scope: ['apps/api/src/widgets.ts'],
+            depends_on: [0],
+            capability_hint: 'api_work',
+          },
+          {
+            title: 'Build UI',
+            description: 'ui',
+            file_scope: ['apps/frontend/src/widgets.tsx'],
+            depends_on: [0],
+            capability_hint: 'ui_work',
+          },
+          {
+            title: 'Verify release',
+            description: 'verify all work',
+            file_scope: ['apps/api/test/widgets.test.ts'],
+            depends_on: [1, 2],
+            capability_hint: 'test_work',
+          },
+        ],
+      }),
+    );
+
+    expect(result.plan_slug).toBe('ordered-waves-ok');
+    expect(result.subtasks).toHaveLength(4);
   });
 });
 

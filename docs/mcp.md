@@ -854,14 +854,16 @@ Publish a multi-task plan as a spec change with one task thread per sub-task. Su
 Validation:
 
 - `subtasks` must contain at least 2 entries; for a single task use `task_thread` directly.
-- `depends_on` indices are zero-based and must point to **earlier** indices (cycle prevention).
-- Independent sub-tasks (no `depends_on` chain between them) cannot share `file_scope` entries. To overlap files, sequence the work via `depends_on`.
+- `depends_on` indices are zero-based and must point to **earlier** indices; cycles are rejected with `PLAN_INVALID_WAVE_DEPENDENCY`.
+- Parallel sub-tasks in the same ordered wave cannot share `file_scope` entries; this is rejected with `PLAN_WAVE_SCOPE_OVERLAP`.
+- Finalizer tasks such as verification, release, targeted test, or final doc updates must run in the last wave and depend on all earlier non-finalizer work; violations return `PLAN_FINALIZER_NOT_LAST`.
+- Independent sub-tasks (no `depends_on` chain between them) still cannot share `file_scope` entries. To overlap files, sequence the work via `depends_on`.
 
 Optional inputs:
 
 - `auto_archive` (default `false`): when `true`, the parent spec change three-way-merges and archives automatically after the last sub-task completes. Conflicts block the auto-archive (recorded as a `plan-archive-blocked` observation on the parent spec task) instead of forcing — the change stays open so the merge can be resolved by hand. Leave `auto_archive` off until you trust the lane to land cleanly; opt in per plan.
 
-Returns `{ plan_slug, spec_task_id, spec_change_path, subtasks: [{ subtask_index, branch, task_id, title }] }`. Errors: `PLAN_INVALID_DEPENDENCY`, `PLAN_SCOPE_OVERLAP`.
+Returns `{ plan_slug, spec_task_id, spec_change_path, subtasks: [{ subtask_index, branch, task_id, title }] }`. Errors: `PLAN_INVALID_WAVE_DEPENDENCY`, `PLAN_WAVE_SCOPE_OVERLAP`, `PLAN_FINALIZER_NOT_LAST`, `PLAN_SCOPE_OVERLAP`.
 
 ## `task_plan_list`
 

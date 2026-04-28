@@ -1,5 +1,10 @@
 import { type MemoryStore, TaskThread } from '@colony/core';
 import {
+  type PlanValidationErrorCode,
+  hasDependencyPath,
+  validateOrderedPlan,
+} from './plan-validation.js';
+import {
   type PlanCapabilityHint,
   type PlanWorkspaceTaskInput,
   createPlanWorkspace,
@@ -36,7 +41,10 @@ export interface PublishPlanResult {
   subtasks: Array<{ subtask_index: number; branch: string; task_id: number; title: string }>;
 }
 
-export type PublishPlanErrorCode = 'PLAN_INVALID_DEPENDENCY' | 'PLAN_SCOPE_OVERLAP';
+export type PublishPlanErrorCode =
+  | PlanValidationErrorCode
+  | 'PLAN_INVALID_DEPENDENCY'
+  | 'PLAN_SCOPE_OVERLAP';
 
 export class PublishPlanError extends Error {
   readonly code: PublishPlanErrorCode;
@@ -49,17 +57,10 @@ export class PublishPlanError extends Error {
 }
 
 export function publishPlan(args: PublishPlanInput): PublishPlanResult {
-  for (let i = 0; i < args.subtasks.length; i++) {
-    const subtask = args.subtasks[i];
-    if (!subtask) continue;
-    for (const dep of subtask.depends_on ?? []) {
-      if (dep >= i) {
-        throw new PublishPlanError(
-          'PLAN_INVALID_DEPENDENCY',
-          `sub-task ${i} depends on ${dep}; dependencies must point to earlier indices (no cycles)`,
-        );
-      }
-    }
+  const orderedPlanErrors = validateOrderedPlan(args.subtasks);
+  const firstOrderedPlanError = orderedPlanErrors[0];
+  if (firstOrderedPlanError !== undefined) {
+    throw new PublishPlanError(firstOrderedPlanError.code, firstOrderedPlanError.message);
   }
 
   const overlap = detectScopeOverlap(args.subtasks);
@@ -165,26 +166,12 @@ function detectScopeOverlap(
       const a = subtasks[i];
       const b = subtasks[j];
       if (!a || !b) continue;
-      if (isDependentChain(subtasks, i, j) || isDependentChain(subtasks, j, i)) continue;
+      if (hasDependencyPath(subtasks, i, j) || hasDependencyPath(subtasks, j, i)) continue;
       const shared = a.file_scope.filter((f) => b.file_scope.includes(f));
       if (shared.length > 0) return { a: i, b: j, shared };
     }
   }
   return null;
-}
-
-function isDependentChain(subtasks: PublishPlanSubtaskInput[], from: number, to: number): boolean {
-  const visited = new Set<number>();
-  const stack = [from];
-  while (stack.length > 0) {
-    const cur = stack.pop();
-    if (cur === undefined || visited.has(cur)) continue;
-    visited.add(cur);
-    const deps = subtasks[cur]?.depends_on ?? [];
-    if (deps.includes(to)) return true;
-    stack.push(...deps);
-  }
-  return false;
 }
 
 function renderProposal(args: {
