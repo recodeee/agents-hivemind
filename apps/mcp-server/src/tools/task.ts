@@ -1,7 +1,9 @@
-import { TaskThread } from '@colony/core';
+import { TaskThread, listPlans } from '@colony/core';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { ToolContext } from './context.js';
+
+const SUBTASK_BRANCH_RE = /^spec\/([a-z0-9-]+)\/sub-(\d+)$/;
 
 const RELAY_FALLBACK_POST_RULE = [
   'Fallback when task_relay is unavailable in your client tool surface: post a note or blocker containing reason, one_line, base_branch, fetch_files_at if known, touched files, and whether the named source branch/worktree is missing.',
@@ -34,12 +36,14 @@ export function register(server: McpServer, ctx: ToolContext): void {
     },
     async ({ task_id, limit }) => {
       const rows = store.storage.taskTimeline(task_id, limit ?? 50);
+      const planMetadata = compactPlanTimelineMetadata(store, task_id);
       const compact = rows.map((r) => ({
         id: r.id,
         kind: r.kind,
         session_id: r.session_id,
         ts: r.ts,
         reply_to: r.reply_to,
+        ...(planMetadata ?? {}),
       }));
       return { content: [{ type: 'text', text: JSON.stringify(compact) }] };
     },
@@ -182,4 +186,40 @@ export function register(server: McpServer, ctx: ToolContext): void {
       return { content: [{ type: 'text', text: JSON.stringify(links) }] };
     },
   );
+}
+
+function compactPlanTimelineMetadata(
+  store: ToolContext['store'],
+  task_id: number,
+): {
+  plan_slug: string;
+  subtask_index: number;
+  wave_index: number;
+  wave_name: string;
+  depends_on: number[];
+  blocked_by: number[];
+} | null {
+  const task = store.storage.listTasks(2000).find((candidate) => candidate.id === task_id);
+  const match = task?.branch.match(SUBTASK_BRANCH_RE);
+  if (!task || !match) return null;
+
+  const planSlug = match[1];
+  const rawSubtaskIndex = match[2];
+  if (!planSlug || rawSubtaskIndex === undefined) return null;
+
+  const subtaskIndex = Number(rawSubtaskIndex);
+  const plan = listPlans(store, { repo_root: task.repo_root, limit: 2000 }).find(
+    (candidate) => candidate.plan_slug === planSlug,
+  );
+  const subtask = plan?.subtasks.find((candidate) => candidate.subtask_index === subtaskIndex);
+  if (!subtask) return null;
+
+  return {
+    plan_slug: planSlug,
+    subtask_index: subtask.subtask_index,
+    wave_index: subtask.wave_index ?? 0,
+    wave_name: subtask.wave_name ?? 'Wave 1',
+    depends_on: subtask.depends_on,
+    blocked_by: subtask.blocked_by ?? [],
+  };
 }

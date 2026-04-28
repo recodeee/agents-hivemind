@@ -25,8 +25,34 @@ interface PlanRollup {
   plan_slug: string;
   title: string;
   subtask_counts: Record<string, number>;
-  next_available: Array<{ subtask_index: number; capability_hint: string | null }>;
-  subtasks: Array<{ subtask_index: number; status: string; claimed_by_session_id: string | null }>;
+  next_available: Array<PlanSubtaskSummary>;
+  subtasks: PlanSubtaskSummary[];
+}
+
+interface PlanSubtaskSummary {
+  subtask_index: number;
+  status: string;
+  capability_hint: string | null;
+  claimed_by_session_id: string | null;
+  depends_on: number[];
+  wave_index: number;
+  wave_name: string;
+  blocked_by: number[];
+}
+
+interface TimelineRow {
+  id: number;
+  kind: string;
+  session_id: string;
+  ts: number;
+  reply_to: number | null;
+  plan_slug?: string;
+  subtask_index?: number;
+  wave_index?: number;
+  wave_name?: string;
+  depends_on?: number[];
+  blocked_by?: number[];
+  content?: string;
 }
 
 interface ClaimResult {
@@ -235,6 +261,50 @@ describe('task_plan_list', () => {
     expect(plans[0]?.subtask_counts.available).toBe(2);
     // sub-1 depends on sub-0, so only sub-0 is in next_available initially
     expect(plans[0]?.next_available.map((s) => s.subtask_index)).toEqual([0]);
+  });
+
+  it('adds compact wave metadata to plan list output', async () => {
+    await call<PublishResult>('task_plan_publish', basicPublishArgs());
+    const plans = await call<PlanRollup[]>('task_plan_list', {});
+    expect(plans[0]?.subtasks.map((s) => s.subtask_index)).toEqual([0, 1]);
+    expect(plans[0]?.subtasks[0]).toMatchObject({
+      subtask_index: 0,
+      depends_on: [],
+      wave_index: 0,
+      wave_name: 'Wave 1',
+      blocked_by: [],
+    });
+    expect(plans[0]?.subtasks[1]).toMatchObject({
+      subtask_index: 1,
+      depends_on: [0],
+      wave_index: 1,
+      wave_name: 'Wave 2',
+      blocked_by: [0],
+    });
+    expect(plans[0]?.next_available[0]).toMatchObject({
+      subtask_index: 0,
+      wave_index: 0,
+      blocked_by: [],
+    });
+  });
+
+  it('adds compact wave metadata to task_timeline without expanding bodies', async () => {
+    const published = await call<PublishResult>('task_plan_publish', basicPublishArgs());
+    const sub1 = published.subtasks.find((subtask) => subtask.subtask_index === 1);
+    if (!sub1) throw new Error('expected sub-task 1 to be published');
+
+    const timeline = await call<TimelineRow[]>('task_timeline', { task_id: sub1.task_id });
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]).toMatchObject({
+      kind: 'plan-subtask',
+      plan_slug: 'add-widget-page',
+      subtask_index: 1,
+      wave_index: 1,
+      wave_name: 'Wave 2',
+      depends_on: [0],
+      blocked_by: [0],
+    });
+    expect(timeline[0]).not.toHaveProperty('content');
   });
 
   it('filters by capability_match against next_available sub-tasks', async () => {
