@@ -29,13 +29,19 @@ export class MemoryStore {
 
   // --- sessions ---
 
-  startSession(p: { id: string; ide: string; cwd: string | null }): void {
+  startSession(p: {
+    id: string;
+    ide: string;
+    cwd: string | null;
+    startedAt?: number;
+    metadata?: Record<string, unknown> | null;
+  }): void {
     this.storage.createSession({
       id: p.id,
       ide: p.ide,
       cwd: p.cwd,
-      started_at: Date.now(),
-      metadata: null,
+      started_at: p.startedAt ?? Date.now(),
+      metadata: serializeSessionMetadata(p.metadata),
     });
   }
 
@@ -201,6 +207,12 @@ export class MemoryStore {
       };
     });
   }
+}
+
+function serializeSessionMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+): string | null {
+  return metadata ? JSON.stringify(metadata) : null;
 }
 
 export interface Embedder {

@@ -962,6 +962,21 @@ describe('MCP server', () => {
       expect(afterConnect.branch).toBe('hb-branch');
       expect(afterConnect.cliName).toBe('codex');
       expect(afterConnect.state).toBe('working');
+      const sessionRow = isolatedStore.storage.getSession('hb-session-1');
+      expect(sessionRow).toMatchObject({
+        id: 'hb-session-1',
+        ide: 'codex',
+        cwd: repoRoot,
+        ended_at: null,
+      });
+      const sessionMetadata = JSON.parse(sessionRow?.metadata ?? '{}') as Record<string, string>;
+      expect(sessionMetadata).toMatchObject({
+        source: 'omx-active-session',
+        cli: 'codex',
+        repo_root: repoRoot,
+        branch: 'hb-branch',
+        worktree_path: repoRoot,
+      });
       const connectHeartbeat = afterConnect.lastHeartbeatAt;
 
       await new Promise((r) => setTimeout(r, 5));
