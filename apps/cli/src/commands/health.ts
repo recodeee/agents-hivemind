@@ -211,9 +211,25 @@ function codexPrompt(input: {
   return `Goal: ${input.goal} | Current: ${input.current} | Inspect: ${input.inspect} | Accept: ${input.acceptance}`;
 }
 
+type ReadinessStatus = 'good' | 'ok' | 'bad';
+
+interface ReadinessSummaryItem {
+  status: ReadinessStatus;
+  evidence: string;
+}
+
+interface ReadinessSummaryPayload {
+  coordination_readiness: ReadinessSummaryItem;
+  execution_safety: ReadinessSummaryItem;
+  queen_plan_readiness: ReadinessSummaryItem;
+  working_state_migration: ReadinessSummaryItem;
+  signal_evaporation: ReadinessSummaryItem;
+}
+
 export interface ColonyHealthPayload {
   generated_at: string;
   window_hours: number;
+  readiness_summary: ReadinessSummaryPayload;
   colony_mcp_share: SharePayload;
   conversions: Record<ConversionName, ConversionPayload>;
   task_list_vs_task_ready_for_agent: TaskSelectionPayload;
@@ -229,7 +245,10 @@ export interface ColonyHealthPayload {
   action_hints: ActionHint[];
 }
 
-type ColonyHealthPayloadWithoutHints = Omit<ColonyHealthPayload, 'action_hints'>;
+type ColonyHealthPayloadWithoutHints = Omit<
+  ColonyHealthPayload,
+  'readiness_summary' | 'action_hints'
+>;
 
 export function buildColonyHealthPayload(
   storage: Pick<
@@ -336,8 +355,11 @@ export function buildColonyHealthPayload(
     }),
   };
 
+  const readinessSummary = readinessSummaryPayload(payload);
+
   return {
     ...payload,
+    readiness_summary: readinessSummary,
     action_hints: healthActionHints(payload),
   };
 }
@@ -351,6 +373,9 @@ export function formatColonyHealthOutput(
   const lines = [
     kleur.bold('colony health'),
     kleur.dim(`window: last ${payload.window_hours}h`),
+    '',
+    kleur.bold('Readiness summary'),
+    ...formatReadinessSummary(payload.readiness_summary),
     '',
     kleur.bold('Colony MCP share'),
     `  all tools: ${countRatio(
@@ -522,6 +547,111 @@ export function formatColonyHealthOutput(
   }
 
   return lines.join('\n');
+}
+
+function readinessSummaryPayload(
+  payload: ColonyHealthPayloadWithoutHints,
+): ReadinessSummaryPayload {
+  const mcpShare = payload.colony_mcp_share.share_of_mcp_tool_calls;
+  const hivemindToInbox = payload.conversions.hivemind_context_to_attention_inbox;
+  const hasCoordinationSignals =
+    payload.colony_mcp_share.colony_mcp_tool_calls > 0 ||
+    hivemindToInbox.from_calls > 0 ||
+    hivemindToInbox.to_calls > 0;
+  const coordinationStatus: ReadinessStatus =
+    mcpShare !== null &&
+    mcpShare > 0 &&
+    isAtOrAboveTarget(hivemindToInbox.conversion_rate, TARGET_HIVEMIND_TO_ATTENTION)
+      ? 'good'
+      : hasCoordinationSignals
+        ? 'ok'
+        : 'bad';
+
+  const claimBeforeEdit = payload.task_claim_file_before_edits;
+  const executionStatus: ReadinessStatus =
+    claimBeforeEdit.claim_before_edit_ratio !== null
+      ? isAtOrAboveTarget(claimBeforeEdit.claim_before_edit_ratio, TARGET_CLAIM_BEFORE_EDIT)
+        ? 'good'
+        : 'bad'
+      : claimBeforeEdit.edit_tool_calls === 0 || claimBeforeEdit.task_claim_file_calls > 0
+        ? 'ok'
+        : 'bad';
+
+  const queen = payload.queen_wave_health;
+  const queenStatus: ReadinessStatus =
+    queen.active_plans > 0
+      ? queen.ready_subtasks + queen.claimed_subtasks > 0
+        ? 'good'
+        : 'ok'
+      : 'bad';
+
+  const noteMigration = payload.task_post_vs_omx_notepad;
+  const noteStatus: ReadinessStatus =
+    noteMigration.colony_note_share !== null
+      ? isAtOrAboveTarget(noteMigration.colony_note_share, TARGET_COLONY_NOTE_SHARE)
+        ? 'good'
+        : 'bad'
+      : noteMigration.status === 'unavailable'
+        ? 'ok'
+        : 'bad';
+
+  const signals = payload.signal_health;
+  const signalStatus: ReadinessStatus =
+    signals.stale_claims === 0 && queen.stale_claims_blocking_downstream === 0
+      ? signals.expired_handoffs === 0 && signals.expired_messages === 0
+        ? 'good'
+        : 'ok'
+      : 'bad';
+
+  return {
+    coordination_readiness: {
+      status: coordinationStatus,
+      evidence: `MCP share ${formatPercent(mcpShare)}; hivemind->inbox ${formatPercent(
+        hivemindToInbox.conversion_rate,
+      )} (target ${formatPercent(TARGET_HIVEMIND_TO_ATTENTION)}+)`,
+    },
+    execution_safety: {
+      status: executionStatus,
+      evidence: `claim-before-edit ${formatPercent(
+        claimBeforeEdit.claim_before_edit_ratio,
+      )} (target ${formatPercent(TARGET_CLAIM_BEFORE_EDIT)}+)`,
+    },
+    queen_plan_readiness: {
+      status: queenStatus,
+      evidence: `${queen.active_plans} active plan(s); ${queen.ready_subtasks} ready, ${queen.claimed_subtasks} claimed`,
+    },
+    working_state_migration: {
+      status: noteStatus,
+      evidence: `colony note share ${formatPercent(
+        noteMigration.colony_note_share,
+      )} (target ${formatPercent(TARGET_COLONY_NOTE_SHARE)}+)`,
+    },
+    signal_evaporation: {
+      status: signalStatus,
+      evidence: `${signals.stale_claims} stale claim(s); ${queen.stale_claims_blocking_downstream} downstream blocker(s)`,
+    },
+  };
+}
+
+function formatReadinessSummary(summary: ReadinessSummaryPayload): string[] {
+  return [
+    formatReadinessItem('coordination_readiness', summary.coordination_readiness),
+    formatReadinessItem('execution_safety', summary.execution_safety),
+    formatReadinessItem('queen_plan_readiness', summary.queen_plan_readiness),
+    formatReadinessItem('working_state_migration', summary.working_state_migration),
+    formatReadinessItem('signal_evaporation', summary.signal_evaporation),
+  ];
+}
+
+function formatReadinessItem(label: string, item: ReadinessSummaryItem): string {
+  return `  ${label.padEnd(25)} ${formatReadinessStatus(item.status)} ${item.evidence}`;
+}
+
+function formatReadinessStatus(status: ReadinessStatus): string {
+  const label = status.padEnd(4);
+  if (status === 'good') return kleur.green(label);
+  if (status === 'bad') return kleur.red(label);
+  return kleur.yellow(label);
 }
 
 export function registerHealthCommand(program: Command): void {
@@ -1285,6 +1415,10 @@ function ratio(numerator: number, denominator: number): number | null {
 
 function isBelowTarget(value: number | null, target: number): boolean {
   return value !== null && value < target;
+}
+
+function isAtOrAboveTarget(value: number | null, target: number): boolean {
+  return value !== null && value >= target;
 }
 
 function countRatio(numerator: number, denominator: number, value: number | null): string {

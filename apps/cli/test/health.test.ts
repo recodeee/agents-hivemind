@@ -190,6 +190,28 @@ describe('colony health payload', () => {
         }),
       ],
     });
+    expect(payload.readiness_summary).toMatchObject({
+      coordination_readiness: {
+        status: 'good',
+        evidence: expect.stringContaining('MCP share 87%; hivemind->inbox 50%'),
+      },
+      execution_safety: {
+        status: 'good',
+        evidence: expect.stringContaining('claim-before-edit 50%'),
+      },
+      queen_plan_readiness: {
+        status: 'good',
+        evidence: expect.stringContaining('1 active plan(s); 1 ready, 1 claimed'),
+      },
+      working_state_migration: {
+        status: 'bad',
+        evidence: expect.stringContaining('colony note share 50%'),
+      },
+      signal_evaporation: {
+        status: 'bad',
+        evidence: expect.stringContaining('1 stale claim(s); 0 downstream blocker(s)'),
+      },
+    });
     expect(payload.adoption_thresholds.good).toContainEqual(
       expect.objectContaining({
         name: 'hivemind_context rising',
@@ -207,6 +229,13 @@ describe('colony health payload', () => {
 
     const text = formatColonyHealthOutput(payload);
     expect(text).toContain('colony health');
+    expect(text).toContain('Readiness summary');
+    expect(text.indexOf('Readiness summary')).toBeLessThan(text.indexOf('Colony MCP share'));
+    expect(text).toContain('coordination_readiness');
+    expect(text).toContain('execution_safety');
+    expect(text).toContain('queen_plan_readiness');
+    expect(text).toContain('working_state_migration');
+    expect(text).toContain('signal_evaporation');
     expect(text).toContain('Colony MCP share');
     expect(text).toContain('hivemind_context -> attention_inbox: 1 / 2 (50%) sessions');
     expect(text).toContain('attention_inbox -> task_ready_for_agent: 1 / 1 (100%) sessions');
@@ -301,6 +330,12 @@ describe('colony health payload', () => {
 
     const json = JSON.parse(formatColonyHealthOutput(payload, { json: true }));
 
+    expect(json).toHaveProperty('readiness_summary');
+    expect(json.readiness_summary).toHaveProperty('coordination_readiness');
+    expect(json.readiness_summary).toHaveProperty('execution_safety');
+    expect(json.readiness_summary).toHaveProperty('queen_plan_readiness');
+    expect(json.readiness_summary).toHaveProperty('working_state_migration');
+    expect(json.readiness_summary).toHaveProperty('signal_evaporation');
     expect(json).toHaveProperty('colony_mcp_share');
     expect(json).toHaveProperty('conversions');
     expect(json).toHaveProperty('task_list_vs_task_ready_for_agent');
