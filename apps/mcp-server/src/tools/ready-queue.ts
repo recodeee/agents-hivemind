@@ -3,7 +3,6 @@ import {
   type ClaimHolder,
   type McpCapabilityMap,
   type MemoryStore,
-  type McpCapabilityMap,
   type SubtaskInfo,
   claimsForPaths,
   discoverMcpCapabilities,
@@ -622,7 +621,11 @@ function applyRuntimeRouting(
 
   const signal = runtimeRoutingSignal(store, task, requestedAgent, repoRoot);
   if (!signal.shouldRouteAway) {
-    return { ...task, assigned_agent: requestedAgent, routing_reason: signal.reason };
+    return {
+      ...task,
+      assigned_agent: requestedAgent,
+      routing_reason: signal.reason,
+    };
   }
 
   return {
@@ -751,6 +754,7 @@ function candidateAgents(store: MemoryStore, repoRoot: string | undefined): stri
   const agents = new Set<string>();
   for (const row of store.storage.listAgentProfiles()) agents.add(row.agent);
   for (const session of store.storage.listSessions(500)) {
+    if (repoRoot !== undefined && session.cwd !== repoRoot) continue;
     const ide = session.ide?.trim();
     if (ide) agents.add(ide);
     const prefix = session.id.includes('@') ? session.id.split('@')[0]?.trim() : '';
