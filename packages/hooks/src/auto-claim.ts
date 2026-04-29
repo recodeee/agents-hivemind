@@ -1,5 +1,5 @@
 import { isAbsolute, relative, resolve } from 'node:path';
-import { type MemoryStore, detectRepoBranch } from '@colony/core';
+import { type MemoryStore, detectRepoBranch, normalizeClaimPath } from '@colony/core';
 
 export interface ActiveTaskCandidate {
   task_id: number;
@@ -46,7 +46,8 @@ export type AutoClaimFailureCode =
   | 'ACTIVE_TASK_NOT_FOUND'
   | 'AMBIGUOUS_ACTIVE_TASK'
   | 'SESSION_NOT_FOUND'
-  | 'COLONY_UNAVAILABLE';
+  | 'COLONY_UNAVAILABLE'
+  | 'UNCLAIMABLE_FILE_PATH';
 
 export interface AutoClaimFileForSessionInput {
   session_id: string;
@@ -197,9 +198,24 @@ export function autoClaimFileForSession(
     }
 
     const candidate = binding.candidate;
+    const normalizedFilePath = normalizeClaimPath({
+      repo_root: candidate.repo_root,
+      cwd: input.cwd ?? input.worktree_path,
+      file_path: input.file_path,
+    });
+    if (normalizedFilePath === null) {
+      return {
+        ok: false,
+        code: 'UNCLAIMABLE_FILE_PATH',
+        resolution: 'not_found',
+        error: `file path is not claimable: ${input.file_path}`,
+        candidates: [candidate],
+      };
+    }
+    const normalizedInput = { ...input, file_path: normalizedFilePath };
     ensureTaskParticipant(store, candidate, input.session_id);
 
-    const existing = store.storage.getClaim(candidate.task_id, input.file_path);
+    const existing = store.storage.getClaim(candidate.task_id, normalizedFilePath);
     if (existing?.session_id === input.session_id) {
       return {
         ok: true,
@@ -219,11 +235,11 @@ export function autoClaimFileForSession(
         store.addObservation({
           session_id: input.session_id,
           kind: 'claim-conflict',
-          content: `${input.session_id} edited ${input.file_path} while ${previousClaimSession} held the claim`,
+          content: `${input.session_id} edited ${normalizedFilePath} while ${previousClaimSession} held the claim`,
           task_id: candidate.task_id,
           metadata: {
             source: input.source ?? 'autoClaimFileForSession',
-            file_path: input.file_path,
+            file_path: normalizedFilePath,
             ...(input.tool !== undefined ? { tool: input.tool } : {}),
             other_session: previousClaimSession,
           },
@@ -232,18 +248,18 @@ export function autoClaimFileForSession(
 
       store.storage.claimFile({
         task_id: candidate.task_id,
-        file_path: input.file_path,
+        file_path: normalizedFilePath,
         session_id: input.session_id,
       });
       return store.addObservation({
         session_id: input.session_id,
         kind,
-        content: claimContent(kind, input),
+        content: claimContent(kind, normalizedInput),
         task_id: candidate.task_id,
         metadata: {
           kind,
           source: input.source ?? 'autoClaimFileForSession',
-          file_path: input.file_path,
+          file_path: normalizedFilePath,
           resolved_by: input.resolved_by ?? 'autoClaimFileForSession',
           ...(input.auto_claimed_before_edit === true ? { auto_claimed_before_edit: true } : {}),
           ...(input.tool !== undefined ? { tool: input.tool } : {}),

@@ -318,6 +318,47 @@ describe('colony health payload', () => {
     expect(text).not.toContain('\n  Bad\n');
   });
 
+  it('renders claim miss reason diagnostics in text and JSON payloads', () => {
+    const payload = buildColonyHealthPayload(
+      fakeStorage({
+        calls: [call(1, 'codex-alpha-session', 'Edit', NOW - 1_000)],
+        claimBeforeEdit: {
+          edit_tool_calls: 1,
+          edits_with_file_path: 1,
+          edits_claimed_before: 0,
+          claim_miss_reasons: {
+            no_claim_for_file: 0,
+            claim_after_edit: 1,
+            session_id_mismatch: 2,
+            path_mismatch: 3,
+            repo_root_mismatch: 4,
+            branch_mismatch: 5,
+            worktree_path_mismatch: 0,
+            pseudo_path_skipped: 6,
+            pre_tool_use_missing: 7,
+          },
+        },
+      }),
+      { since: SINCE, window_hours: 24, now: NOW, codex_sessions_root: NO_CODEX_ROOT },
+    );
+
+    expect(payload.task_claim_file_before_edits.claim_miss_reasons).toMatchObject({
+      claim_after_edit: 1,
+      session_id_mismatch: 2,
+      path_mismatch: 3,
+      repo_root_mismatch: 4,
+      branch_mismatch: 5,
+      pseudo_path_skipped: 6,
+      pre_tool_use_missing: 7,
+    });
+    const text = formatColonyHealthOutput(payload);
+    expect(text).toContain('why claims did not match edits:');
+    expect(text).toContain('claim_after_edit: 1');
+    expect(text).toContain('session_id_mismatch: 2');
+    expect(text).toContain('repo_root_mismatch: 4');
+    expect(text).toContain('branch_mismatch: 5');
+  });
+
   it('keeps expired claims out of stale and active health counts', () => {
     const payload = buildColonyHealthPayload(
       fakeStorage({

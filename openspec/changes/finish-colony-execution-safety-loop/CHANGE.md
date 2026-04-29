@@ -10,47 +10,47 @@ slug: finish-colony-execution-safety-loop
 
 ## Problem
 
-Colony health currently reports zero Queen plan readiness even though execution-safety work needs claimable, wave-based subtasks. Publish an active plan so task_ready_for_agent can surface first-wave task_plan_claim_subtask arguments and the health surface can prove nonzero readiness.
+Coordination adoption is green, but claim-before-edit diagnostics and Queen plan execution are red. Health must explain why task_claim_file calls do not count before edits, and active plan work must become claimable through task_ready_for_agent.
 
 ## Acceptance criteria
 
-- Colony health reports active plans > 0.
-- Colony health reports plan subtasks > 0.
-- Colony health reports ready to claim > 0.
-- task_ready_for_agent returns a ready first-wave item with task_plan_claim_subtask args.
-- Active plan health has regression coverage.
+- claim/edit correlation diagnostics explain why task_claim_file calls do not count before edits.
+- active plan exists with claimable subtasks.
+- task_ready_for_agent returns task_plan_claim_subtask args for ready work.
+- task_plan_claim_subtask is used for the active execution-safety lane.
+- targeted tests cover claim miss diagnostics, path normalization, fallback matching, bridge signal distinctions, and Queen readiness.
 
 ## Sub-tasks
 
 ### Sub-task 0: Claim/edit correlation diagnostics
 
-Tighten diagnostics that correlate file claims with edits so execution-safety health can explain missing or mismatched claim coverage.
+Explain why task_claim_file calls fail to count before edits, with miss reason buckets and JSON/text health output.
 
-File scope: packages/storage/src/storage.ts, packages/storage/test/coordination-activity.test.ts
+File scope: packages/storage/src/storage.ts, packages/storage/src/types.ts, apps/cli/src/commands/health.ts, packages/storage/test/coordination-activity.test.ts, apps/cli/test/health.test.ts
 
-### Sub-task 1: Path normalization
+### Sub-task 1: Path normalization parity
 
-Normalize claim and edit paths consistently before matching so equivalent repo-relative paths do not fragment readiness or safety diagnostics.
+Normalize claim and edit file paths through one shared storage helper, including absolute, relative, worktree, dot-prefix, and pseudo-path cases.
 
-File scope: packages/storage/src/claim-path.ts, packages/storage/test/claim-path.test.ts
+File scope: packages/storage/src/claim-path.ts, packages/storage/src/index.ts, packages/core/src/index.ts, packages/core/src/task-thread.ts, packages/hooks/src/auto-claim.ts, packages/storage/test/tasks.test.ts, packages/hooks/test/auto-claim.test.ts
 
-### Sub-task 2: Session/branch fallback matching
+### Sub-task 2: Session and lane fallback matching
 
-Add fallback matching between session and branch identities when exact ownership metadata is incomplete, while preserving explicit conflict signals.
+Count health coverage when a prior claim matches repo/branch/file or worktree/file within the window even if session ids differ, while keeping exact-session match source visible.
 
-File scope: packages/core/src/task-thread.ts, packages/core/src/index.ts
+File scope: packages/storage/src/storage.ts, packages/storage/src/types.ts, packages/storage/test/coordination-activity.test.ts, apps/cli/src/commands/health.ts, apps/cli/test/health.test.ts
 
-### Sub-task 3: Codex/OMX bridge signals (depends on: 0, 1, 2)
+### Sub-task 3: Bridge signal instrumentation (depends on: 0)
 
-Expose Codex/OMX bridge signals into the execution-safety loop so health and readiness can route work without stale zero counts.
+Separate native PreToolUse, Codex/OMX bridge, late bridge claims, and missing lifecycle signals in health metrics.
 
-File scope: apps/mcp-server/src/tools/task.ts, packages/hooks/src/auto-claim.ts, packages/hooks/src/handlers/pre-tool-use.ts, packages/hooks/src/handlers/post-tool-use.ts
+File scope: packages/hooks/src/handlers/pre-tool-use.ts, packages/hooks/src/lifecycle-envelope.ts, packages/hooks/test/lifecycle-envelope.test.ts
 
-### Sub-task 4: Health verification (depends on: 0, 1, 2, 3)
+### Sub-task 4: Execution-safety health verification (depends on: 0, 1, 2, 3)
 
-Verify active plan health and ready-work reporting end to end, including task_ready_for_agent conversion args for the first wave.
+Verify active plan readiness, claim miss diagnostics, and health output with targeted CLI/storage tests.
 
-File scope: apps/cli/test/queen-health.test.ts, packages/storage/src/index.ts
+File scope: apps/cli/test/queen-health.test.ts, apps/cli/test/health-next-fixes.test.ts, apps/cli/test/health.test.ts
 
 
 ## §S  delta

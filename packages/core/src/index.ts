@@ -209,6 +209,8 @@ export {
   type TaskStatus,
 } from './suggestion-payload.js';
 export { buildDiscrepancyReport, type DiscrepancyReport } from './discrepancy.js';
+export { isPseudoClaimPath, normalizeClaimPath, normalizeRepoFilePath } from '@colony/storage';
+export type { ClaimPathContext, RepoFilePathContext } from '@colony/storage';
 export {
   buildCoordinationSweep,
   type BlockedDownstreamTaskSignal,

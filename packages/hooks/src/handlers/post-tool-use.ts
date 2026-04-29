@@ -1,5 +1,12 @@
 import path from 'node:path';
-import { type MemoryStore, PheromoneSystem, ProposalSystem, detectRepoBranch } from '@colony/core';
+import {
+  type MemoryStore,
+  PheromoneSystem,
+  ProposalSystem,
+  detectRepoBranch,
+  isPseudoClaimPath,
+  normalizeClaimPath,
+} from '@colony/core';
 import { activeTaskCandidatesForSession, autoClaimFileForSession } from '../auto-claim.js';
 import { type BashCoordinationEvent, parseBashCoordinationEvents } from '../bash-parser.js';
 import { ensureHookTaskForSession, mirrorTaskToolUse } from '../task-mirror.js';
@@ -15,19 +22,7 @@ const WRITE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 const APPLY_PATCH_TOOLS = new Set(['apply_patch', 'ApplyPatch', 'Patch']);
 const DIRECT_PATH_FIELDS = ['file_path', 'path', 'notebook_path'];
 const PATH_ARRAY_FIELDS = ['file_paths', 'extracted_paths'];
-const PSEUDO_HOOK_FILE_PATHS = new Set([
-  '/dev/null',
-  'dev/null',
-  '/dev/stdin',
-  'dev/stdin',
-  '/dev/stdout',
-  'dev/stdout',
-  '/dev/stderr',
-  'dev/stderr',
-  'stdout',
-  'stderr',
-  'NUL',
-]);
+const PSEUDO_HOOK_FILE_PATHS = new Set(['stdout', 'stderr']);
 
 type TouchedPathContext = {
   cwd?: string | undefined;
@@ -145,10 +140,10 @@ function normalizeBashEventPaths(
           ),
         });
       case 'auto-claim':
-        return compactAutoClaimEvent({
-          ...event,
-          file_path: normalizeHookFilePath(event.file_path, { ...context, relativeToCwd: true }),
-        });
+        return compactAutoClaimEvent(
+          event,
+          normalizeHookFilePath(event.file_path, { ...context, relativeToCwd: true }),
+        );
     }
   });
 }
@@ -161,34 +156,26 @@ function compactFileOpEvent(
 
 function compactAutoClaimEvent(
   event: BashCoordinationEvent & { kind: 'auto-claim' },
+  filePath: string | null,
 ): BashCoordinationEvent[] {
-  return isPseudoHookFilePath(event.file_path) ? [] : [event];
+  return filePath ? [{ ...event, file_path: filePath }] : [];
 }
 
-function normalizeHookFilePath(rawPath: string, context: TouchedPathContext): string {
-  const repoRoot = context.repoRoot ? path.resolve(context.repoRoot) : undefined;
-  const cwd = context.cwd ? path.resolve(context.cwd) : repoRoot;
+function normalizeHookFilePath(rawPath: string, context: TouchedPathContext): string | null {
   if (!path.isAbsolute(rawPath) && !context.relativeToCwd) {
-    return normalizeSlashes(path.normalize(rawPath));
+    return normalizeClaimPath({
+      repo_root: context.repoRoot,
+      cwd: context.repoRoot,
+      file_path: rawPath,
+    });
   }
-
-  const absolutePath = path.isAbsolute(rawPath)
-    ? path.normalize(rawPath)
-    : cwd && repoRoot
-      ? path.resolve(cwd, rawPath)
-      : undefined;
-
-  if (!absolutePath) return normalizeSlashes(path.normalize(rawPath));
-  if (repoRoot && isPathInside(absolutePath, repoRoot)) {
-    const relativePath = path.relative(repoRoot, absolutePath);
-    return relativePath ? normalizeSlashes(relativePath) : '.';
-  }
-  return normalizeSlashes(absolutePath);
-}
-
-function isPathInside(child: string, parent: string): boolean {
-  const relativePath = path.relative(parent, child);
-  return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+  const filePath =
+    context.cwd && !path.isAbsolute(rawPath) ? path.resolve(context.cwd, rawPath) : rawPath;
+  return normalizeClaimPath({
+    repo_root: context.repoRoot,
+    cwd: context.cwd,
+    file_path: filePath,
+  });
 }
 
 function applyBashRedirectAutoClaims(
@@ -255,19 +242,16 @@ function unique(values: string[]): string[] {
   return Array.from(new Set(values));
 }
 
-function normalizeSlashes(value: string): string {
-  return value.replaceAll(path.sep, '/');
-}
-
-function filterClaimableHookFilePaths(values: string[]): string[] {
+function filterClaimableHookFilePaths(values: Array<string | null>): string[] {
   return unique(
-    values.map((value) => value.trim()).filter((value) => value && !isPseudoHookFilePath(value)),
+    values
+      .map((value) => value?.trim() ?? '')
+      .filter((value) => value && !isPseudoHookFilePath(value)),
   );
 }
 
 function isPseudoHookFilePath(value: string): boolean {
-  const normalized = normalizeSlashes(path.normalize(value.trim()));
-  return PSEUDO_HOOK_FILE_PATHS.has(normalized);
+  return isPseudoClaimPath(value) || PSEUDO_HOOK_FILE_PATHS.has(value.trim());
 }
 
 /**

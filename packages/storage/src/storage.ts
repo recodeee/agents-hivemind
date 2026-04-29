@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { dirname, isAbsolute, normalize, relative, resolve } from 'node:path';
 import Database from 'better-sqlite3';
+import { normalizeClaimPath } from './claim-path.js';
 import { COLUMN_MIGRATIONS, POST_MIGRATION_SQL, SCHEMA_SQL } from './schema.js';
 import {
   COORDINATION_COMMIT_TOOLS,
@@ -487,6 +488,9 @@ export class Storage {
            END,
            metadata = CASE
              WHEN sessions.metadata IS NULL AND excluded.metadata IS NOT NULL THEN excluded.metadata
+             WHEN json_extract(sessions.metadata, '$.source') LIKE 'process-env:%'
+               AND json_extract(excluded.metadata, '$.source') = 'omx-active-session'
+               THEN excluded.metadata
              WHEN sessions.ide IN ('unknown', 'unbound')
                AND excluded.ide NOT IN ('unknown', 'unbound')
                AND excluded.metadata IS NOT NULL THEN excluded.metadata
@@ -1054,6 +1058,8 @@ export class Storage {
   }
 
   claimFile(c: { task_id: number; file_path: string; session_id: string }): void {
+    const filePath = this.normalizeTaskFilePath(c.task_id, c.file_path);
+    if (filePath === null) return;
     // REPLACE semantics: the latest claimer wins. Handoffs atomically swap
     // ownership, so the invariant "at most one owner per (task, file)" is
     // preserved by the transaction, not by the primary key alone.
@@ -1061,27 +1067,61 @@ export class Storage {
       .prepare(
         'INSERT OR REPLACE INTO task_claims(task_id, file_path, session_id, claimed_at) VALUES (?, ?, ?, ?)',
       )
-      .run(c.task_id, c.file_path, c.session_id, Date.now());
+      .run(c.task_id, filePath, c.session_id, Date.now());
   }
 
   releaseClaim(c: { task_id: number; file_path: string; session_id: string }): void {
+    const filePaths = this.matchingClaimFilePaths(c.task_id, c.file_path);
+    if (filePaths.length === 0) return;
     // Only the current owner can release. Prevents a stale handoff from
     // silently dropping claims another agent already took over.
-    this.db
-      .prepare('DELETE FROM task_claims WHERE task_id = ? AND file_path = ? AND session_id = ?')
-      .run(c.task_id, c.file_path, c.session_id);
+    const stmt = this.db.prepare(
+      'DELETE FROM task_claims WHERE task_id = ? AND file_path = ? AND session_id = ?',
+    );
+    for (const filePath of filePaths) stmt.run(c.task_id, filePath, c.session_id);
   }
 
   getClaim(task_id: number, file_path: string): TaskClaimRow | undefined {
-    return this.db
+    const exact = this.db
       .prepare('SELECT * FROM task_claims WHERE task_id = ? AND file_path = ?')
       .get(task_id, file_path) as TaskClaimRow | undefined;
+    if (exact) return exact;
+    const normalized = this.normalizeTaskFilePath(task_id, file_path);
+    if (normalized === null || normalized === file_path) return undefined;
+    const normalizedExact = this.db
+      .prepare('SELECT * FROM task_claims WHERE task_id = ? AND file_path = ?')
+      .get(task_id, normalized) as TaskClaimRow | undefined;
+    if (normalizedExact) return normalizedExact;
+    return this.listClaims(task_id).find(
+      (claim) => this.normalizeTaskFilePath(task_id, claim.file_path) === normalized,
+    );
   }
 
   listClaims(task_id: number): TaskClaimRow[] {
     return this.db
       .prepare('SELECT * FROM task_claims WHERE task_id = ? ORDER BY claimed_at ASC')
       .all(task_id) as TaskClaimRow[];
+  }
+
+  normalizeTaskFilePath(task_id: number, file_path: string, cwd?: string): string | null {
+    const task = this.getTask(task_id);
+    return normalizeClaimPath({
+      repo_root: task?.repo_root,
+      cwd,
+      file_path,
+    });
+  }
+
+  private matchingClaimFilePaths(task_id: number, file_path: string): string[] {
+    const normalized = this.normalizeTaskFilePath(task_id, file_path);
+    if (normalized === null) return [];
+    const matches = new Set<string>([file_path, normalized]);
+    for (const claim of this.listClaims(task_id)) {
+      if (this.normalizeTaskFilePath(task_id, claim.file_path) === normalized) {
+        matches.add(claim.file_path);
+      }
+    }
+    return [...matches];
   }
 
   /**
@@ -1649,7 +1689,7 @@ export class Storage {
     since_ts: number,
     limit = 20,
   ): Array<{ session_id: string; file_path: string; ts: number; task_id: number | null }> {
-    return this.db
+    const edits = this.db
       .prepare(
         `SELECT o.session_id,
                 json_extract(o.metadata, '$.file_path') AS file_path,
@@ -1659,22 +1699,87 @@ export class Storage {
          WHERE o.kind = 'tool_use'
            AND o.ts > ?
            AND json_extract(o.metadata, '$.file_path') IS NOT NULL
-           AND NOT EXISTS (
-             SELECT 1 FROM observations c
-             WHERE c.kind = 'claim'
-               AND c.session_id = o.session_id
-               AND json_extract(c.metadata, '$.file_path') = json_extract(o.metadata, '$.file_path')
-               AND c.ts <= o.ts
-           )
          ORDER BY o.ts DESC
          LIMIT ?`,
       )
-      .all(since_ts, limit) as Array<{
+      .all(since_ts, Math.max(limit * 5, limit)) as Array<{
       session_id: string;
       file_path: string;
       ts: number;
       task_id: number | null;
     }>;
+    const claims = this.claimObservations();
+    const rows: Array<{
+      session_id: string;
+      file_path: string;
+      ts: number;
+      task_id: number | null;
+    }> = [];
+    for (const edit of edits) {
+      const normalized = this.normalizedObservationFilePath(edit);
+      if (normalized === null) continue;
+      if (this.hasMatchingClaimBeforeEdit(claims, { ...edit, file_path: normalized })) continue;
+      rows.push({ ...edit, file_path: normalized });
+      if (rows.length >= limit) break;
+    }
+    return rows;
+  }
+
+  private claimObservations(): Array<{
+    session_id: string;
+    file_path: string | null;
+    ts: number;
+    task_id: number | null;
+  }> {
+    return this.db
+      .prepare(
+        `SELECT session_id,
+                json_extract(metadata, '$.file_path') AS file_path,
+                ts,
+                task_id
+         FROM observations
+         WHERE kind = 'claim'
+           AND json_extract(metadata, '$.file_path') IS NOT NULL
+         ORDER BY ts ASC`,
+      )
+      .all() as Array<{
+      session_id: string;
+      file_path: string | null;
+      ts: number;
+      task_id: number | null;
+    }>;
+  }
+
+  private normalizedObservationFilePath(row: {
+    task_id: number | null;
+    file_path: string | null;
+  }): string | null {
+    if (row.file_path === null) return null;
+    const task = row.task_id === null ? undefined : this.getTask(row.task_id);
+    return normalizeClaimPath({
+      repo_root: task?.repo_root,
+      cwd: task?.repo_root,
+      file_path: row.file_path,
+    });
+  }
+
+  private hasMatchingClaimBeforeEdit(
+    claims: Array<{
+      session_id: string;
+      file_path: string | null;
+      ts: number;
+      task_id: number | null;
+    }>,
+    edit: { session_id: string; file_path: string; ts: number; task_id: number | null },
+  ): boolean {
+    return claims.some((claim) => {
+      if (claim.ts > edit.ts) return false;
+      if (claim.session_id !== edit.session_id) return false;
+      if (claim.task_id !== null && edit.task_id !== null && claim.task_id !== edit.task_id) {
+        return false;
+      }
+      return this.normalizedObservationFilePath(claim) === edit.file_path;
+    });
   }
 
   /** Per-session activity since `since_ts`, split into total observations

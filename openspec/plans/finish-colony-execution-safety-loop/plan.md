@@ -4,15 +4,15 @@ Plan slug: `finish-colony-execution-safety-loop`
 
 ## Problem
 
-Colony health currently reports zero Queen plan readiness even though execution-safety work needs claimable, wave-based subtasks. Publish an active plan so task_ready_for_agent can surface first-wave task_plan_claim_subtask arguments and the health surface can prove nonzero readiness.
+Coordination adoption is green, but claim-before-edit diagnostics and Queen plan execution are red. Health must explain why claims do not count before edits, and active plan work must become claimable through task_ready_for_agent.
 
 ## Acceptance Criteria
 
-- Colony health reports active plans > 0.
-- Colony health reports plan subtasks > 0.
-- Colony health reports ready to claim > 0.
-- task_ready_for_agent returns a ready first-wave item with task_plan_claim_subtask args.
-- Active plan health has regression coverage.
+- claim/edit correlation diagnostics explain why task_claim_file calls do not count before edits.
+- active plan exists with claimable subtasks.
+- task_ready_for_agent returns task_plan_claim_subtask args for ready work.
+- task_plan_claim_subtask is used for the active execution-safety lane.
+- targeted tests cover claim miss diagnostics, path normalization, fallback matching, bridge signal distinctions, and Queen readiness.
 
 ## Roles
 
