@@ -17,6 +17,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
       repo_roots: z.array(z.string().min(1)).max(20).optional(),
       recent_claim_window_minutes: z.number().int().positive().max(1440).optional(),
       recent_claim_limit: z.number().int().positive().max(100).optional(),
+      stalled_lane_limit: z.number().int().positive().max(100).optional(),
       file_heat_half_life_minutes: z.number().int().positive().max(1440).optional(),
       file_heat_limit: z.number().int().positive().max(100).optional(),
       file_heat_min_heat: z.number().positive().max(100).optional(),
@@ -34,6 +35,9 @@ export function register(server: McpServer, ctx: ToolContext): void {
       }
       if (args.recent_claim_limit !== undefined) {
         options.recent_claim_limit = args.recent_claim_limit;
+      }
+      if (args.stalled_lane_limit !== undefined) {
+        options.stalled_lane_limit = args.stalled_lane_limit;
       }
       options.claim_stale_ms = settings.claimStaleMinutes * 60_000;
       const fileHeatHalfLifeMinutes =

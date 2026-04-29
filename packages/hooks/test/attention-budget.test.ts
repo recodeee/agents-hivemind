@@ -64,6 +64,7 @@ function baseInbox(overrides: Partial<AttentionInbox> = {}): AttentionInbox {
     coalesced_messages: [],
     read_receipts: [],
     stalled_lanes: [],
+    stalled_lanes_truncated: false,
     stale_claim_signals: {
       stale_claim_count: 0,
       top_stale_branches: [],

@@ -197,6 +197,7 @@ export interface AttentionInbox {
    *  that have not been replied to. Sized by `read_receipt_window_ms`. */
   read_receipts: ReadReceipt[];
   stalled_lanes: InboxLane[];
+  stalled_lanes_truncated: boolean;
   stale_claim_signals: InboxStaleClaimSignals;
   recent_other_claims: InboxRecentClaim[];
   file_heat: InboxFileHeat[];
@@ -222,6 +223,8 @@ export interface AttentionInboxOptions {
   unread_message_limit?: number;
   /** Defaults true; hooks can disable filesystem hivemind reads for hot paths. */
   include_stalled_lanes?: boolean;
+  /** Max stalled lane rows returned. Summary still reports the total count. */
+  stalled_lane_limit?: number;
   /** Half-life for decaying file heat. Defaults 30m; MCP passes settings. */
   file_heat_half_life_ms?: number;
   file_heat_limit?: number;
@@ -246,6 +249,7 @@ const DEFAULT_RECENT_CLAIM_WINDOW_MS = 15 * 60_000;
 const DEFAULT_RECENT_CLAIM_LIMIT = 20;
 const DEFAULT_FILE_HEAT_HALF_LIFE_MS = 30 * 60_000;
 const DEFAULT_FILE_HEAT_LIMIT = 10;
+const DEFAULT_STALLED_LANE_LIMIT = 8;
 const DEFAULT_STALE_CLAIM_BRANCH_LIMIT = 5;
 const DEFAULT_READ_RECEIPT_WINDOW_MS = 6 * 60 * 60_000;
 const DEFAULT_READ_RECEIPT_MIN_AGE_MS = 5 * 60_000;
@@ -308,7 +312,9 @@ export function buildAttentionInbox(
     now,
     claim_stale_minutes: claimStaleMinutes,
   });
-  const stalled_lanes = opts.include_stalled_lanes === false ? [] : collectStalledLanes(opts);
+  const stalledLaneResult =
+    opts.include_stalled_lanes === false ? emptyStalledLaneResult() : collectStalledLanes(opts);
+  const stalled_lanes = stalledLaneResult.rows;
   const file_heat = collectFileHeat(store, opts, taskIds, now);
 
   const read_receipts = collectReadReceipts(store, opts, taskIds, now);
@@ -322,7 +328,7 @@ export function buildAttentionInbox(
     pending_handoff_count: pending_handoffs.length,
     pending_wake_count: pending_wakes.length,
     unread_message_count: unread_messages.length,
-    stalled_lane_count: stalled_lanes.length,
+    stalled_lane_count: stalledLaneResult.total,
     fresh_other_claim_count: recent_other_claims.length,
     stale_other_claim_count: staleClaims.length,
     expired_other_claim_count: expiredClaims.length,
@@ -353,6 +359,7 @@ export function buildAttentionInbox(
     coalesced_messages,
     read_receipts,
     stalled_lanes,
+    stalled_lanes_truncated: stalledLaneResult.truncated,
     stale_claim_signals,
     recent_other_claims,
     file_heat,
@@ -706,20 +713,35 @@ function compactFileHeat(row: FileHeatRow): InboxFileHeat {
   };
 }
 
-function collectStalledLanes(opts: AttentionInboxOptions): InboxLane[] {
+function collectStalledLanes(opts: AttentionInboxOptions): {
+  rows: InboxLane[];
+  total: number;
+  truncated: boolean;
+} {
   const options: HivemindOptions = { includeStale: true };
   if (opts.repo_root !== undefined) options.repoRoot = opts.repo_root;
   if (opts.repo_roots !== undefined) options.repoRoots = opts.repo_roots;
   if (opts.now !== undefined) options.now = opts.now;
+  const limit = normalizeStalledLaneLimit(opts.stalled_lane_limit);
 
   try {
     const snapshot = readHivemind(options);
-    return snapshot.sessions.filter(isLaneStalled).map(toInboxLane);
+    const rows = snapshot.sessions.filter(isLaneStalled).map(toInboxLane);
+    return { rows: rows.slice(0, limit), total: rows.length, truncated: rows.length > limit };
   } catch {
     // Best effort — hivemind read touches the filesystem and must never
     // turn an inbox query into a fatal error.
-    return [];
+    return emptyStalledLaneResult();
   }
+}
+
+function emptyStalledLaneResult(): { rows: InboxLane[]; total: number; truncated: boolean } {
+  return { rows: [], total: 0, truncated: false };
+}
+
+function normalizeStalledLaneLimit(limit: number | undefined): number {
+  if (!Number.isInteger(limit) || limit === undefined) return DEFAULT_STALLED_LANE_LIMIT;
+  return Math.max(0, Math.min(limit, 100));
 }
 
 function isLaneStalled(session: HivemindSession): boolean {
