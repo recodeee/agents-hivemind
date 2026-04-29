@@ -2,7 +2,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { codexSessionsRoot, readCodexMcpToolCallsSince } from '../../src/lib/codex-rollouts.js';
+import {
+  codexSessionsRoot,
+  readCodexEditToolCallsSince,
+  readCodexMcpToolCallsSince,
+} from '../../src/lib/codex-rollouts.js';
 
 let tmpRoot: string;
 
@@ -130,6 +134,37 @@ describe('readCodexMcpToolCallsSince', () => {
   });
 });
 
+describe('readCodexEditToolCallsSince', () => {
+  it('extracts write-family function calls without counting read-only shell commands', () => {
+    const sinceMs = Date.UTC(2026, 3, 28, 0, 0, 0);
+    const nowMs = Date.UTC(2026, 3, 28, 23, 59, 0);
+    const dir = path.join(tmpRoot, '2026', '04', '28');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(
+      dir,
+      'rollout-2026-04-28T13-41-07-019dd3e4-94bd-7f30-9f24-391e66eef84f.jsonl',
+    );
+    fs.writeFileSync(
+      file,
+      [
+        functionCallLine('2026-04-28T11:41:37.000Z', 'Read'),
+        functionCallLine('2026-04-28T11:41:38.000Z', 'Edit'),
+        functionCallLine('2026-04-28T11:41:39.000Z', 'Write'),
+        functionCallLine('2026-04-28T11:41:40.000Z', 'apply_patch'),
+        execCommandEndLine('2026-04-28T11:41:41.000Z', 'read'),
+        execCommandEndLine('2026-04-28T11:41:42.000Z', 'write'),
+      ].join('\n'),
+    );
+
+    const calls = readCodexEditToolCallsSince(sinceMs, { root: tmpRoot, now: nowMs });
+
+    expect(calls.map((row) => row.tool)).toEqual(['Edit', 'Write', 'apply_patch', 'Bash']);
+    expect(new Set(calls.map((row) => row.session_id))).toEqual(
+      new Set(['codex:019dd3e4-94bd-7f30-9f24-391e66eef84f']),
+    );
+  });
+});
+
 describe('codexSessionsRoot', () => {
   it('honours the CODEX_CLI_SESSIONS_ROOT override', () => {
     expect(codexSessionsRoot({ CODEX_CLI_SESSIONS_ROOT: '/tmp/codex-sessions' })).toBe(
@@ -152,6 +187,31 @@ function rolloutLine(timestamp: string, server: string, tool: string): string {
       type: 'mcp_tool_call_end',
       call_id: `call_${tool}`,
       invocation: { server, tool, arguments: {} },
+    },
+  });
+}
+
+function functionCallLine(timestamp: string, name: string): string {
+  return JSON.stringify({
+    timestamp,
+    type: 'event_msg',
+    payload: {
+      type: 'function_call',
+      name,
+      arguments: '{}',
+      call_id: `call_${name}`,
+    },
+  });
+}
+
+function execCommandEndLine(timestamp: string, parsedType: string): string {
+  return JSON.stringify({
+    timestamp,
+    type: 'event_msg',
+    payload: {
+      type: 'exec_command_end',
+      call_id: `call_${parsedType}`,
+      parsed_cmd: [{ type: parsedType, cmd: parsedType === 'write' ? 'printf x > a.txt' : 'pwd' }],
     },
   });
 }

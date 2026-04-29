@@ -532,7 +532,7 @@ describe('colony health payload', () => {
         action: expect.stringContaining('PreToolUse auto-claim hook is not firing'),
         tool_call: expect.stringContaining('mcp__colony__task_claim_file'),
         command: expect.stringContaining('colony install --ide <ide>'),
-        prompt: expect.stringContaining('PreToolUse auto-claim is not covering edits'),
+        prompt: expect.stringContaining('PreToolUse auto-claim is not covering hook-capable edits'),
       }),
       expect.objectContaining({
         metric: 'stale claims',
@@ -765,6 +765,77 @@ describe('colony health payload', () => {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
   });
+
+  it('reports Codex rollout edits separately from hook-capable claim-before-edit metrics', () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'colony-health-codex-edits-'));
+    try {
+      const dir = path.join(tmpRoot, '2027', '01', '15');
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(
+        dir,
+        'rollout-2027-01-15T07-00-00-019dd000-1111-2222-3333-444455556666.jsonl',
+      );
+      fs.writeFileSync(
+        file,
+        [
+          codexFunctionCallLine(NOW - 60 * 60_000, 'Edit'),
+          codexFunctionCallLine(NOW - 50 * 60_000, 'Write'),
+        ].join('\n'),
+      );
+      const insideWindow = new Date(NOW - 30 * 60_000);
+      fs.utimesSync(file, insideWindow, insideWindow);
+
+      const payload = buildColonyHealthPayload(
+        fakeStorage({
+          calls: [],
+          claimBeforeEdit: {
+            edit_tool_calls: 0,
+            edits_with_file_path: 0,
+            edits_claimed_before: 0,
+          },
+        }),
+        {
+          since: SINCE,
+          window_hours: 24,
+          now: NOW,
+          codex_sessions_root: tmpRoot,
+        },
+      );
+
+      expect(payload.task_claim_file_before_edits).toMatchObject({
+        status: 'no_data',
+        claim_before_edit_ratio: null,
+        likely_missing_hook: false,
+        codex_rollout_without_bridge: true,
+        edit_source_breakdown: {
+          colony_post_tool_edits: 0,
+          codex_rollout_edits: 2,
+          hook_capable_edits: 0,
+          pre_tool_use_signals: 0,
+        },
+      });
+
+      const hint = payload.action_hints.find((entry) => entry.metric === 'claim-before-edit');
+      expect(hint).toMatchObject({
+        current: '2 Codex rollout edits, 0 PreToolUse signals',
+        target: 'Codex PreToolUse signals > 0',
+        command: 'colony install --ide codex  # then restart Codex',
+        action: expect.stringContaining('Codex rollouts'),
+      });
+      expect(hint?.action).not.toContain('Run colony install --ide <ide>');
+
+      const text = formatColonyHealthOutput(payload);
+      expect(text).toContain(
+        'edit source breakdown: colony_post_tool_edits=0, codex_rollout_edits=2, hook_capable_edits=0, pre_tool_use_signals=0',
+      );
+      expect(text).toContain(
+        'diagnosis: Codex rollout edits are present, but no Codex PreToolUse hook or rollout bridge signal is firing.',
+      );
+      expect(text).toContain('cmd:  colony install --ide codex');
+    } finally {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 function codexRolloutLine(tsMs: number, server: string, tool: string): string {
@@ -775,6 +846,19 @@ function codexRolloutLine(tsMs: number, server: string, tool: string): string {
       type: 'mcp_tool_call_end',
       call_id: `call_${tool}`,
       invocation: { server, tool, arguments: {} },
+    },
+  });
+}
+
+function codexFunctionCallLine(tsMs: number, name: string): string {
+  return JSON.stringify({
+    timestamp: new Date(tsMs).toISOString(),
+    type: 'event_msg',
+    payload: {
+      type: 'function_call',
+      name,
+      arguments: '{}',
+      call_id: `call_${name}`,
     },
   });
 }

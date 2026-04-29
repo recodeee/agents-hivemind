@@ -3,7 +3,10 @@ import os from 'node:os';
 import path from 'node:path';
 
 const MCP_TOOL_CALL_END_MARKER = '"mcp_tool_call_end"';
+const FUNCTION_CALL_MARKER = '"function_call"';
+const EXEC_COMMAND_END_MARKER = '"exec_command_end"';
 const ONE_DAY_MS = 86_400_000;
+const CODEX_WRITE_TOOL_NAMES = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
 /**
  * Synthetic tool-call row sourced from a Codex CLI rollout. Mirrors the shape
@@ -12,6 +15,13 @@ const ONE_DAY_MS = 86_400_000;
  * are not addressable inside the colony observations table.
  */
 export interface CodexMcpToolCall {
+  id: 0;
+  session_id: string;
+  tool: string;
+  ts: number;
+}
+
+export interface CodexEditToolCall {
   id: 0;
   session_id: string;
   tool: string;
@@ -76,6 +86,50 @@ export function readCodexMcpToolCallsSince(
     for (const line of raw.split('\n')) {
       if (!line.includes(MCP_TOOL_CALL_END_MARKER)) continue;
       const parsed = parseRolloutLine(line, { sinceMs, nowMs: now });
+      if (parsed === null) continue;
+      calls.push({ id: 0, session_id: sessionId, tool: parsed.tool, ts: parsed.ts });
+    }
+  }
+  return calls;
+}
+
+/**
+ * Read write-family Codex rollout tool calls separately from Colony's
+ * PostToolUse observations. These events prove Codex was editing, but they are
+ * not claim-before-edit eligible unless Codex hooks or a rollout bridge are
+ * installed, so health reports them as a source breakdown instead of folding
+ * them into the claim-before-edit denominator.
+ */
+export function readCodexEditToolCallsSince(
+  sinceMs: number,
+  options: CodexRolloutOptions = {},
+): CodexEditToolCall[] {
+  const now = options.now ?? Date.now();
+  const root = options.root ?? codexSessionsRoot();
+  if (!isDirectory(root)) return [];
+
+  const calls: CodexEditToolCall[] = [];
+  for (const file of iterRolloutFiles(root, sinceMs, now)) {
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(file);
+    } catch {
+      continue;
+    }
+    if (stat.mtimeMs < sinceMs) continue;
+
+    const sessionId = sessionIdFromRolloutPath(file);
+    let raw: string;
+    try {
+      raw = fs.readFileSync(file, 'utf8');
+    } catch {
+      continue;
+    }
+    for (const line of raw.split('\n')) {
+      if (!line.includes(FUNCTION_CALL_MARKER) && !line.includes(EXEC_COMMAND_END_MARKER)) {
+        continue;
+      }
+      const parsed = parseEditRolloutLine(line, { sinceMs, nowMs: now });
       if (parsed === null) continue;
       calls.push({ id: 0, session_id: sessionId, tool: parsed.tool, ts: parsed.ts });
     }
@@ -164,6 +218,45 @@ function parseRolloutLine(
   const tool = typeof invocation.tool === 'string' ? invocation.tool.trim() : '';
   if (!server || !tool) return null;
   return { tool: `mcp__${server}__${tool}`, ts };
+}
+
+function parseEditRolloutLine(
+  line: string,
+  bounds: { sinceMs: number; nowMs: number },
+): { tool: string; ts: number } | null {
+  let event: unknown;
+  try {
+    event = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (!isRecord(event)) return null;
+  const ts = parseRolloutTimestamp(event.timestamp);
+  if (ts === null || ts <= bounds.sinceMs || ts > bounds.nowMs) return null;
+  const payload = event.payload;
+  if (!isRecord(payload)) return null;
+
+  if (payload.type === 'function_call') {
+    const name = typeof payload.name === 'string' ? payload.name.trim() : '';
+    if (CODEX_WRITE_TOOL_NAMES.has(name)) return { tool: name, ts };
+    if (name === 'apply_patch') return { tool: 'apply_patch', ts };
+    return null;
+  }
+
+  if (payload.type === 'exec_command_end' && parsedCommandWrites(payload.parsed_cmd)) {
+    return { tool: 'Bash', ts };
+  }
+
+  return null;
+}
+
+function parsedCommandWrites(parsedCmd: unknown): boolean {
+  if (!Array.isArray(parsedCmd)) return false;
+  return parsedCmd.some((entry) => {
+    if (!isRecord(entry)) return false;
+    const type = typeof entry.type === 'string' ? entry.type : '';
+    return type === 'write' || type === 'edit' || type === 'patch';
+  });
 }
 
 function parseRolloutTimestamp(raw: unknown): number | null {

@@ -19,7 +19,7 @@ import type {
 } from '@colony/storage';
 import type { Command } from 'commander';
 import kleur from 'kleur';
-import { readCodexMcpToolCallsSince } from '../lib/codex-rollouts.js';
+import { readCodexEditToolCallsSince, readCodexMcpToolCallsSince } from '../lib/codex-rollouts.js';
 
 const DEFAULT_HOURS = 24;
 const HEALTH_TOOL_LIMIT = 5;
@@ -112,6 +112,16 @@ interface ClaimBeforeEditPayload extends ClaimBeforeEditStats {
   /** PreToolUse fired, but the hook session id was not present in Colony
    *  storage, so telemetry was recorded under the diagnostics fallback. */
   session_binding_missing: number;
+  edit_source_breakdown: {
+    colony_post_tool_edits: number;
+    codex_rollout_edits: number;
+    hook_capable_edits: number;
+    pre_tool_use_signals: number;
+  };
+  /** Codex rollouts show edits, but no Codex PreToolUse signal/bridge rows
+   *  exist in Colony. These edits are intentionally excluded from the
+   *  claim-before-edit denominator until hook/bridge support is installed. */
+  codex_rollout_without_bridge: boolean;
   /** True when edits happened but no PreToolUse telemetry was recorded —
    *  diagnostic that points at hook wiring rather than agent discipline. */
   likely_missing_hook: boolean;
@@ -242,6 +252,10 @@ export function buildColonyHealthPayload(
     now,
     root: options.codex_sessions_root,
   });
+  const codexEditCalls = readCodexEditToolCallsSince(options.since, {
+    now,
+    root: options.codex_sessions_root,
+  });
   const calls: ToolCallRow[] = [...colonyCalls, ...codexCalls].sort(
     (a, b) => a.ts - b.ts || a.id - b.id,
   );
@@ -285,7 +299,11 @@ export function buildColonyHealthPayload(
     },
     task_post_vs_omx_notepad: taskPostVsNotepadPayload(calls, taskPostCalls, taskNoteWorkingCalls),
     search_calls_per_session: searchCalls,
-    task_claim_file_before_edits: claimBeforeEditPayload(claimBeforeEditStats, taskClaimFileCalls),
+    task_claim_file_before_edits: claimBeforeEditPayload(
+      claimBeforeEditStats,
+      taskClaimFileCalls,
+      codexEditCalls.length,
+    ),
     signal_health: signalHealthPayload(storage, tasks, {
       since: options.since,
       now,
@@ -615,11 +633,13 @@ function taskPostVsNotepadPayload(
 function claimBeforeEditPayload(
   stats: ClaimBeforeEditStats,
   taskClaimFileCalls: number,
+  codexRolloutEdits: number,
 ): ClaimBeforeEditPayload {
   const editsWithoutClaimBefore = stats.edits_with_file_path - stats.edits_claimed_before;
   const autoClaimedBeforeEdit = stats.auto_claimed_before_edit ?? 0;
   const preToolUseSignals = stats.pre_tool_use_signals ?? 0;
   const sessionBindingMissing = stats.session_binding_missing ?? 0;
+  const codexRolloutWithoutBridge = codexRolloutEdits > 0 && preToolUseSignals === 0;
   const status =
     stats.edit_tool_calls === 0
       ? 'no_data'
@@ -628,14 +648,20 @@ function claimBeforeEditPayload(
         : 'not_available';
   // If edits landed but no claim-before-edit observation was ever written,
   // PreToolUse is almost certainly not firing for the active editor.
-  const likelyMissingHook = stats.edit_tool_calls > 0 && preToolUseSignals === 0;
+  const likelyMissingHook =
+    stats.edit_tool_calls > 0 && preToolUseSignals === 0 && !codexRolloutWithoutBridge;
+  const codexRolloutHint = codexRolloutWithoutBridge
+    ? 'Codex rollout edits are present, but no Codex PreToolUse signal is installed or firing. Run colony install --ide codex and restart Codex; without Codex hooks or a rollout bridge, rollout edits stay unsupported for claim-before-edit auto-claim.'
+    : null;
   const sessionBindingHint =
     sessionBindingMissing > 0
       ? 'PreToolUse is firing, but Colony session binding is missing. Restart the editor session so SessionStart binds the session id; keep calling task_claim_file manually until binding is restored.'
       : null;
-  const installHint = likelyMissingHook
-    ? 'PreToolUse auto-claim is not covering edits in this window. Run colony install --ide <ide>, restart the editor session, and ensure an active task is bound for the session.'
-    : sessionBindingHint;
+  const installHint =
+    codexRolloutHint ??
+    (likelyMissingHook
+      ? 'PreToolUse auto-claim is not covering hook-capable edits in this window. Run colony install --ide <ide>, restart the editor session, and ensure an active task is bound for the session.'
+      : sessionBindingHint);
   return {
     ...stats,
     status,
@@ -648,6 +674,13 @@ function claimBeforeEditPayload(
       status === 'available' ? ratio(stats.edits_claimed_before, stats.edits_with_file_path) : null,
     pre_tool_use_signals: preToolUseSignals,
     session_binding_missing: sessionBindingMissing,
+    edit_source_breakdown: {
+      colony_post_tool_edits: stats.edit_tool_calls,
+      codex_rollout_edits: codexRolloutEdits,
+      hook_capable_edits: stats.edits_with_file_path,
+      pre_tool_use_signals: preToolUseSignals,
+    },
+    codex_rollout_without_bridge: codexRolloutWithoutBridge,
     likely_missing_hook: likelyMissingHook,
     install_hint: installHint,
   };
@@ -771,12 +804,16 @@ function formatClaimBeforeEdit(payload: ClaimBeforeEditPayload): string[] {
   const lines = [`  task_claim_file calls: ${payload.task_claim_file_calls}`];
   if (payload.status === 'no_data') {
     lines.push(kleur.dim('  n/a (no edit tool observations in window)'));
+    lines.push(...formatEditSourceBreakdown(payload));
+    if (payload.install_hint) lines.push(kleur.yellow(`  ${payload.install_hint}`));
     return lines;
   }
   if (payload.status === 'not_available') {
     lines.push(
       `  not available (${payload.edits_with_file_path} / ${payload.edit_tool_calls} edit calls include file_path metadata)`,
     );
+    lines.push(...formatEditSourceBreakdown(payload));
+    if (payload.install_hint) lines.push(kleur.yellow(`  ${payload.install_hint}`));
     return lines;
   }
   const explicitClaims = Math.max(
@@ -794,6 +831,7 @@ function formatClaimBeforeEdit(payload: ClaimBeforeEditPayload): string[] {
   lines.push(
     `  telemetry: edits_with_claim=${payload.edits_with_claim}, edits_missing_claim=${payload.edits_missing_claim}, auto_claimed_before_edit=${payload.auto_claimed_before_edit}, pre_tool_use_signals=${payload.pre_tool_use_signals}`,
   );
+  lines.push(...formatEditSourceBreakdown(payload));
   if (payload.session_binding_missing > 0) {
     lines.push(kleur.yellow(`  session binding missing: ${payload.session_binding_missing}`));
   }
@@ -801,6 +839,21 @@ function formatClaimBeforeEdit(payload: ClaimBeforeEditPayload): string[] {
     lines.push(kleur.yellow(`  ${payload.install_hint}`));
   } else if (payload.session_binding_missing > 0 && payload.install_hint) {
     lines.push(kleur.yellow(`  ${payload.install_hint}`));
+  }
+  return lines;
+}
+
+function formatEditSourceBreakdown(payload: ClaimBeforeEditPayload): string[] {
+  const source = payload.edit_source_breakdown;
+  const lines = [
+    `  edit source breakdown: colony_post_tool_edits=${source.colony_post_tool_edits}, codex_rollout_edits=${source.codex_rollout_edits}, hook_capable_edits=${source.hook_capable_edits}, pre_tool_use_signals=${source.pre_tool_use_signals}`,
+  ];
+  if (payload.codex_rollout_without_bridge) {
+    lines.push(
+      kleur.yellow(
+        '  diagnosis: Codex rollout edits are present, but no Codex PreToolUse hook or rollout bridge signal is firing.',
+      ),
+    );
   }
   return lines;
 }
@@ -855,21 +908,33 @@ function healthActionHints(payload: ColonyHealthPayloadWithoutHints): ActionHint
     });
   }
 
+  const claimBeforeEdit = payload.task_claim_file_before_edits;
   if (
-    isBelowTarget(
-      payload.task_claim_file_before_edits.claim_before_edit_ratio,
-      TARGET_CLAIM_BEFORE_EDIT,
-    )
+    claimBeforeEdit.codex_rollout_without_bridge &&
+    (claimBeforeEdit.claim_before_edit_ratio === null ||
+      isBelowTarget(claimBeforeEdit.claim_before_edit_ratio, TARGET_CLAIM_BEFORE_EDIT))
   ) {
-    const missingHook = payload.task_claim_file_before_edits.likely_missing_hook;
-    const sessionBindingMissing = payload.task_claim_file_before_edits.session_binding_missing > 0;
     hints.push({
       metric: 'claim-before-edit',
       status: 'bad',
-      current: formatPercent(payload.task_claim_file_before_edits.claim_before_edit_ratio),
+      current: `${claimBeforeEdit.edit_source_breakdown.codex_rollout_edits} Codex rollout edits, ${claimBeforeEdit.pre_tool_use_signals} PreToolUse signals`,
+      target: 'Codex PreToolUse signals > 0',
+      action:
+        'Most edit evidence is from Codex rollouts, but no Codex PreToolUse hook or rollout bridge is firing. Install Codex hooks or add a rollout bridge before counting rollout edits as claim-before-edit eligible.',
+      command: 'colony install --ide codex  # then restart Codex',
+      prompt:
+        'Codex rollout edits are present but unsupported for claim-before-edit auto-claim until Codex PreToolUse hooks or a rollout bridge fire. Run colony install --ide codex and restart Codex; if hooks are unavailable, add a rollout bridge.',
+    });
+  } else if (isBelowTarget(claimBeforeEdit.claim_before_edit_ratio, TARGET_CLAIM_BEFORE_EDIT)) {
+    const missingHook = claimBeforeEdit.likely_missing_hook;
+    const sessionBindingMissing = claimBeforeEdit.session_binding_missing > 0;
+    hints.push({
+      metric: 'claim-before-edit',
+      status: 'bad',
+      current: formatPercent(claimBeforeEdit.claim_before_edit_ratio),
       target: `${formatPercent(TARGET_CLAIM_BEFORE_EDIT)}+`,
       action: missingHook
-        ? 'PreToolUse auto-claim hook is not firing for these edits. Reinstall and restart the editor; PreToolUse will auto-claim before edits.'
+        ? 'PreToolUse auto-claim hook is not firing for hook-capable edits. Reinstall and restart the editor; PreToolUse will auto-claim before edits.'
         : sessionBindingMissing
           ? 'PreToolUse is firing, but session binding is missing. Restart the editor so SessionStart binds the active session before relying on auto-claim.'
           : 'Call task_claim_file for touched files before Edit or Write tool use.',
@@ -881,7 +946,7 @@ function healthActionHints(payload: ColonyHealthPayloadWithoutHints): ActionHint
           ? 'colony install --ide <ide>  # then restart the editor session to refresh SessionStart binding'
           : 'colony install --ide <ide>  # enables pre-edit auto-claim hooks',
       prompt: missingHook
-        ? 'PreToolUse auto-claim is not covering edits — run colony install --ide <ide>, restart the editor session, and ensure an active task is bound. Until the hook fires, call mcp__colony__task_claim_file before each edit.'
+        ? 'PreToolUse auto-claim is not covering hook-capable edits — run colony install --ide <ide>, restart the editor session, and ensure an active task is bound. Until the hook fires, call mcp__colony__task_claim_file before each edit.'
         : sessionBindingMissing
           ? 'PreToolUse is firing, but Colony session binding is missing. Restart the editor session so SessionStart binds the active session id; until then, call mcp__colony__task_claim_file before each edit.'
           : 'Before editing, call mcp__colony__task_claim_file for each touched path; if agents keep missing this, run colony install --ide <ide> to enable pre-edit auto-claim hooks.',

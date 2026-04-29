@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { claudeCode } from '../src/claude-code.js';
+import { codex } from '../src/codex.js';
 import { cursor } from '../src/cursor.js';
 import { deepMerge } from '../src/fs-utils.js';
 import { getInstaller, installers } from '../src/registry.js';
@@ -214,6 +215,102 @@ describe('claude-code installer', () => {
     expect(await claudeCode.detect(ctx)).toBe(false);
     mkdirSync(join(home, '.claude'));
     expect(await claudeCode.detect(ctx)).toBe(true);
+  });
+});
+
+describe('codex installer', () => {
+  it('writes hooks + mcpServer for a fresh install and is idempotent', async () => {
+    await codex.install(ctx);
+    const configPath = join(home, '.codex', 'config.json');
+    const hooksPath = join(home, '.codex', 'hooks.json');
+    expect(existsSync(configPath)).toBe(true);
+    expect(existsSync(hooksPath)).toBe(true);
+    const first = JSON.parse(readFileSync(hooksPath, 'utf8')) as {
+      hooks: Record<
+        string,
+        Array<{ matcher?: string; hooks: Array<{ type: string; command: string }> }>
+      >;
+    };
+    expect(Object.keys(first.hooks).sort()).toEqual(
+      ['PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'UserPromptSubmit'].sort(),
+    );
+    expect(first.hooks.SessionStart?.[0]?.matcher).toBe('startup|resume');
+    expect(first.hooks.SessionStart?.[0]?.hooks?.[0]?.command).toBe(
+      `${ctx.nodeBin} ${ctx.cliPath} hook run session-start --ide codex`,
+    );
+    expect(first.hooks.PreToolUse?.[0]?.matcher).toBe('Edit|Write|MultiEdit|NotebookEdit|Bash');
+    expect(first.hooks.PreToolUse?.[0]?.hooks?.[0]?.command).toBe(
+      `${ctx.nodeBin} ${ctx.cliPath} hook run pre-tool-use --ide codex`,
+    );
+    expect(first.hooks.PostToolUse?.[0]?.matcher).toBe('Edit|Write|MultiEdit|NotebookEdit|Bash');
+    expect(first.hooks.PostToolUse?.[0]?.hooks?.[0]?.command).toBe(
+      `${ctx.nodeBin} ${ctx.cliPath} hook run post-tool-use --ide codex`,
+    );
+    expect(first.hooks.UserPromptSubmit?.[0]?.hooks?.[0]?.command).toBe(
+      `${ctx.nodeBin} ${ctx.cliPath} hook run user-prompt-submit --ide codex`,
+    );
+    expect(first.hooks.Stop?.[0]?.hooks?.[0]?.command).toBe(
+      `${ctx.nodeBin} ${ctx.cliPath} hook run stop --ide codex`,
+    );
+
+    await codex.install(ctx);
+    const second = JSON.parse(readFileSync(hooksPath, 'utf8')) as typeof first;
+    expect(Object.keys(second.hooks).sort()).toEqual(Object.keys(first.hooks).sort());
+    expect(second.hooks.PreToolUse).toHaveLength(1);
+  });
+
+  it('preserves unrelated Codex hooks and removes only Colony hooks', async () => {
+    const hooksPath = join(home, '.codex', 'hooks.json');
+    mkdirSync(dirname(hooksPath), { recursive: true });
+    writeFileSync(
+      hooksPath,
+      JSON.stringify({
+        hooks: {
+          PreToolUse: [
+            {
+              matcher: 'Bash',
+              hooks: [{ type: 'command', command: 'node /custom/codex-hook.js' }],
+            },
+            {
+              matcher: 'Edit|Write',
+              hooks: [
+                { type: 'command', command: '/old/colony hook run pre-tool-use --ide codex' },
+              ],
+            },
+          ],
+        },
+      }),
+    );
+
+    await codex.install(ctx);
+    const installed = JSON.parse(readFileSync(hooksPath, 'utf8')) as {
+      hooks: Record<string, unknown>;
+    };
+    expect(installed.hooks.PreToolUse).toEqual([
+      {
+        matcher: 'Bash',
+        hooks: [{ type: 'command', command: 'node /custom/codex-hook.js' }],
+      },
+      {
+        matcher: 'Edit|Write|MultiEdit|NotebookEdit|Bash',
+        hooks: [
+          {
+            type: 'command',
+            command: `${ctx.nodeBin} ${ctx.cliPath} hook run pre-tool-use --ide codex`,
+          },
+        ],
+      },
+    ]);
+
+    await codex.uninstall(ctx);
+    const after = JSON.parse(readFileSync(hooksPath, 'utf8')) as typeof installed;
+    expect(after.hooks.PreToolUse).toEqual([
+      {
+        matcher: 'Bash',
+        hooks: [{ type: 'command', command: 'node /custom/codex-hook.js' }],
+      },
+    ]);
+    expect(after.hooks.PostToolUse).toBeUndefined();
   });
 });
 
