@@ -82,6 +82,15 @@ describe('queen wave health', () => {
       ready_subtasks: 3,
       blocked_subtasks: 4,
     });
+    expect(payload.ready_to_claim_vs_claimed).toMatchObject({
+      plan_subtasks: 7,
+      ready_to_claim: 3,
+      claimed: 0,
+    });
+    expect(payload.readiness_summary.queen_plan_readiness).toMatchObject({
+      status: 'good',
+      evidence: expect.stringContaining('1 active plan(s); 3 ready, 0 claimed'),
+    });
     expect(payload.queen_wave_health.plans[0]).toMatchObject({
       plan_slug: 'colony-adoption-fixes',
       current_wave: 'Wave 1',

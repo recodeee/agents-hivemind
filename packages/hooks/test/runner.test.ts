@@ -390,6 +390,62 @@ describe('runHook', () => {
     });
   });
 
+  it('post-tool-use records repo-relative edit paths', async () => {
+    const repoRoot = join(dir, 'repo');
+    mkdirSync(join(repoRoot, 'src'), { recursive: true });
+    store.startSession({ id: 'sess-paths', ide: 'codex', cwd: repoRoot });
+    const thread = TaskThread.open(store, {
+      repo_root: repoRoot,
+      branch: 'agent/paths',
+      session_id: 'sess-paths',
+    });
+    thread.join('sess-paths', 'codex');
+
+    const r = await runHook(
+      'post-tool-use',
+      {
+        session_id: 'sess-paths',
+        cwd: repoRoot,
+        tool_name: 'Edit',
+        tool_input: { file_path: join(repoRoot, 'src/viewer.tsx') },
+        tool_response: { success: true },
+      },
+      { store },
+    );
+
+    expect(r.ok).toBe(true);
+    const toolUse = store.timeline('sess-paths').find((obs) => obs.kind === 'tool_use');
+    const autoClaim = store.timeline('sess-paths').find((obs) => obs.kind === 'auto-claim');
+    expect(toolUse?.metadata).toMatchObject({ tool: 'Edit', file_path: 'src/viewer.tsx' });
+    expect(autoClaim?.metadata).toMatchObject({
+      source: 'post-tool-use',
+      file_path: 'src/viewer.tsx',
+      tool: 'Edit',
+    });
+  });
+
+  it('post-tool-use skips pseudo file paths', async () => {
+    await runHook('session-start', { session_id: 'sess-null', ide: 'codex', cwd: dir }, { store });
+
+    const r = await runHook(
+      'post-tool-use',
+      {
+        session_id: 'sess-null',
+        cwd: dir,
+        tool_name: 'Write',
+        tool_input: { file_path: '/dev/null' },
+        tool_response: { success: true },
+      },
+      { store },
+    );
+
+    expect(r.ok).toBe(true);
+    const timeline = store.timeline('sess-null');
+    const toolUse = timeline.find((obs) => obs.kind === 'tool_use');
+    expect(toolUse?.metadata).toEqual({ tool: 'Write' });
+    expect(timeline.some((obs) => obs.kind === 'auto-claim')).toBe(false);
+  });
+
   it('warn policy surfaces strong claim conflicts and continues', async () => {
     const taskId = seedClaimConflict();
 

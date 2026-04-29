@@ -1,4 +1,6 @@
 export { Storage } from './storage.js';
+export { isPseudoClaimPath, normalizeClaimPath, normalizeRepoFilePath } from './claim-path.js';
+export type { ClaimPathContext, RepoFilePathContext } from './claim-path.js';
 export {
   COORDINATION_COMMIT_TOOLS,
   COORDINATION_READ_TOOLS,

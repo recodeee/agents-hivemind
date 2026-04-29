@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultSettings } from '@colony/config';
@@ -71,6 +71,39 @@ afterEach(async () => {
 });
 
 describe('task threads — file claims', () => {
+  it('normalizes task_claim_file paths before storing claims and observations', async () => {
+    const repoRoot = mkdtempSync(join(dir, 'repo-'));
+    mkdirSync(join(repoRoot, 'src'), { recursive: true });
+    const { task_id, sessionA } = seedTwoSessionTask(repoRoot);
+
+    const result = await call<{ observation_id: number; file_path: string }>('task_claim_file', {
+      task_id,
+      session_id: sessionA,
+      file_path: join(repoRoot, './src/viewer.tsx'),
+    });
+
+    expect(result.file_path).toBe('src/viewer.tsx');
+    expect(store.storage.getClaim(task_id, 'src/viewer.tsx')).toMatchObject({
+      file_path: 'src/viewer.tsx',
+      session_id: sessionA,
+    });
+    const claim = store.storage.taskObservationsByKind(task_id, 'claim', 1)[0];
+    expect(claim?.metadata).toContain('"file_path":"src/viewer.tsx"');
+  });
+
+  it('rejects pseudo task_claim_file paths', async () => {
+    const { task_id, sessionA } = seedTwoSessionTask();
+
+    const result = await callError('task_claim_file', {
+      task_id,
+      session_id: sessionA,
+      file_path: '/dev/null',
+    });
+
+    expect(result.code).toBe('INVALID_CLAIM_PATH');
+    expect(store.storage.listClaims(task_id)).toEqual([]);
+  });
+
   it('returns weak stale overlap details without deleting the audit claim', async () => {
     const t0 = Date.parse('2026-04-28T12:00:00.000Z');
     vi.useFakeTimers({ toFake: ['Date'] });

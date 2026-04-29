@@ -124,12 +124,12 @@ export function claimBeforeEditFromToolUse(
   input: PreToolUseInput,
 ): ClaimBeforeEditResult {
   const toolName = input.tool_name ?? input.tool ?? '';
+  const policyMode = bridgePolicyMode(store);
   const scope = taskScopeForToolUse(store, input);
   const files = extractTouchedFiles(toolName, input.tool_input, {
-    cwd: scope.cwd ?? input.cwd,
     repoRoot: scope.repo_root,
+    cwd: scope.cwd ?? scope.worktree_path,
   });
-  const policyMode = bridgePolicyMode(store);
   const result: ClaimBeforeEditResult = {
     policy_mode: policyMode,
     files,

@@ -83,6 +83,7 @@ export const TASK_THREAD_ERROR_CODES = {
   NOT_PARTICIPANT: 'NOT_PARTICIPANT',
   NOT_TARGET_AGENT: 'NOT_TARGET_AGENT',
   NOT_RELAY: 'NOT_RELAY',
+  INVALID_CLAIM_PATH: 'INVALID_CLAIM_PATH',
 } as const;
 
 export type TaskThreadErrorCode =
@@ -501,18 +502,21 @@ export class TaskThread {
     note?: string;
     metadata?: Record<string, unknown>;
   }): number {
+    const filePath = this.store.storage.normalizeTaskFilePath(this.task_id, p.file_path);
+    if (filePath === null)
+      throw taskError(TASK_THREAD_ERROR_CODES.INVALID_CLAIM_PATH, 'claim path is not claimable');
     return this.store.storage.transaction(() => {
       this.store.storage.claimFile({
         task_id: this.task_id,
-        file_path: p.file_path,
+        file_path: filePath,
         session_id: p.session_id,
       });
       return this.store.addObservation({
         session_id: p.session_id,
         kind: 'claim',
-        content: p.note ? `claim ${p.file_path} — ${p.note}` : `claim ${p.file_path}`,
+        content: p.note ? `claim ${filePath} — ${p.note}` : `claim ${filePath}`,
         task_id: this.task_id,
-        metadata: { kind: 'claim', file_path: p.file_path, ...(p.metadata ?? {}) },
+        metadata: { kind: 'claim', file_path: filePath, ...(p.metadata ?? {}) },
       });
     });
   }
