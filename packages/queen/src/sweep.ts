@@ -115,6 +115,24 @@ export interface QueenPlanAttention {
   spec_task_id: number;
   items: QueenAttentionItem[];
   waves?: QueenSweepWaveSummary[];
+  validation_summary?: QueenPlanValidationSweepSummary;
+}
+
+export interface QueenPlanValidationSweepSummary {
+  blocking: boolean;
+  finding_count: number;
+  counts: {
+    error: number;
+    warning: number;
+    info: number;
+  };
+  top_findings: Array<{
+    code: string;
+    severity: 'error' | 'warning' | 'info';
+    message: string;
+    file_path?: string;
+    subtask_index?: number;
+  }>;
 }
 
 export function sweepQueenPlans(
@@ -198,6 +216,7 @@ export function sweepQueenPlans(
 
     if (items.length > 0) {
       const waves = summarizeWaves(plan, items, waveModel);
+      const validationSummary = latestValidationSummary(store, plan.spec_task_id);
       attention.push({
         plan_slug: plan.plan_slug,
         title: plan.title,
@@ -205,6 +224,7 @@ export function sweepQueenPlans(
         spec_task_id: plan.spec_task_id,
         items,
         ...(waves.length > 0 ? { waves } : {}),
+        ...(validationSummary !== null ? { validation_summary: validationSummary } : {}),
       });
     }
   }
@@ -307,6 +327,49 @@ function isPendingSignal(meta: Record<string, unknown>, now: number): boolean {
   if (status !== undefined && status !== 'pending') return false;
   const expiresAt = numberValue(meta.expires_at);
   return expiresAt === undefined || now < expiresAt;
+}
+
+function latestValidationSummary(
+  store: MemoryStore,
+  specTaskId: number,
+): QueenPlanValidationSweepSummary | null {
+  const latest = store.storage.taskObservationsByKind(specTaskId, 'plan-validation', 1)[0];
+  if (!latest?.metadata) return null;
+  const meta = parseMeta(latest.metadata);
+  const counts = objectValue(meta.counts);
+  const findings = Array.isArray(meta.findings) ? meta.findings : [];
+  return {
+    blocking: booleanValue(meta.blocking) ?? false,
+    finding_count: numberValue(meta.finding_count) ?? findings.length,
+    counts: {
+      error: numberValue(counts?.error) ?? 0,
+      warning: numberValue(counts?.warning) ?? 0,
+      info: numberValue(counts?.info) ?? 0,
+    },
+    top_findings: findings.slice(0, 5).flatMap((finding) => {
+      const item = objectValue(finding);
+      const code = stringValue(item?.code);
+      const severity = stringValue(item?.severity);
+      const message = stringValue(item?.message);
+      if (
+        !code ||
+        !message ||
+        (severity !== 'error' && severity !== 'warning' && severity !== 'info')
+      ) {
+        return [];
+      }
+      const out: QueenPlanValidationSweepSummary['top_findings'][number] = {
+        code,
+        severity,
+        message,
+      };
+      const filePath = stringValue(item?.file_path);
+      const subtaskIndex = numberValue(item?.subtask_index);
+      if (filePath !== undefined) out.file_path = filePath;
+      if (subtaskIndex !== undefined) out.subtask_index = subtaskIndex;
+      return [out];
+    }),
+  };
 }
 
 function messageStalledClaimer(store: MemoryStore, item: StalledSubtaskAttention): number {

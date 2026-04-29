@@ -11,6 +11,10 @@ import { PublishPlanError } from '@colony/spec';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { type ToolContext, defaultWrapHandler } from './context.js';
+import {
+  type PlanValidationSummary,
+  buildPlanValidationSummary,
+} from './plan-validation-summary.js';
 import { withPlanPublishGuidance } from './plan-output.js';
 import { mcpError, mcpErrorResponse } from './shared.js';
 
@@ -41,6 +45,7 @@ interface PublishedQueenPlan {
   spec_task_id: number;
   mcp_capability_map: McpCapabilityMap;
   subtasks: Array<{ subtask_index: number; branch: string; task_id: number; title: string }>;
+  plan_validation: PlanValidationSummary;
 }
 
 class QueenInvalidGoalError extends Error {
@@ -117,6 +122,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
             repo_root: args.repo_root,
             session_id: args.session_id,
             plan,
+            runtime: ctx.planValidation,
           }),
         );
       } catch (err) {
@@ -230,7 +236,14 @@ function publishPlan(args: {
   repo_root: string;
   session_id: string;
   plan: NormalizedQueenPlan;
+  runtime?: ToolContext['planValidation'];
 }): PublishedQueenPlan {
+  const validation = buildPlanValidationSummary({
+    store: args.store,
+    repo_root: args.repo_root,
+    subtasks: args.plan.subtasks,
+    runtime: args.runtime,
+  });
   const result = publishOrderedPlan({
     store: args.store,
     repo_root: args.repo_root,
@@ -239,9 +252,17 @@ function publishPlan(args: {
     auto_archive: args.plan.auto_archive,
     plan: args.plan,
   });
+  args.store.addObservation({
+    session_id: args.session_id,
+    task_id: result.spec_task_id,
+    kind: 'plan-validation',
+    content: `plan ${args.plan.slug} validation: ${validation.finding_count} finding(s), blocking=${validation.blocking}`,
+    metadata: { ...validation },
+  });
   return {
     ...withPlanPublishGuidance(result, args.plan.subtasks),
     mcp_capability_map: args.plan.mcp_capability_map,
+    plan_validation: validation,
   };
 }
 

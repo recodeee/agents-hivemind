@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultSettings } from '@colony/config';
-import { MemoryStore } from '@colony/core';
+import { MemoryStore, type WorktreeContentionReport } from '@colony/core';
 import { type CapabilityHint, orderedPlanFromWaves, sweepQueenPlans } from '@colony/queen';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -46,6 +46,11 @@ interface QueenPublishResult {
       agent: string;
     };
   }>;
+  plan_validation: {
+    blocking: boolean;
+    finding_count: number;
+    counts: { error: number; warning: number; info: number };
+  };
 }
 
 interface PlanRollup {
@@ -145,11 +150,29 @@ beforeEach(async () => {
   writeFileSync(join(repoRoot, 'SPEC.md'), MINIMAL_SPEC, 'utf8');
   store = new MemoryStore({ dbPath: join(dataDir, 'data.db'), settings: defaultSettings });
   store.startSession({ id: 'lead-session', ide: 'codex', cwd: repoRoot });
-  const server = buildServer(store, defaultSettings);
+  const server = buildServer(store, defaultSettings, {
+    planValidation: { readWorktreeContention: emptyWorktreeReport },
+  });
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();
   client = new Client({ name: 'test', version: '0.0.0' });
   await Promise.all([server.connect(serverT), client.connect(clientT)]);
 });
+
+function emptyWorktreeReport(repoRoot: string): WorktreeContentionReport {
+  return {
+    generated_at: '2026-04-29T00:00:00.000Z',
+    repo_root: repoRoot,
+    inspected_roots: [],
+    worktrees: [],
+    contentions: [],
+    summary: {
+      worktree_count: 0,
+      dirty_worktree_count: 0,
+      dirty_file_count: 0,
+      contention_count: 0,
+    },
+  };
+}
 
 afterEach(async () => {
   await client.close();
@@ -234,6 +257,11 @@ describe('queen_plan_goal', () => {
         session_id: '<claiming-session-id>',
         agent: '<agent-name>',
       },
+    });
+    expect(result.plan_validation).toMatchObject({
+      blocking: false,
+      finding_count: 0,
+      counts: { error: 0, warning: 0, info: 0 },
     });
 
     const changeText = readFileSync(
