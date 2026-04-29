@@ -53,6 +53,27 @@ function seedClaimConflict(options: { file_path?: string; ageMinutes?: number } 
   return thread.task_id;
 }
 
+function seedProtectedCrossTaskConflict(
+  filePath = defaultSettings.protected_files[0] ?? 'packages/storage/src/storage.ts',
+): { ownerTaskId: number; editorTaskId: number; filePath: string } {
+  store.startSession({ id: 'A', ide: 'claude-code', cwd: '/repo' });
+  store.startSession({ id: 'B', ide: 'codex', cwd: '/repo' });
+  const ownerThread = TaskThread.open(store, {
+    repo_root: '/repo',
+    branch: 'agent/claude/storage-owner',
+    session_id: 'A',
+  });
+  const editorThread = TaskThread.open(store, {
+    repo_root: '/repo',
+    branch: 'agent/codex/storage-editor',
+    session_id: 'B',
+  });
+  ownerThread.join('A', 'claude');
+  editorThread.join('B', 'codex');
+  ownerThread.claimFile({ session_id: 'A', file_path: filePath });
+  return { ownerTaskId: ownerThread.task_id, editorTaskId: editorThread.task_id, filePath };
+}
+
 function metadataOf(row: { metadata: string | Record<string, unknown> | null } | undefined) {
   if (!row?.metadata) return {};
   return typeof row.metadata === 'string'
@@ -441,6 +462,82 @@ describe('runHook', () => {
     );
     expect(unclaimed.permissionDecision).toBe('allow');
     expect(store.storage.getClaim(taskId, 'src/new.tsx')?.session_id).toBe('B');
+  });
+
+  it('block-on-conflict policy denies non-integrator edits to protected files claimed by another live session', async () => {
+    useBridgePolicy('block-on-conflict');
+    const { ownerTaskId, editorTaskId, filePath } = seedProtectedCrossTaskConflict();
+
+    const result = await runHook(
+      'pre-tool-use',
+      {
+        session_id: 'B',
+        ide: 'codex',
+        cwd: '/repo',
+        tool_name: 'Edit',
+        tool_input: { file_path: filePath },
+      },
+      { store },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.permissionDecision).toBe('deny');
+    expect(result.permissionDecisionReason).toContain('Protected file');
+    expect(store.storage.getClaim(ownerTaskId, filePath)?.session_id).toBe('A');
+    expect(store.storage.getClaim(editorTaskId, filePath)).toBeUndefined();
+    const warning = JSON.parse(result.context ?? '{}') as Record<string, unknown>;
+    expect(warning).toMatchObject({
+      code: 'PROTECTED_FILE_CONTENTION',
+      policy_mode: 'block-on-conflict',
+      conflict: true,
+      protected_file: true,
+      protected_file_path: filePath,
+      owner: 'A',
+      integrator: false,
+    });
+    expect(warning.contender_sessions).toEqual(expect.arrayContaining(['A', 'B']));
+    const telemetry = store.storage.taskObservationsByKind(editorTaskId, 'claim-before-edit');
+    expect(metadataOf(telemetry[0])).toMatchObject({
+      code: 'PROTECTED_FILE_CONTENTION',
+      protected_file: true,
+      protected_file_path: filePath,
+      owner: 'A',
+      integrator: false,
+    });
+  });
+
+  it('block-on-conflict policy allows integrator edits to protected files while still escalating', async () => {
+    useBridgePolicy('block-on-conflict');
+    const { ownerTaskId, editorTaskId, filePath } = seedProtectedCrossTaskConflict();
+
+    const result = await runHook(
+      'pre-tool-use',
+      {
+        session_id: 'B',
+        ide: 'codex',
+        cwd: '/repo',
+        metadata: { role: 'integrator' },
+        tool_name: 'Edit',
+        tool_input: { file_path: filePath },
+      },
+      { store },
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.permissionDecision).toBe('allow');
+    expect(store.storage.getClaim(ownerTaskId, filePath)?.session_id).toBe('A');
+    expect(store.storage.getClaim(editorTaskId, filePath)?.session_id).toBe('B');
+    const warning = JSON.parse(result.context ?? '{}') as Record<string, unknown>;
+    expect(warning).toMatchObject({
+      code: 'PROTECTED_FILE_CONTENTION',
+      policy_mode: 'block-on-conflict',
+      conflict: true,
+      protected_file: true,
+      protected_file_path: filePath,
+      owner: 'A',
+      integrator: true,
+    });
+    expect(warning.contender_sessions).toEqual(expect.arrayContaining(['A', 'B']));
   });
 
   it('block-on-conflict policy allows weak and expired live contention claims', async () => {
