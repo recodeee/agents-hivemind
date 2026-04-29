@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { detectRepoBranch } from '@colony/core';
+import type { TaskBindingCache } from './task-binding.js';
 import type { HookInput, HookName } from './types.js';
 
 type ActiveSessionState = 'working' | 'thinking' | 'idle';
@@ -8,13 +9,19 @@ type ActiveSessionState = 'working' | 'thinking' | 'idle';
 const ACTIVE_SESSIONS_RELATIVE_DIR = join('.omx', 'state', 'active-sessions');
 const PREVIEW_LIMIT = 180;
 
-export function upsertActiveSession(input: HookInput, hook: HookName): void {
+export function upsertActiveSession(
+  input: HookInput,
+  hook: HookName,
+  taskBinding?: TaskBindingCache,
+): void {
   const detected = detectFromInput(input);
   if (!detected) return;
 
   const filePath = activeSessionFilePath(detected.repo_root, input.session_id);
   const existing = readExisting(filePath);
   const now = new Date().toISOString();
+  const nowMs = Date.now();
+  const binding = liveTaskBinding(taskBinding, nowMs) ?? existingTaskBinding(existing, nowMs);
   const preview = taskPreview(input, hook);
   const taskName =
     hook === 'user-prompt-submit' && preview
@@ -36,6 +43,7 @@ export function upsertActiveSession(input: HookInput, hook: HookName): void {
     lastHeartbeatAt: now,
     state: stateForHook(hook),
     sessionKey: input.session_id,
+    ...(binding ? { taskBinding: binding } : {}),
   };
 
   mkdirSync(dirname(filePath), { recursive: true });
@@ -59,13 +67,34 @@ function activeSessionFilePath(repoRoot: string, sessionId: string): string {
   return join(repoRoot, ACTIVE_SESSIONS_RELATIVE_DIR, `${sanitize(sessionId)}.json`);
 }
 
-function readExisting(filePath: string): Record<string, string> | null {
+function readExisting(filePath: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(readFileSync(filePath, 'utf8'));
     return parsed && typeof parsed === 'object' ? parsed : null;
   } catch {
     return null;
   }
+}
+
+function existingTaskBinding(
+  existing: Record<string, unknown> | null,
+  now: number,
+): TaskBindingCache | null {
+  if (!existing) return null;
+  return liveTaskBinding(existing.taskBinding, now);
+}
+
+function liveTaskBinding(value: unknown, now: number): TaskBindingCache | null {
+  if (!isRecord(value)) return null;
+  const task_id = value.task_id;
+  const expires_at = value.expires_at;
+  const binding_confidence = value.binding_confidence;
+  if (typeof task_id !== 'number' || !Number.isInteger(task_id) || task_id <= 0) return null;
+  if (typeof expires_at !== 'number' || !Number.isFinite(expires_at) || expires_at <= now) {
+    return null;
+  }
+  if (binding_confidence !== 'high' && binding_confidence !== 'medium') return null;
+  return { task_id, expires_at, binding_confidence };
 }
 
 function sanitize(value: string): string {

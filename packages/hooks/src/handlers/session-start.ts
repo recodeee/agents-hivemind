@@ -12,6 +12,7 @@ import {
 } from '@colony/core';
 import { spawnNodeScript } from '@colony/process';
 import { buildScopeCheckPreface } from '../preface-conflict-map.js';
+import { taskBindingSessionMetadata } from '../task-binding.js';
 import type { HookInput } from '../types.js';
 
 export interface SuggestionPrefaceDeps {
@@ -86,6 +87,7 @@ export async function sessionStart(
     id: input.session_id,
     ide: input.ide ?? 'unknown',
     cwd: input.cwd ?? null,
+    metadata: taskBindingSessionMetadata(input),
   });
 
   kickForagingScan(store, input);

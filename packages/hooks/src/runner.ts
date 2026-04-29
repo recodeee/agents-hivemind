@@ -9,6 +9,11 @@ import { sessionEnd } from './handlers/session-end.js';
 import { buildProposalPreface, buildTaskPreface, sessionStart } from './handlers/session-start.js';
 import { stop } from './handlers/stop.js';
 import { userPromptSubmit } from './handlers/user-prompt-submit.js';
+import {
+  recordTaskBindingLifecycleEvent,
+  shouldEmitTaskBindingEvent,
+  taskBindingSessionMetadata,
+} from './task-binding.js';
 import type { HookInput, HookName, HookResult } from './types.js';
 
 export interface RunHookOptions {
@@ -52,9 +57,21 @@ export async function runHook(
       case 'session-start':
         upsertActiveSession(input, name);
         context = await sessionStart(store, input);
+        if (shouldEmitTaskBindingEvent(input)) {
+          const binding = recordTaskBindingLifecycleEvent(store, input, 'session_start');
+          upsertActiveSession(input, name, binding.cache);
+        }
         break;
       case 'user-prompt-submit':
-        upsertActiveSession(input, name);
+        if (
+          shouldEmitTaskBindingEvent(input) &&
+          store.storage.lastObservationTsForSession(input.session_id, 'user_prompt') === 0
+        ) {
+          const binding = recordTaskBindingLifecycleEvent(store, input, 'task_bind');
+          upsertActiveSession(input, name, binding.cache);
+        } else {
+          upsertActiveSession(input, name);
+        }
         context = joinContext(bootstrapContext, await userPromptSubmit(store, input));
         break;
       case 'pre-tool-use':
@@ -107,6 +124,7 @@ function materializeSession(store: MemoryStore, input: HookInput): void {
     id: input.session_id,
     ide: input.ide ?? inferIdeFromSessionId(input.session_id) ?? 'unknown',
     cwd: input.cwd ?? null,
+    metadata: taskBindingSessionMetadata(input),
   });
 }
 
