@@ -1,5 +1,27 @@
 # @imdeadpool/colony-cli
 
+## 0.7.0
+
+### Minor Changes
+
+- 50e13df: `colony health` now merges Codex CLI rollout `mcp_tool_call_end` events from `~/.codex/sessions/` into its share view, matching the recodee dashboard's existing ingest path. Codex doesn't fire colony's PostToolUse hook, so previously every Codex-side MCP call was invisible to `colony health` — `0 / 0 (n/a)` even when the dashboard counted hundreds. The reader honours `CODEX_CLI_SESSIONS_ROOT` like the dashboard backend, and the formatter prints a `sources` line whenever any rollout event was folded in so the breakdown stays auditable.
+
+### Patch Changes
+
+- 2353dce: Expand `colony health` with ant-model coordination health metrics.
+- b937fb7: Cap `attention_inbox` stalled lane rows by default while preserving total
+  counts and explicit expansion.
+- 77c9e30: Make PreToolUse auto-claim coverage observable and surface hook-wiring problems instead of agent-discipline ones.
+
+  - The Claude installer now scopes PreToolUse and PostToolUse to a write-tool matcher so the hook does not fire (or get blamed) for unrelated tools.
+  - `colony hook run pre-tool-use` now writes its warning back through Claude Code's PreToolUse `permissionDecision: allow` so the agent sees the missing-claim warning instead of it being silently dropped on stderr.
+  - The pre-tool-use warning embeds a concrete `next_call` (an exact `mcp__colony__task_claim_file({...})` invocation) and a multi-line actionable `message`, so an agent that hits ACTIVE_TASK_NOT_FOUND / AMBIGUOUS_ACTIVE_TASK / SESSION_NOT_FOUND knows exactly what to do.
+  - `claimBeforeEditStats` adds a `pre_tool_use_signals` count of `claim-before-edit` telemetry rows in the window. `colony health` and `hivemind_context`'s claim-before-edit nudge use it to distinguish "hook is not firing" from "agent skipped the claim", and emit an install/restart hint in the former case.
+  - `colony health` also reports explicit/manual vs auto-claim breakdown and reads "had a claim before edit" instead of "explicit claims first".
+
+- 6c8e718: Add a root publish wrapper for the public CLI package and normalize the CLI bin metadata so `npm publish` targets `apps/cli` instead of the private monorepo root.
+- 25d12ac: `colony health` now surfaces a top-tools breakdown and a hook-wiring hint when the window has tool calls but zero `mcp__` entries, so the zero-state is debuggable instead of silent.
+
 ## Unreleased
 
 ### telemetry-driven coordination tightening

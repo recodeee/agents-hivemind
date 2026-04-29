@@ -1,5 +1,15 @@
 # @colony/core
 
+## 0.7.0
+
+### Patch Changes
+
+- b937fb7: Cap `attention_inbox` stalled lane rows by default while preserving total
+  counts and explicit expansion.
+- fa4e1a3: Add typed signal metadata helpers for decaying coordination signals.
+- Updated dependencies [77c9e30]
+  - @colony/storage@0.7.0
+
 ## 0.6.0
 
 ### Minor Changes
