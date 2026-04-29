@@ -53,6 +53,9 @@ export const FILE_EDIT_TOOLS = new Set([
   'Write',
   'MultiEdit',
   'NotebookEdit',
+  'apply_patch',
+  'ApplyPatch',
+  'Patch',
   'mcp__omx_code_intel__apply_edit',
 ]);
 
