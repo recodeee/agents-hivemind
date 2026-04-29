@@ -65,12 +65,14 @@ interface ReadyResult {
   next_tool?: 'task_plan_claim_subtask';
   plan_slug?: string;
   subtask_index?: number;
+  reason?: 'continue_current_task' | 'urgent_override' | 'ready_high_score';
   claim_args?: {
     plan_slug: string;
     subtask_index: number;
     session_id: string;
     agent: string;
   };
+  codex_mcp_call?: string;
   empty_state?: string;
 }
 
@@ -163,7 +165,7 @@ describe('task_ready_for_agent', () => {
     expect(result.total_available).toBe(0);
     expect(result.empty_state).toBe(EMPTY_READY_STATE);
     expect(result.next_tool).toBeUndefined();
-    expect(result.next_action).toContain('queen_plan_goal or task_plan_publish');
+    expect(result.next_action).toBe('Publish a Queen/task plan for multi-agent work.');
   });
 
   it('returns exact claim args for a ready sub-task', async () => {
@@ -198,6 +200,7 @@ describe('task_ready_for_agent', () => {
     expect(result.next_tool).toBe('task_plan_claim_subtask');
     expect(result.plan_slug).toBe('claimable-plan');
     expect(result.subtask_index).toBe(0);
+    expect(result.reason).toBe('ready_high_score');
     expect(result.next_action).toContain('task_plan_claim_subtask');
     expect(result.next_action).toContain('plan_slug="claimable-plan"');
     expect(result.claim_args).toEqual({
@@ -206,6 +209,9 @@ describe('task_ready_for_agent', () => {
       session_id: 'agent-session',
       agent: 'codex',
     });
+    expect(result.codex_mcp_call).toBe(
+      'mcp__colony__task_plan_claim_subtask({ agent: "codex", session_id: "agent-session", plan_slug: "claimable-plan", subtask_index: 0 })',
+    );
     expect(result.empty_state).toBeUndefined();
   });
 
@@ -243,7 +249,53 @@ describe('task_ready_for_agent', () => {
     expect(result.total_available).toBe(0);
     expect(result.empty_state).toBe(EMPTY_READY_STATE);
     expect(result.next_tool).toBeUndefined();
-    expect(result.next_action).toContain('complete upstream dependencies');
+    expect(result.codex_mcp_call).toBeUndefined();
+    expect(result.next_action).toBe(
+      'Complete upstream dependencies or unblock current plan waves before claiming more work.',
+    );
+  });
+
+  it('continues an already claimed sub-task without fabricating a new claim call', async () => {
+    await call('task_plan_publish', {
+      ...publishArgs(
+        [
+          {
+            title: 'Already claimed API',
+            description: 'Work already claimed by this agent.',
+            file_scope: ['apps/api/already-claimed.ts'],
+            capability_hint: 'api_work',
+          },
+          {
+            title: 'Future dependent docs',
+            description: 'Not claimable until the already-claimed work completes.',
+            file_scope: ['docs/already-claimed.md'],
+            depends_on: [0],
+            capability_hint: 'doc_work',
+          },
+        ],
+        { slug: 'already-claimed-plan' },
+      ),
+    });
+    await claimSubtask('already-claimed-plan', 0);
+
+    const result = await call<ReadyResult>('task_ready_for_agent', {
+      session_id: 'agent-session',
+      agent: 'codex',
+      repo_root: repoRoot,
+    });
+
+    expect(result.ready).toHaveLength(1);
+    expect(result.ready[0]).toMatchObject({
+      plan_slug: 'already-claimed-plan',
+      subtask_index: 0,
+      reason: 'continue_current_task',
+    });
+    expect(result.total_available).toBe(0);
+    expect(result.next_action).toContain('Continue claimed sub-task');
+    expect(result.next_tool).toBeUndefined();
+    expect(result.claim_args).toBeUndefined();
+    expect(result.codex_mcp_call).toBeUndefined();
+    expect(result.empty_state).toBeUndefined();
   });
 
   it('walks the current adoption-fix waves through ready work and claim flow', async () => {

@@ -1273,16 +1273,18 @@ When claimable work exists, the response also includes exact routing fields:
   "next_tool": "task_plan_claim_subtask",
   "plan_slug": "example-plan",
   "subtask_index": 0,
+  "reason": "ready_high_score",
   "claim_args": {
     "plan_slug": "example-plan",
     "subtask_index": 0,
     "session_id": "sess_def",
     "agent": "codex"
-  }
+  },
+  "codex_mcp_call": "mcp__colony__task_plan_claim_subtask({ agent: \"codex\", session_id: \"sess_def\", plan_slug: \"example-plan\", subtask_index: 0 })"
 }
 ```
 
-When there is nothing to claim, the response includes `empty_state: "No claimable plan subtasks. Publish a Queen/task plan for multi-agent work, or use task_list only for browsing."`
+When no plan exists, the response includes `empty_state: "No claimable plan subtasks. Publish a Queen/task plan for multi-agent work, or use task_list only for browsing."` and `next_action: "Publish a Queen/task plan for multi-agent work."` When a plan exists but later waves are blocked, it keeps the same `empty_state` and points `next_action` at completing dependencies instead of fabricating a claim.
 
 ## `rescue_stranded_scan`
 

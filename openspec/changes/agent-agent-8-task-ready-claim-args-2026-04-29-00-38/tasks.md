@@ -4,13 +4,17 @@
 
 - [x] Inspect current `task_ready_for_agent` output.
 - [x] Return exact `task_plan_claim_subtask` routing fields for claimable work.
+- [x] Return top-level `reason` and a copy-paste Codex MCP call for claimable work.
 - [x] Return a compact empty state when no plan subtasks are claimable.
+- [x] Keep already-claimed current work as a continue signal without claim args.
 
 ## 2. Tests
 
 - [x] Cover a ready subtask returning claim args.
+- [x] Cover a ready subtask returning `reason` and `codex_mcp_call`.
 - [x] Cover blocked future subtasks returning the empty state.
 - [x] Cover no subtasks returning the empty state.
+- [x] Cover already-claimed subtasks returning no fabricated claim call.
 
 ## 3. Docs
 

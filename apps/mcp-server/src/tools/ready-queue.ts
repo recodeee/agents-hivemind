@@ -24,6 +24,9 @@ const PLAN_SUBTASK_KIND = 'plan-subtask';
 const PLAN_SUBTASK_CLAIM_KIND = 'plan-subtask-claim';
 export const NO_CLAIMABLE_PLAN_SUBTASKS_EMPTY_STATE =
   'No claimable plan subtasks. Publish a Queen/task plan for multi-agent work, or use task_list only for browsing.';
+export const NO_PLAN_NEXT_ACTION = 'Publish a Queen/task plan for multi-agent work.';
+export const NO_READY_SUBTASKS_NEXT_ACTION =
+  'Complete upstream dependencies or unblock current plan waves before claiming more work.';
 const CAPABILITY_HINT_TEXT: Record<string, string> = {
   ui_work: 'ui',
   api_work: 'api',
@@ -66,7 +69,9 @@ export interface ReadyForAgentResult {
   next_tool?: 'task_plan_claim_subtask';
   plan_slug?: string;
   subtask_index?: number;
+  reason?: ReadyReason;
   claim_args?: TaskPlanClaimArgs;
+  codex_mcp_call?: string;
   empty_state?: string;
 }
 
@@ -184,18 +189,30 @@ export async function buildReadyForAgent(
     ),
   );
 
-  return buildReadyResult({ ready, total_available: available.length }, claimable, args);
+  return buildReadyResult(
+    { ready, total_available: available.length },
+    claimable,
+    args,
+    plans.length > 0,
+  );
 }
 
 function buildReadyResult(
   base: Pick<ReadyForAgentResult, 'ready' | 'total_available'>,
   claimable: RankedSubtask | null,
   args: { session_id: string; agent: string },
+  hasPlans: boolean,
 ): ReadyForAgentResult {
   if (claimable === null) {
+    if (base.ready.length > 0) {
+      return {
+        ...base,
+        next_action: readyNextAction(base.ready, args),
+      };
+    }
     return {
       ...base,
-      next_action: readyNextAction(base.ready, args),
+      next_action: hasPlans ? NO_READY_SUBTASKS_NEXT_ACTION : NO_PLAN_NEXT_ACTION,
       empty_state: NO_CLAIMABLE_PLAN_SUBTASKS_EMPTY_STATE,
     };
   }
@@ -212,8 +229,14 @@ function buildReadyResult(
     next_tool: 'task_plan_claim_subtask',
     plan_slug: claimable.plan_slug,
     subtask_index: claimable.subtask_index,
+    reason: claimable.reason,
     claim_args,
+    codex_mcp_call: codexMcpCall(claim_args),
   };
+}
+
+function codexMcpCall(args: TaskPlanClaimArgs): string {
+  return `mcp__colony__task_plan_claim_subtask({ agent: ${JSON.stringify(args.agent)}, session_id: ${JSON.stringify(args.session_id)}, plan_slug: ${JSON.stringify(args.plan_slug)}, subtask_index: ${args.subtask_index} })`;
 }
 
 function readyNextAction(
