@@ -97,9 +97,11 @@ export function liveFileContentionsForSessionClaims(
 
   const warnings: LiveFileContentionWarning[] = [];
   const seen = new Set<string>();
+  const scanArgs = { ...args };
+  delete scanArgs.task_ids;
   for (const claim of currentClaims) {
     for (const warning of liveFileContentionsForClaim(store, {
-      ...args,
+      ...scanArgs,
       file_path: claim.file_path,
       task_id: claim.task_id,
       assume_requester_live: args.assume_requester_live ?? true,

@@ -17,6 +17,36 @@ function seed(...ids: string[]): void {
   }
 }
 
+function writeActiveSession(
+  repoRoot: string,
+  sessionId: string,
+  args: { agentName: string; branch: string; now: number },
+): void {
+  const sessionDir = join(repoRoot, '.omx', 'state', 'active-sessions');
+  mkdirSync(sessionDir, { recursive: true });
+  const heartbeat = new Date(args.now).toISOString();
+  writeFileSync(
+    join(sessionDir, `${sessionId}.json`),
+    `${JSON.stringify(
+      {
+        repoRoot,
+        branch: args.branch,
+        taskName: `${args.agentName} live contention`,
+        latestTaskPreview: 'claiming shared file',
+        agentName: args.agentName,
+        cliName: args.agentName,
+        worktreePath: join(repoRoot, '.omx', 'agent-worktrees', sessionId),
+        startedAt: heartbeat,
+        lastHeartbeatAt: heartbeat,
+        state: 'working',
+        sessionKey: sessionId,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
+
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'colony-attention-'));
   store = new MemoryStore({ dbPath: join(dir, 'data.db'), settings: defaultSettings });
@@ -152,6 +182,63 @@ describe('buildAttentionInbox', () => {
     expect(narrowed.summary.stalled_lane_count).toBe(12);
     expect(narrowed.stalled_lanes).toHaveLength(3);
     expect(narrowed.stalled_lanes_truncated).toBe(true);
+  });
+
+  it('surfaces live file contention for two live sessions claiming the same normalized file', () => {
+    const now = Date.parse('2026-04-29T10:00:00.000Z');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(now);
+    const repo = join(dir, 'repo-live-contention');
+    mkdirSync(repo, { recursive: true });
+    seed('claude-live', 'codex-live');
+    writeActiveSession(repo, 'claude-live', {
+      agentName: 'claude',
+      branch: 'agent/claude/contention-owner',
+      now,
+    });
+    writeActiveSession(repo, 'codex-live', {
+      agentName: 'codex',
+      branch: 'agent/codex/contention-requester',
+      now,
+    });
+
+    const ownerThread = TaskThread.open(store, {
+      repo_root: repo,
+      branch: 'agent/claude/contention-owner',
+      session_id: 'claude-live',
+    });
+    ownerThread.join('claude-live', 'claude');
+    ownerThread.claimFile({ session_id: 'claude-live', file_path: './src/shared.ts' });
+
+    const requesterThread = TaskThread.open(store, {
+      repo_root: repo,
+      branch: 'agent/codex/contention-requester',
+      session_id: 'codex-live',
+    });
+    requesterThread.join('codex-live', 'codex');
+    requesterThread.claimFile({ session_id: 'codex-live', file_path: 'src/shared.ts' });
+
+    const inbox = buildAttentionInbox(store, {
+      session_id: 'codex-live',
+      agent: 'codex',
+      task_ids: [requesterThread.task_id],
+      repo_root: repo,
+      now,
+    });
+
+    expect(inbox.summary.live_file_contention_count).toBe(1);
+    expect(inbox.summary.next_action).toMatch(/LIVE_FILE_CONTENTION/);
+    expect(inbox.live_file_contentions).toEqual([
+      {
+        code: 'LIVE_FILE_CONTENTION',
+        owner_session_id: 'claude-live',
+        owner_agent: 'claude',
+        owner_branch: 'agent/claude/contention-owner',
+        owner_task_id: ownerThread.task_id,
+        file_path: 'src/shared.ts',
+        last_seen: new Date(now).toISOString(),
+      },
+    ]);
   });
 
   it('adds compact reply and mark-read suggestions to unread message items', () => {

@@ -20,6 +20,10 @@ import {
   TaskThread,
   type WakeRequestMetadata,
 } from './task-thread.js';
+import {
+  liveFileContentionsForSessionClaims,
+  type LiveFileContentionWarning,
+} from './live-file-contention.js';
 
 /**
  * Pending handoff item reduced to the shape the inbox surfaces: id, sender,
@@ -177,6 +181,7 @@ export interface AttentionInbox {
     expired_other_claim_count: number;
     weak_other_claim_count: number;
     recent_other_claim_count: number;
+    live_file_contention_count: number;
     hot_file_count: number;
     /**
      * True iff at least one unread message is `urgency='blocking'`. The
@@ -200,6 +205,7 @@ export interface AttentionInbox {
   stalled_lanes_truncated: boolean;
   stale_claim_signals: InboxStaleClaimSignals;
   recent_other_claims: InboxRecentClaim[];
+  live_file_contentions: LiveFileContentionWarning[];
   file_heat: InboxFileHeat[];
 }
 
@@ -308,6 +314,15 @@ export function buildAttentionInbox(
   }
 
   const recent_other_claims = scanned_other_claims.filter((claim) => claim.age_class === 'fresh');
+  const live_file_contentions = liveFileContentionsForSessionClaims(store, {
+    session_id: opts.session_id,
+    task_ids: taskIds,
+    ...(opts.repo_root !== undefined ? { repo_root: opts.repo_root } : {}),
+    ...(opts.repo_roots !== undefined ? { repo_roots: opts.repo_roots } : {}),
+    now,
+    claim_stale_minutes: claimStaleMinutes,
+    assume_requester_live: true,
+  });
   const stale_claim_signals = collectStaleClaimSignals(store, opts, taskIds, {
     now,
     claim_stale_minutes: claimStaleMinutes,
@@ -334,6 +349,7 @@ export function buildAttentionInbox(
     expired_other_claim_count: expiredClaims.length,
     weak_other_claim_count: weakClaims.length,
     recent_other_claim_count: recent_other_claims.length,
+    live_file_contention_count: live_file_contentions.length,
     hot_file_count: file_heat.length,
     blocked,
     next_action: deriveNextAction({
@@ -343,6 +359,7 @@ export function buildAttentionInbox(
       stalled_lanes,
       stale_claim_signals,
       recent_other_claims,
+      live_file_contentions,
       file_heat,
       read_receipts,
     }),
@@ -362,6 +379,7 @@ export function buildAttentionInbox(
     stalled_lanes_truncated: stalledLaneResult.truncated,
     stale_claim_signals,
     recent_other_claims,
+    live_file_contentions,
     file_heat,
   };
 }
@@ -768,6 +786,7 @@ function deriveNextAction(parts: {
   stalled_lanes: InboxLane[];
   stale_claim_signals: InboxStaleClaimSignals;
   recent_other_claims: InboxRecentClaim[];
+  live_file_contentions: LiveFileContentionWarning[];
   file_heat: InboxFileHeat[];
   read_receipts: ReadReceipt[];
 }): string {
@@ -788,6 +807,9 @@ function deriveNextAction(parts: {
   }
   if (parts.read_receipts.some((r) => r.urgency !== 'fyi')) {
     return 'Recipients have read your needs_reply messages without responding — consider following up.';
+  }
+  if (parts.live_file_contentions.length > 0) {
+    return 'LIVE_FILE_CONTENTION: another live agent owns a file you claimed; coordinate before editing.';
   }
   if (parts.stalled_lanes.length > 0) {
     return 'Review stalled lanes — takeover may be safer than waiting for the owner to return.';

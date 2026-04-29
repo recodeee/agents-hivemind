@@ -1,6 +1,12 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { TaskThread, classifyClaimAge, listPlans } from '@colony/core';
+import {
+  TaskThread,
+  classifyClaimAge,
+  listPlans,
+  liveFileContentionsForClaim,
+  normalizeClaimFilePath,
+} from '@colony/core';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { type ToolContext, defaultWrapHandler } from './context.js';
@@ -303,11 +309,18 @@ export function register(server: McpServer, ctx: ToolContext): void {
       note: z.string().optional(),
     },
     wrapHandler('task_claim_file', async ({ task_id, session_id, file_path, note }) => {
-      const previous = store.storage.getClaim(task_id, file_path);
+      const normalizedFilePath = normalizeClaimFilePath(file_path) || file_path;
+      const previous = store.storage.getClaim(task_id, normalizedFilePath);
+      const liveContentions = liveFileContentionsForClaim(store, {
+        task_id,
+        session_id,
+        file_path: normalizedFilePath,
+        assume_requester_live: true,
+      });
       const thread = new TaskThread(store, task_id);
       const id = thread.claimFile({
         session_id,
-        file_path,
+        file_path: normalizedFilePath,
         ...(note !== undefined ? { note } : {}),
       });
       const previousClaim = previous
@@ -315,6 +328,8 @@ export function register(server: McpServer, ctx: ToolContext): void {
         : null;
       return jsonReply({
         observation_id: id,
+        warning: liveContentions[0] ?? null,
+        live_file_contentions: liveContentions,
         overlap: previousClaim?.overlap ?? 'none',
         previous_claim: previousClaim,
       });
