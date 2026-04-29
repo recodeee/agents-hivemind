@@ -30,6 +30,7 @@ const TARGET_TASK_LIST_TO_READY = 0.3;
 const TARGET_READY_TO_CLAIM = 0.3;
 const TARGET_CLAIM_BEFORE_EDIT = 0.5;
 const TARGET_COLONY_NOTE_SHARE = 0.7;
+const TARGET_TASK_MESSAGE_SHARE = 0.2;
 
 const CONVERSIONS = [
   ['hivemind_context', 'attention_inbox'],
@@ -199,6 +200,15 @@ interface ActionHint {
   tool_call?: string;
   command?: string;
   prompt: string;
+}
+
+function codexPrompt(input: {
+  goal: string;
+  current: string;
+  inspect: string;
+  acceptance: string;
+}): string {
+  return `Goal: ${input.goal} | Current: ${input.current} | Inspect: ${input.inspect} | Accept: ${input.acceptance}`;
 }
 
 export interface ColonyHealthPayload {
@@ -871,8 +881,13 @@ function healthActionHints(payload: ColonyHealthPayloadWithoutHints): ActionHint
         'After hivemind_context, call attention_inbox to clear handoffs, unread messages, and blockers.',
       tool_call:
         'mcp__colony__attention_inbox({ agent: "<agent>", session_id: "<session_id>", repo_root: "<repo_root>" })',
-      prompt:
-        'Call mcp__colony__attention_inbox for this repo/session; clear handoffs, unread messages, and blockers before choosing work.',
+      prompt: codexPrompt({
+        goal: 'make every hivemind_context run clear attention before work selection',
+        current: `hivemind_context -> attention_inbox ${formatPercent(hivemindToAttention.conversion_rate)}`,
+        inspect: 'mcp__colony__hivemind_context, mcp__colony__attention_inbox, docs/mcp.md',
+        acceptance:
+          'agents call attention_inbox after hivemind_context and clear blockers before choosing work',
+      }),
     });
   }
 
@@ -887,8 +902,13 @@ function healthActionHints(payload: ColonyHealthPayloadWithoutHints): ActionHint
         'Keep task_list for browsing/debugging only; call task_ready_for_agent before selecting work.',
       tool_call:
         'mcp__colony__task_ready_for_agent({ agent: "<agent>", session_id: "<session_id>", repo_root: "<repo_root>" })',
-      prompt:
-        'Call mcp__colony__task_ready_for_agent for this repo/session; pick the highest-fit ready task instead of browsing task_list.',
+      prompt: codexPrompt({
+        goal: 'route task selection through task_ready_for_agent instead of task_list browsing',
+        current: `task_list -> task_ready_for_agent ${formatPercent(taskListToReady.conversion_rate)}`,
+        inspect: 'mcp__colony__task_ready_for_agent, mcp__colony__task_list, docs/mcp.md',
+        acceptance:
+          'task_list stays inventory/debug only and task_ready_for_agent is called before choosing work',
+      }),
     });
   }
 
@@ -903,8 +923,39 @@ function healthActionHints(payload: ColonyHealthPayloadWithoutHints): ActionHint
         'When ready work fits, claim it with task_plan_claim_subtask, then claim touched files before implementation.',
       tool_call:
         'mcp__colony__task_plan_claim_subtask({ agent: "<agent>", session_id: "<session_id>", plan_slug: "<plan_slug>", subtask_index: <index> })',
-      prompt:
-        'Claim the selected ready subtask with mcp__colony__task_plan_claim_subtask, then claim every touched file before editing.',
+      prompt: codexPrompt({
+        goal: 'convert ready work into an owned plan subtask',
+        current: `task_ready_for_agent -> task_plan_claim_subtask ${formatPercent(readyToClaim.conversion_rate)}`,
+        inspect:
+          'mcp__colony__task_ready_for_agent, mcp__colony__task_plan_claim_subtask, mcp__colony__task_claim_file',
+        acceptance:
+          'selected ready subtasks are claimed and touched files are claimed before implementation',
+      }),
+    });
+  }
+
+  const messageShare = payload.task_post_vs_task_message.task_message_share;
+  if (
+    payload.task_post_vs_task_message.task_post_calls > 0 &&
+    isBelowTarget(messageShare, TARGET_TASK_MESSAGE_SHARE)
+  ) {
+    hints.push({
+      metric: 'task_message adoption',
+      status: 'bad',
+      current: `${payload.task_post_vs_task_message.task_message_calls} task_message / ${payload.task_post_vs_task_message.task_post_calls} task_post (${formatPercent(messageShare)})`,
+      target: `${formatPercent(TARGET_TASK_MESSAGE_SHARE)}+`,
+      action:
+        'Use task_message for directed agent-to-agent coordination; keep task_post for task-thread notes and decisions.',
+      tool_call:
+        'mcp__colony__task_message({ agent: "<agent>", session_id: "<session_id>", task_id: <task_id>, to_agent: "<agent|any>", urgency: "needs_reply", content: "<short request>" })',
+      prompt: codexPrompt({
+        goal: 'move agent-to-agent coordination from task_post notes to task_message',
+        current: `${payload.task_post_vs_task_message.task_message_calls} task_message calls, ${payload.task_post_vs_task_message.task_post_calls} task_post calls`,
+        inspect:
+          'mcp__colony__task_message, mcp__colony__task_messages, mcp__colony__attention_inbox, docs/mcp.md',
+        acceptance:
+          'directed coordination uses task_message and unread replies surface in attention_inbox',
+      }),
     });
   }
 
@@ -922,8 +973,14 @@ function healthActionHints(payload: ColonyHealthPayloadWithoutHints): ActionHint
       action:
         'Most edit evidence is from Codex rollouts, but no Codex PreToolUse hook or rollout bridge is firing. Install Codex hooks or add a rollout bridge before counting rollout edits as claim-before-edit eligible.',
       command: 'colony install --ide codex  # then restart Codex',
-      prompt:
-        'Codex rollout edits are present but unsupported for claim-before-edit auto-claim until Codex PreToolUse hooks or a rollout bridge fire. Run colony install --ide codex and restart Codex; if hooks are unavailable, add a rollout bridge.',
+      prompt: codexPrompt({
+        goal: 'make Codex edits produce claim-before-edit telemetry before edit tools run',
+        current: `${claimBeforeEdit.edit_source_breakdown.codex_rollout_edits} Codex rollout edits, ${claimBeforeEdit.pre_tool_use_signals} PreToolUse signals`,
+        inspect:
+          'packages/hooks/src/handlers/pre-tool-use.ts, packages/hooks/src/auto-claim.ts, apps/cli/src/lib/codex-rollouts.ts, colony install --ide codex',
+        acceptance:
+          'Codex PreToolUse or rollout bridge fires and claim-before-edit coverage can be measured',
+      }),
     });
   } else if (isBelowTarget(claimBeforeEdit.claim_before_edit_ratio, TARGET_CLAIM_BEFORE_EDIT)) {
     const missingHook = claimBeforeEdit.likely_missing_hook;
@@ -945,11 +1002,68 @@ function healthActionHints(payload: ColonyHealthPayloadWithoutHints): ActionHint
         : sessionBindingMissing
           ? 'colony install --ide <ide>  # then restart the editor session to refresh SessionStart binding'
           : 'colony install --ide <ide>  # enables pre-edit auto-claim hooks',
-      prompt: missingHook
-        ? 'PreToolUse auto-claim is not covering hook-capable edits — run colony install --ide <ide>, restart the editor session, and ensure an active task is bound. Until the hook fires, call mcp__colony__task_claim_file before each edit.'
-        : sessionBindingMissing
-          ? 'PreToolUse is firing, but Colony session binding is missing. Restart the editor session so SessionStart binds the active session id; until then, call mcp__colony__task_claim_file before each edit.'
-          : 'Before editing, call mcp__colony__task_claim_file for each touched path; if agents keep missing this, run colony install --ide <ide> to enable pre-edit auto-claim hooks.',
+      prompt: codexPrompt({
+        goal: missingHook
+          ? 'restore pre-edit auto-claim for hook-capable edits'
+          : sessionBindingMissing
+            ? 'bind PreToolUse telemetry to the active Colony session'
+            : 'make every edit visible through task_claim_file before editing',
+        current: `claim-before-edit ${formatPercent(claimBeforeEdit.claim_before_edit_ratio)}, missing ${claimBeforeEdit.edits_without_claim_before}`,
+        inspect:
+          'mcp__colony__task_claim_file, packages/hooks/src/handlers/pre-tool-use.ts, packages/hooks/src/auto-claim.ts, packages/hooks/test/auto-claim.test.ts',
+        acceptance:
+          'claim-before-edit reaches target and agents still manually call task_claim_file until hooks are proven',
+      }),
+    });
+  }
+
+  if (
+    payload.queen_wave_health.active_plans === 0 &&
+    payload.ready_to_claim_vs_claimed.plan_subtasks === 0
+  ) {
+    hints.push({
+      metric: 'Queen plan activation',
+      status: 'bad',
+      current: `active plans ${payload.queen_wave_health.active_plans}, plan subtasks ${payload.ready_to_claim_vs_claimed.plan_subtasks}`,
+      target: 'active plans > 0 for multi-agent work',
+      action:
+        'Publish a Queen/task plan for multi-agent work so task_ready_for_agent can return claimable subtasks.',
+      tool_call:
+        'mcp__colony__queen_plan_goal({ session_id: "<session_id>", repo_root: "<repo_root>", goal_title: "<goal>", problem: "<problem>", acceptance_criteria: ["<done>"] })',
+      prompt: codexPrompt({
+        goal: 'activate Queen planning for multi-agent work',
+        current: `active Queen plans ${payload.queen_wave_health.active_plans}, plan subtasks ${payload.ready_to_claim_vs_claimed.plan_subtasks}`,
+        inspect:
+          'mcp__colony__queen_plan_goal, mcp__colony__task_plan_publish, mcp__colony__task_ready_for_agent, docs/QUEEN.md',
+        acceptance:
+          'a plan exists with claimable subtasks and task_ready_for_agent returns exact claim args',
+      }),
+    });
+  }
+
+  if (
+    payload.proposal_health.proposals_seen === 0 ||
+    (payload.proposal_health.pending > 0 &&
+      payload.proposal_health.promoted === 0 &&
+      payload.proposal_health.promotion_rate === 0)
+  ) {
+    hints.push({
+      metric: 'proposal adoption',
+      status: 'bad',
+      current: `seen ${payload.proposal_health.proposals_seen}, pending ${payload.proposal_health.pending}, promoted ${payload.proposal_health.promoted}`,
+      target: 'pending or promoted proposals > 0',
+      action:
+        'Use task_foraging_report before inventing work; propose future work with task_propose and reinforce rediscovered candidates with task_reinforce.',
+      tool_call:
+        'mcp__colony__task_foraging_report({ repo_root: "<repo_root>", branch: "<branch>" })',
+      prompt: codexPrompt({
+        goal: 'make future-work candidates flow through proposals instead of chat-only notes',
+        current: `proposals seen ${payload.proposal_health.proposals_seen}, promoted ${payload.proposal_health.promoted}`,
+        inspect:
+          'mcp__colony__task_foraging_report, mcp__colony__task_propose, mcp__colony__task_reinforce, packages/core/src/proposal-system.ts',
+        acceptance:
+          'task_foraging_report shows pending/promoted work and rediscovered proposals can promote into tasks',
+      }),
     });
   }
 
@@ -963,8 +1077,13 @@ function healthActionHints(payload: ColonyHealthPayloadWithoutHints): ActionHint
         'Run colony coordination sweep/rescue, then release, hand off, or reclaim stale ownership.',
       tool_call: 'mcp__colony__rescue_stranded_scan({ stranded_after_minutes: <minutes> })',
       command: 'colony coordination sweep --json',
-      prompt:
-        'Run colony coordination sweep --json and mcp__colony__rescue_stranded_scan; release, hand off, or reclaim stale ownership.',
+      prompt: codexPrompt({
+        goal: 'clear stale ownership before agents trust current file claims',
+        current: `${payload.signal_health.stale_claims} stale claims`,
+        inspect:
+          'colony coordination sweep --json, mcp__colony__rescue_stranded_scan, mcp__colony__hivemind_context',
+        acceptance: 'stale claims are released, handed off, or reclaimed with audit evidence',
+      }),
     });
   }
 
@@ -977,8 +1096,13 @@ function healthActionHints(payload: ColonyHealthPayloadWithoutHints): ActionHint
       action: 'Run colony queen sweep/rescue so later waves can become claimable.',
       tool_call: 'mcp__colony__rescue_stranded_scan({ stranded_after_minutes: <minutes> })',
       command: 'colony queen sweep --json',
-      prompt:
-        'Run colony queen sweep --json and rescue stale blockers so later wave subtasks become claimable.',
+      prompt: codexPrompt({
+        goal: 'unblock downstream Queen waves',
+        current: `${payload.queen_wave_health.stale_claims_blocking_downstream} stale blockers`,
+        inspect:
+          'colony queen sweep --json, mcp__colony__rescue_stranded_scan, packages/queen/src/sweep.ts',
+        acceptance: 'stale blockers are rescued and later wave subtasks become claimable',
+      }),
     });
   }
 
@@ -995,8 +1119,13 @@ function healthActionHints(payload: ColonyHealthPayloadWithoutHints): ActionHint
         'Use task_note_working first for working state; use task_post when task_id is known; use OMX notepad only when Colony is unavailable.',
       tool_call:
         'mcp__colony__task_note_working({ session_id: "<session_id>", repo_root: "<repo_root>", branch: "<branch>", content: "branch=<branch>; task=<task>; blocker=<blocker>; next=<next>; evidence=<evidence>" })',
-      prompt:
-        'Save current working state with mcp__colony__task_note_working using branch/task/blocker/next/evidence; use OMX notepad only if Colony is unavailable.',
+      prompt: codexPrompt({
+        goal: 'store resumable working state in Colony before OMX notepad fallback',
+        current: `Colony note share ${formatPercent(payload.task_post_vs_omx_notepad.colony_note_share)}`,
+        inspect: 'mcp__colony__task_note_working, mcp__colony__task_post, .omx/notepad.md',
+        acceptance:
+          'working notes use branch/task/blocker/next/evidence and OMX notepad is only fallback',
+      }),
     });
   }
 

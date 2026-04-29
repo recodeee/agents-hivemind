@@ -532,7 +532,7 @@ describe('colony health payload', () => {
         action: expect.stringContaining('PreToolUse auto-claim hook is not firing'),
         tool_call: expect.stringContaining('mcp__colony__task_claim_file'),
         command: expect.stringContaining('colony install --ide <ide>'),
-        prompt: expect.stringContaining('PreToolUse auto-claim is not covering hook-capable edits'),
+        prompt: expect.stringContaining('Goal: restore pre-edit auto-claim'),
       }),
       expect.objectContaining({
         metric: 'stale claims',
@@ -580,9 +580,89 @@ describe('colony health payload', () => {
 
     const promptText = formatColonyHealthOutput(payload, { prompts: true });
     expect(promptText).toContain('Codex prompt snippets');
-    expect(promptText).toContain('Call mcp__colony__attention_inbox');
-    expect(promptText).toContain('Run colony coordination sweep --json');
-    expect(promptText).toContain('Save current working state with mcp__colony__task_note_working');
+    expect(promptText).toContain('Goal: make every hivemind_context run clear attention');
+    expect(promptText).toContain('Current: hivemind_context -> attention_inbox 0%');
+    expect(promptText).toContain('Inspect: colony coordination sweep --json');
+    expect(promptText).toContain('Accept: working notes use branch/task/blocker/next/evidence');
+  });
+
+  it('renders actionable Codex prompts for the current failing adoption metrics', () => {
+    const payload = buildColonyHealthPayload(
+      fakeStorage({
+        calls: [
+          call(1, 'session-a', 'mcp__colony__task_ready_for_agent', NOW - 90_000),
+          call(2, 'session-a', 'mcp__colony__task_post', NOW - 89_000),
+        ],
+        claimBeforeEdit: {
+          edit_tool_calls: 1,
+          edits_with_file_path: 1,
+          edits_claimed_before: 0,
+        },
+        tasks: [],
+        observationsByTask: {},
+        claimsByTask: {},
+        proposals: [],
+        reinforcements: {},
+      }),
+      {
+        since: SINCE,
+        window_hours: 24,
+        now: NOW,
+        codex_sessions_root: NO_CODEX_ROOT,
+      },
+    );
+
+    const prompts = formatColonyHealthOutput(payload, { prompts: true });
+    expect(prompts).toContain('Codex prompt snippets');
+
+    for (const metric of [
+      'task_ready_for_agent -> claim',
+      'task_message adoption',
+      'claim-before-edit',
+      'Queen plan activation',
+      'proposal adoption',
+    ]) {
+      expect(payload.action_hints.map((hint) => hint.metric)).toContain(metric);
+    }
+
+    expect(prompts).toContain('Goal: convert ready work into an owned plan subtask');
+    expect(prompts).toContain('Current: task_ready_for_agent -> task_plan_claim_subtask 0%');
+    expect(prompts).toContain('Inspect: mcp__colony__task_ready_for_agent');
+    expect(prompts).toContain(
+      'Accept: selected ready subtasks are claimed and touched files are claimed before implementation',
+    );
+
+    expect(prompts).toContain(
+      'Goal: move agent-to-agent coordination from task_post notes to task_message',
+    );
+    expect(prompts).toContain('Current: 0 task_message calls, 1 task_post calls');
+    expect(prompts).toContain('Inspect: mcp__colony__task_message');
+    expect(prompts).toContain(
+      'Accept: directed coordination uses task_message and unread replies surface in attention_inbox',
+    );
+
+    expect(prompts).toContain('Goal: restore pre-edit auto-claim for hook-capable edits');
+    expect(prompts).toContain('Current: claim-before-edit 0%, missing 1');
+    expect(prompts).toContain('Inspect: mcp__colony__task_claim_file');
+    expect(prompts).toContain(
+      'Accept: claim-before-edit reaches target and agents still manually call task_claim_file until hooks are proven',
+    );
+
+    expect(prompts).toContain('Goal: activate Queen planning for multi-agent work');
+    expect(prompts).toContain('Current: active Queen plans 0, plan subtasks 0');
+    expect(prompts).toContain('Inspect: mcp__colony__queen_plan_goal');
+    expect(prompts).toContain(
+      'Accept: a plan exists with claimable subtasks and task_ready_for_agent returns exact claim args',
+    );
+
+    expect(prompts).toContain(
+      'Goal: make future-work candidates flow through proposals instead of chat-only notes',
+    );
+    expect(prompts).toContain('Current: proposals seen 0, promoted 0');
+    expect(prompts).toContain('Inspect: mcp__colony__task_foraging_report');
+    expect(prompts).toContain(
+      'Accept: task_foraging_report shows pending/promoted work and rediscovered proposals can promote into tasks',
+    );
   });
 
   it('surfaces top recorded tools and a hook-wiring hint when no mcp__ calls land in the window', () => {
@@ -649,7 +729,9 @@ describe('colony health payload', () => {
     const claimHint = payload.action_hints.find((hint) => hint.metric === 'claim-before-edit');
     expect(claimHint).toMatchObject({
       action: expect.stringContaining('session binding is missing'),
-      prompt: expect.stringContaining('SessionStart binds the active session id'),
+      prompt: expect.stringContaining(
+        'Goal: bind PreToolUse telemetry to the active Colony session',
+      ),
     });
     expect(claimHint?.action).not.toContain('hook is not firing');
 
