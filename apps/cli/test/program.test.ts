@@ -31,6 +31,7 @@ describe('Colony CLI program', () => {
       'stop',
       'suggest',
       'viewer',
+      'worktree',
     ].sort();
     for (const name of expected) {
       expect(names).toContain(name);
@@ -64,6 +65,7 @@ describe('Colony CLI program', () => {
         viewer                              Open the memory viewer in your browser
                                             (auto-starts worker)
         worker                              Manage local worker daemon
+        worktree                            Inspect managed worktrees
         mcp                                 Run the MCP stdio server (typically
                                             invoked by the IDE)
         bridge                              OMX/HUD bridge helpers for compact Colony

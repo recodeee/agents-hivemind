@@ -18,6 +18,18 @@ export {
   type HivemindSnapshot,
 } from './hivemind.js';
 export {
+  readWorktreeContentionReport,
+  resolveManagedRepoRoot,
+  type ManagedWorktreeInspection,
+  type WorktreeActiveSession,
+  type WorktreeContentionOptions,
+  type WorktreeContentionParticipant,
+  type WorktreeContentionReport,
+  type WorktreeDirtyContention,
+  type WorktreeDirtyFile,
+  type WorktreeInspectionRoot,
+} from './worktree-contention.js';
+export {
   reconcileOmxActiveSessions,
   type ReconcileOmxActiveSessionsOptions,
   type ReconcileOmxActiveSessionsResult,

@@ -28,6 +28,7 @@ import { registerSearchCommand } from './commands/search.js';
 import { registerStatusCommand } from './commands/status.js';
 import { registerSuggestCommand } from './commands/suggest.js';
 import { registerUninstallCommand } from './commands/uninstall.js';
+import { registerWorktreeCommand } from './commands/worktree.js';
 import { registerWorkerCommand } from './commands/worker.js';
 
 export function createProgram(): Command {
@@ -46,6 +47,7 @@ export function createProgram(): Command {
   registerDoctorCommand(program);
   registerLifecycleCommands(program);
   registerWorkerCommand(program);
+  registerWorktreeCommand(program);
   registerMcpCommand(program);
   registerBridgeCommand(program);
   registerSearchCommand(program);
