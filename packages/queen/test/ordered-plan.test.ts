@@ -6,6 +6,7 @@ import { MemoryStore, listPlans } from '@colony/core';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   type QueenOrderedPlanInput,
+  colonyAdoptionFixesPlanInput,
   orderedPlanToTaskPlanInput,
   publishOrderedPlan,
 } from '../src/index.js';
@@ -191,5 +192,32 @@ describe('publishOrderedPlan', () => {
 
     const configRows = store.storage.taskObservationsByKind(result.spec_task_id, 'plan-config', 5);
     expect(configRows.some((row) => row.metadata?.includes('publishOrderedPlan'))).toBe(true);
+  });
+
+  it('publishes the current adoption fixes with Wave 1 ready first', () => {
+    const result = publishOrderedPlan({
+      store,
+      plan: colonyAdoptionFixesPlanInput,
+      repo_root: repoRoot,
+      session_id: 'queen-session',
+      agent: 'queen',
+      auto_archive: false,
+    });
+
+    const [listed] = listPlans(store, { repo_root: repoRoot });
+    expect(result.plan_slug).toBe('colony-adoption-fixes');
+    expect(listed?.next_available.map((subtask) => subtask.subtask_index)).toEqual([0, 1, 2]);
+    expect(listed?.subtasks.slice(3, 6).map((subtask) => subtask.depends_on)).toEqual([
+      [0, 1, 2],
+      [0, 1, 2],
+      [0, 1, 2],
+    ]);
+    expect(listed?.subtasks[6]).toMatchObject({
+      title: 'Finalize adoption docs and tests',
+      depends_on: [3, 4, 5],
+    });
+
+    const configRows = store.storage.taskObservationsByKind(result.spec_task_id, 'plan-config', 5);
+    expect(configRows.some((row) => row.metadata?.includes('"source":"queen"'))).toBe(true);
   });
 });

@@ -1,4 +1,9 @@
 export {
+  colonyAdoptionFixesPlan,
+  colonyAdoptionFixesPlanInput,
+} from './adoption-fixes.js';
+
+export {
   capabilityHintForFiles,
   orderedPlanFromWaves,
   planGoal,

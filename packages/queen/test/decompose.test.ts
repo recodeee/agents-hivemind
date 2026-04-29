@@ -8,7 +8,7 @@ import {
   planGoal,
   slugFromTitle,
 } from '../src/decompose.js';
-import { colonyImprovementWaveFixture } from './fixtures/colony-improvement-waves.js';
+import { colonyAdoptionFixesPlan } from '../src/index.js';
 
 interface Overlap {
   a: number;
@@ -492,7 +492,7 @@ describe('orderedPlanFromWaves', () => {
   });
 
   it('represents the current Colony adoption fixes as ordered Queen waves', () => {
-    const plan = colonyImprovementWaveFixture;
+    const plan = colonyAdoptionFixesPlan;
 
     expect(plan.title).toBe('Colony adoption fixes');
     expect(plan.execution_strategy).toMatchObject({
@@ -502,26 +502,25 @@ describe('orderedPlanFromWaves', () => {
       wave_dependency: 'previous_wave',
     });
     expect(plan.waves.map((wave) => [wave.id, wave.subtask_indexes])).toEqual([
-      ['wave-1', [0, 1, 2, 3]],
-      ['wave-2', [4, 5, 6]],
-      ['wave-3', [7]],
+      ['wave-1', [0, 1, 2]],
+      ['wave-2', [3, 4, 5]],
+      ['wave-3', [6]],
     ]);
     expect(plan.subtasks.map((subtask) => subtask.title)).toEqual([
-      'Tighten hivemind_context funnel',
-      'Add task_list ready-work nudge',
-      'Add claim-before-edit preflight',
-      'Increase task_note_working adoption',
-      'Expose OMX bridge status',
-      'Add stale claim sweep',
-      'Add health telemetry',
-      'Add integration docs/tests',
+      'Auto-claim before Edit/Write',
+      'Add claim-before-edit warning fallback',
+      'Strengthen hivemind_context to attention_inbox funnel',
+      'Route OMX notepad writes to task_note_working',
+      'Expose bridge status for OMX display',
+      'Improve health telemetry for adoption targets',
+      'Finalize adoption docs and tests',
     ]);
-    expect(plan.subtasks.slice(4, 7).map((subtask) => subtask.depends_on)).toEqual([
-      [0, 1, 2, 3],
-      [0, 1, 2, 3],
-      [0, 1, 2, 3],
+    expect(plan.subtasks.slice(3, 6).map((subtask) => subtask.depends_on)).toEqual([
+      [0, 1, 2],
+      [0, 1, 2],
+      [0, 1, 2],
     ]);
-    expect(plan.subtasks.at(-1)?.depends_on).toEqual([4, 5, 6]);
+    expect(plan.subtasks.at(-1)?.depends_on).toEqual([3, 4, 5]);
     expect(pairwiseScopeOverlap(plan)).toEqual([]);
     expectNoCommanderFields(plan);
   });

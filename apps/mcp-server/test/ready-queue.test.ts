@@ -3,10 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultSettings } from '@colony/config';
 import { MemoryStore, TaskThread } from '@colony/core';
+import { colonyAdoptionFixesPlan } from '@colony/queen';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { colonyImprovementWaveFixture } from '../../../packages/queen/test/fixtures/colony-improvement-waves.js';
 import { buildServer } from '../src/server.js';
 
 let dataDir: string;
@@ -246,57 +246,101 @@ describe('task_ready_for_agent', () => {
     expect(result.next_action).toContain('complete upstream dependencies');
   });
 
-  it('returns the current adoption-fix wave and points agents to task_plan_claim_subtask', async () => {
+  it('walks the current adoption-fix waves through ready work and claim flow', async () => {
     await call('task_plan_publish', {
       repo_root: repoRoot,
-      slug: colonyImprovementWaveFixture.slug,
+      slug: colonyAdoptionFixesPlan.slug,
       session_id: 'queen',
       agent: 'queen',
-      title: colonyImprovementWaveFixture.title,
-      problem: colonyImprovementWaveFixture.problem,
-      acceptance_criteria: colonyImprovementWaveFixture.acceptance_criteria,
-      subtasks: colonyImprovementWaveFixture.subtasks,
+      title: colonyAdoptionFixesPlan.title,
+      problem: colonyAdoptionFixesPlan.problem,
+      acceptance_criteria: colonyAdoptionFixesPlan.acceptance_criteria,
+      subtasks: colonyAdoptionFixesPlan.subtasks,
       auto_archive: false,
     });
 
-    const result = await call<ReadyResult>('task_ready_for_agent', {
+    let result = await call<ReadyResult>('task_ready_for_agent', {
       session_id: 'agent-session',
       agent: 'codex',
       repo_root: repoRoot,
       limit: 10,
     });
 
-    expect(result.total_available).toBe(4);
+    expect(result.total_available).toBe(3);
     expect(result.ready.map((entry) => entry.subtask_index).sort((a, b) => a - b)).toEqual([
-      0, 1, 2, 3,
+      0, 1, 2,
     ]);
     expect(new Set(result.ready.map((entry) => entry.wave_index))).toEqual(new Set([0]));
     expect(result.ready.map((entry) => entry.title)).toEqual(
       expect.arrayContaining([
-        'Tighten hivemind_context funnel',
-        'Add task_list ready-work nudge',
-        'Add claim-before-edit preflight',
-        'Increase task_note_working adoption',
+        'Auto-claim before Edit/Write',
+        'Add claim-before-edit warning fallback',
+        'Strengthen hivemind_context to attention_inbox funnel',
       ]),
     );
+    expect(result.ready.map((entry) => entry.subtask_index)).not.toContain(3);
+    expect(result.ready.map((entry) => entry.subtask_index)).not.toContain(6);
     expect(result.next_action).toContain('task_plan_claim_subtask');
     expect(result.next_action).toContain('plan_slug="colony-adoption-fixes"');
     expect(result.next_tool).toBe('task_plan_claim_subtask');
-    expect(result.plan_slug).toBe(colonyImprovementWaveFixture.slug);
+    expect(result.plan_slug).toBe(colonyAdoptionFixesPlan.slug);
     expect(result.subtask_index).toBe(result.ready[0]?.subtask_index);
     expect(result.claim_args).toEqual({
-      plan_slug: colonyImprovementWaveFixture.slug,
+      plan_slug: colonyAdoptionFixesPlan.slug,
       subtask_index: result.ready[0]?.subtask_index,
       session_id: 'agent-session',
       agent: 'codex',
     });
 
     const claimed = await claimSubtask(
-      colonyImprovementWaveFixture.slug,
+      colonyAdoptionFixesPlan.slug,
       result.ready[0]?.subtask_index ?? 0,
     );
     expect(claimed.branch).toMatch(/^spec\/colony-adoption-fixes\/sub-/);
     expect(claimed.file_scope.length).toBeGreaterThan(0);
+
+    await call('task_plan_complete_subtask', {
+      plan_slug: colonyAdoptionFixesPlan.slug,
+      subtask_index: result.ready[0]?.subtask_index ?? 0,
+      session_id: 'agent-session',
+      summary: 'claimed ready subtask complete',
+    });
+    for (const subtaskIndex of [0, 1, 2].filter((index) => index !== result.subtask_index)) {
+      await claimAndComplete(colonyAdoptionFixesPlan.slug, subtaskIndex);
+    }
+
+    result = await call<ReadyResult>('task_ready_for_agent', {
+      session_id: 'agent-session',
+      agent: 'codex',
+      repo_root: repoRoot,
+      limit: 10,
+    });
+
+    expect(result.ready.map((entry) => entry.subtask_index).sort((a, b) => a - b)).toEqual([
+      3, 4, 5,
+    ]);
+    expect(new Set(result.ready.map((entry) => entry.wave_index))).toEqual(new Set([1]));
+    expect(result.ready.map((entry) => entry.subtask_index)).not.toContain(6);
+
+    await claimAndComplete(colonyAdoptionFixesPlan.slug, 3);
+    await claimAndComplete(colonyAdoptionFixesPlan.slug, 4);
+    await claimAndComplete(colonyAdoptionFixesPlan.slug, 5);
+
+    result = await call<ReadyResult>('task_ready_for_agent', {
+      session_id: 'agent-session',
+      agent: 'codex',
+      repo_root: repoRoot,
+      limit: 10,
+    });
+
+    expect(result.ready.map((entry) => entry.subtask_index)).toEqual([6]);
+    expect(result.ready[0]).toMatchObject({
+      plan_slug: colonyAdoptionFixesPlan.slug,
+      wave_index: 2,
+      wave_name: 'Wave 3',
+      blocked_by_count: 0,
+      title: 'Finalize adoption docs and tests',
+    });
   });
 
   it('ranks the sub-task matching the agent capability first', async () => {
