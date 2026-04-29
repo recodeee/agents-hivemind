@@ -58,7 +58,7 @@ const LIFECYCLE_BRIDGE_NEAR_ZERO_PRE_TOOL_USE_SIGNAL_RATIO = 0.05;
 const LIFECYCLE_BRIDGE_ROOT_CAUSE =
   'Lifecycle bridge missing: many task_claim_file calls, many hook-capable edits, near-zero pre_tool_use_signals.';
 const OLD_TELEMETRY_POLLUTION_ROOT_CAUSE =
-  '24h execution_safety is bad because older edit telemetry remains inside the selected window; no fresh bad edits detected recently.';
+  '24h claim-before-edit includes older edit telemetry; no fresh pre_tool_use_missing edits detected in the recent window.';
 const LIFECYCLE_BRIDGE_ACTION =
   'Install/wire the lifecycle bridge so OMX/Codex/Claude emits pre_tool_use before file mutation.';
 const LIFECYCLE_BRIDGE_COMMAND =
@@ -1441,14 +1441,14 @@ function lifecycleBridgeRootCause(input: {
   if (!isNearZeroPreToolUseSignals(input.pre_tool_use_signals, input.hook_capable_edits)) {
     return null;
   }
-  const liveStateClean = input.live_file_contentions === 0 && input.dirty_contended_files === 0;
-  const noFreshBadEdits =
-    input.recent_hook_capable_edits === 0 || input.recent_pre_tool_use_missing === 0;
-  if (liveStateClean && noFreshBadEdits) {
+  const freshPreToolUseMissing =
+    input.recent_hook_capable_edits > 0 && input.recent_pre_tool_use_missing > 0;
+  const noFreshBadEdits = !freshPreToolUseMissing;
+  if (noFreshBadEdits) {
     return {
       kind: 'old_telemetry_pollution',
       summary: OLD_TELEMETRY_POLLUTION_ROOT_CAUSE,
-      evidence: `hook_capable_edits=${input.hook_capable_edits}, recent_hook_capable_edits=${input.recent_hook_capable_edits}, recent_pre_tool_use_missing=${input.recent_pre_tool_use_missing}, live_file_contentions=${input.live_file_contentions}, dirty_contended_files=${input.dirty_contended_files}`,
+      evidence: `task_claim_file_calls=${input.task_claim_file_calls}, hook_capable_edits=${input.hook_capable_edits}, pre_tool_use_signals=${input.pre_tool_use_signals}, recent_hook_capable_edits=${input.recent_hook_capable_edits}, recent_pre_tool_use_missing=${input.recent_pre_tool_use_missing}, recent_pre_tool_use_signals=${input.recent_pre_tool_use_signals}, live_file_contentions=${input.live_file_contentions}, dirty_contended_files=${input.dirty_contended_files}`,
       action:
         'Wait for older telemetry to age out of the selected health window, or narrow --hours when checking current bridge state.',
     };
@@ -1456,7 +1456,7 @@ function lifecycleBridgeRootCause(input: {
   return {
     kind: 'lifecycle_bridge_missing',
     summary: LIFECYCLE_BRIDGE_ROOT_CAUSE,
-    evidence: `task_claim_file_calls=${input.task_claim_file_calls}, hook_capable_edits=${input.hook_capable_edits}, pre_tool_use_signals=${input.pre_tool_use_signals}`,
+    evidence: `task_claim_file_calls=${input.task_claim_file_calls}, hook_capable_edits=${input.hook_capable_edits}, pre_tool_use_signals=${input.pre_tool_use_signals}, recent_hook_capable_edits=${input.recent_hook_capable_edits}, recent_pre_tool_use_missing=${input.recent_pre_tool_use_missing}`,
     action: LIFECYCLE_BRIDGE_ACTION,
     command: LIFECYCLE_BRIDGE_COMMAND,
   };
@@ -1791,7 +1791,7 @@ function healthActionHints(payload: ColonyHealthPayloadWithoutHints): ActionHint
       action:
         'Resolve same-file multi-owner claims before running broad verification or trusting branch health.',
       readiness_scope: 'execution_safety',
-      priority: 5,
+      priority: 1,
       tool_call:
         'mcp__colony__hivemind_context({ agent: "<agent>", session_id: "<session_id>", repo_root: "<repo_root>", files: ["<file>"] })',
       command: 'colony health --json',
@@ -1802,6 +1802,28 @@ function healthActionHints(payload: ColonyHealthPayloadWithoutHints): ActionHint
           'colony health --json, mcp__colony__hivemind_context, mcp__colony__attention_inbox',
         acceptance:
           'top conflicts are handed off, released, or reclaimed and live_file_contentions returns 0',
+      }),
+    });
+  }
+  if (
+    liveContention.live_file_contentions === 0 &&
+    liveContention.dirty_contended_files > 0
+  ) {
+    hints.push({
+      metric: 'dirty contended files',
+      status: 'bad',
+      current: String(liveContention.dirty_contended_files),
+      target: '0',
+      action:
+        'Clear or hand off dirty worktrees that still contend for the same files before trusting branch health.',
+      readiness_scope: 'execution_safety',
+      priority: 2,
+      command: 'colony health --json',
+      prompt: codexPrompt({
+        goal: 'clear dirty contended worktrees before branch verification',
+        current: `${liveContention.dirty_contended_files} dirty contended files`,
+        inspect: 'colony health --json, git status --short, mcp__colony__hivemind_context',
+        acceptance: 'dirty_contended_files returns 0 or ownership has a recorded handoff',
       }),
     });
   }
@@ -1979,7 +2001,34 @@ function healthActionHints(payload: ColonyHealthPayloadWithoutHints): ActionHint
           'runtime emits pre_tool_use before file mutation and pre_tool_use_missing stops dominating health misses',
       }),
     });
-  } else if (isBelowTarget(claimBeforeEdit.claim_before_edit_ratio, TARGET_CLAIM_BEFORE_EDIT)) {
+  } else if (
+    claimBeforeEdit.old_telemetry_pollution &&
+    isBelowTarget(claimBeforeEdit.claim_before_edit_ratio, TARGET_CLAIM_BEFORE_EDIT)
+  ) {
+    const oldTelemetryAction =
+      claimBeforeEdit.root_cause?.kind === 'old_telemetry_pollution'
+        ? claimBeforeEdit.root_cause.action
+        : 'Wait for older telemetry to age out of the selected health window, or narrow --hours when checking current bridge state.';
+    hints.push({
+      metric: 'old claim-before-edit telemetry',
+      status: 'bad',
+      current: claimBeforeEdit.root_cause?.summary ?? OLD_TELEMETRY_POLLUTION_ROOT_CAUSE,
+      target: 'recent pre_tool_use_missing = 0 stays clean until old telemetry ages out',
+      action: oldTelemetryAction,
+      readiness_scope: 'execution_safety',
+      priority: 12,
+      prompt: codexPrompt({
+        goal: 'avoid chasing old claim-before-edit telemetry as the current blocker',
+        current: `recent ${claimBeforeEdit.recent_window_hours}h hook_capable_edits=${claimBeforeEdit.recent_hook_capable_edits}, pre_tool_use_missing=${claimBeforeEdit.recent_pre_tool_use_missing}`,
+        inspect: 'colony health --hours 1 --json, colony health --hours 24 --json',
+        acceptance:
+          'current failures are resolved first; selected-window claim-before-edit improves as old telemetry ages out',
+      }),
+    });
+  } else if (
+    !claimBeforeEdit.old_telemetry_pollution &&
+    isBelowTarget(claimBeforeEdit.claim_before_edit_ratio, TARGET_CLAIM_BEFORE_EDIT)
+  ) {
     const missingHook =
       claimBeforeEdit.likely_missing_hook && !claimBeforeEdit.old_telemetry_pollution;
     const sessionBindingMissing = claimBeforeEdit.session_binding_missing > 0;
@@ -2082,7 +2131,7 @@ function healthActionHints(payload: ColonyHealthPayloadWithoutHints): ActionHint
       action:
         'Run colony coordination sweep/rescue, then release, hand off, or reclaim stale ownership.',
       readiness_scope: 'signal_evaporation',
-      priority: 40,
+      priority: 11,
       tool_call: 'mcp__colony__rescue_stranded_scan({ stranded_after_minutes: <minutes> })',
       command: 'colony coordination sweep --json',
       prompt: codexPrompt({
@@ -2125,7 +2174,7 @@ function healthActionHints(payload: ColonyHealthPayloadWithoutHints): ActionHint
       target: '0',
       action: 'Run colony queen sweep/rescue so later waves can become claimable.',
       readiness_scope: 'queen_plan_readiness',
-      priority: 25,
+      priority: 3,
       tool_call: 'mcp__colony__rescue_stranded_scan({ stranded_after_minutes: <minutes> })',
       command: 'colony queen sweep --json',
       prompt: codexPrompt({

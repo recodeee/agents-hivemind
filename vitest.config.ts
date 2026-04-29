@@ -24,4 +24,11 @@ export default defineConfig({
   resolve: {
     alias: workspaceAliases,
   },
+  test: {
+    server: {
+      deps: {
+        external: [/better-sqlite3/],
+      },
+    },
+  },
 });
