@@ -6,6 +6,10 @@ import { MemoryStore, listPlans } from '@colony/core';
 import { publishOrderedPlan, type QueenOrderedPlanInput } from '@colony/queen';
 import kleur from 'kleur';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  setGitGuardexCommandRunnerForTests,
+  type CommandResult,
+} from '../src/executors/gitguardex.js';
 import { createProgram } from '../src/index.js';
 import { spawnGitGuardexAgent, type GitGuardexExecFileSync } from '../src/lib/gitguardex.js';
 
@@ -67,6 +71,7 @@ beforeEach(() => {
   });
   delete process.env.GX_FAKE_FAIL_VERSION;
   output = '';
+  setGitGuardexCommandRunnerForTests(fakeCommandRunner);
   vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
     output += String(chunk);
     return true;
@@ -87,6 +92,7 @@ afterEach(() => {
   if (originalGxFailVersion === undefined) delete process.env.GX_FAKE_FAIL_VERSION;
   else process.env.GX_FAKE_FAIL_VERSION = originalGxFailVersion;
   delete process.env.GX_FAKE_LOG;
+  setGitGuardexCommandRunnerForTests(null);
   kleur.enabled = true;
 });
 
@@ -115,11 +121,12 @@ describe('GitGuardex executor CLI', () => {
       { from: 'node' },
     );
 
-    expect(output).toContain('gitguardex spawn dry-run gx-bridge-plan/sub-0');
+    expect(output).toContain('GitGuardex executor ready 7.0.test');
+    expect(output).toContain('gx agents start command:');
     expect(output).toContain('gx agents start');
-    expect(output).toContain('Colony plan gx-bridge-plan/sub-0: Implement API bridge');
+    expect(output).toContain('Plan slug: gx-bridge-plan');
+    expect(output).toContain('Subtask: 0 - Implement API bridge');
     expect(output).toContain('--claim apps/api/bridge.ts');
-    expect(output).toContain('--dry-run');
     expect(readGxLog()).not.toContain('["agents","start"');
   });
 
@@ -145,7 +152,7 @@ describe('GitGuardex executor CLI', () => {
         ],
         { from: 'node' },
       ),
-    ).rejects.toThrow(/GitGuardex unavailable/);
+    ).rejects.toThrow(/GitGuardex executor unavailable/);
   });
 
   it('maps ready subtask file scope to repeated gx --claim flags', async () => {
@@ -214,7 +221,7 @@ describe('GitGuardex executor CLI', () => {
         ],
         { from: 'node' },
       ),
-    ).rejects.toThrow(/is claimed/);
+    ).rejects.toThrow(/already claimed/);
   });
 
   it('records Colony claims after successful gx spawn', async () => {
@@ -271,6 +278,37 @@ describe('GitGuardex executor CLI', () => {
     expect(output).toContain('claimed: apps/api/bridge.ts');
   });
 });
+
+const fakeCommandRunner = (command: string, args: string[]): CommandResult => {
+  if (command !== 'gx') {
+    return { status: 2, stdout: '', stderr: `unexpected command: ${command}` };
+  }
+  if (args[0] === '--version') {
+    if (process.env.GX_FAKE_FAIL_VERSION === '1') {
+      return {
+        status: null,
+        stdout: '',
+        stderr: '',
+        error: Object.assign(new Error('spawnSync gx ENOENT'), { code: 'ENOENT' }),
+      };
+    }
+    return { status: 0, stdout: '7.0.test\n', stderr: '' };
+  }
+  if (args[0] === 'agents' && args[1] === 'start') {
+    writeFileSync(logPath, `${JSON.stringify(args)}\n`, { flag: 'a' });
+    return {
+      status: 0,
+      stdout: [
+        '[agent-branch-start] Created branch: agent/codex/fake-branch',
+        '[agent-branch-start] Worktree: /tmp/fake-worktree',
+        '[gitguardex] Agent session id: fake-session',
+        '',
+      ].join('\n'),
+      stderr: '',
+    };
+  }
+  return { status: 2, stdout: '', stderr: `unexpected gx args ${JSON.stringify(args)}` };
+};
 
 const fakeExecFileSync: GitGuardexExecFileSync = (file, args) => {
   expect(file).toBe('gx');

@@ -54,8 +54,8 @@ describe('Colony CLI program', () => {
         -h, --help                          display help for command
 
       Commands:
-        agents                              Launch plan sub-task agents through
-                                            executors
+        agents                              Launch Colony plan subtasks through an
+                                            external executor
         cockpit [options]                   Open a GitGuardex cockpit for
                                             Colony-managed plan lanes
         install [options]                   Register hooks + MCP server for an IDE

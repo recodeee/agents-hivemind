@@ -3,102 +3,122 @@ import { loadSettings } from '@colony/config';
 import type { Command } from 'commander';
 import kleur from 'kleur';
 import {
-  GitGuardexExecutorError,
   type GitGuardexAgent,
-  type GitGuardexSpawnResult,
-  spawnGitGuardexAgent,
-} from '../lib/gitguardex.js';
+  buildGitGuardexSpawnPlan,
+  claimGitGuardexSpawnTarget,
+  runGitGuardexSpawn,
+} from '../executors/gitguardex.js';
 import { withStore } from '../util/store.js';
 
-interface SpawnOptions {
-  executor?: string;
+interface SpawnOpts {
+  executor: string;
   dryRun?: boolean;
   plan?: string;
   subtask?: string;
   agent?: string;
-  base?: string;
+  sessionId?: string;
   repoRoot?: string;
-  json?: boolean;
+  gxCommand?: string;
+  base?: string;
+  verifyCommand?: string;
 }
 
 export function registerAgentsCommand(program: Command): void {
-  const group = program.command('agents').description('Launch plan sub-task agents through executors');
+  const group = program
+    .command('agents')
+    .description('Launch Colony plan subtasks through an external executor');
 
   group
     .command('spawn')
-    .description('Spawn a Colony plan sub-task agent through GitGuardex')
-    .requiredOption('--executor <executor>', 'Executor id (supported: gx)')
-    .option('--plan <plan-slug>', 'Queen/task plan slug')
-    .option('--subtask <index>', 'Plan sub-task index')
-    .option('--agent <agent>', 'Agent runtime for gx agents start (codex or claude)', 'codex')
-    .option('--base <branch>', 'Base branch for gx agent lane', 'main')
-    .option('--repo-root <path>', 'Repo root (defaults to process.cwd())')
-    .option('--dry-run', 'Print the gx agents start command without launching')
-    .option('--json', 'Emit structured JSON')
-    .action(async (opts: SpawnOptions) => {
+    .description('Spawn a ready Queen subtask through GitGuardex')
+    .option('--executor <name>', 'executor backend to use', 'gx')
+    .option('--dry-run', 'print the gx agents start command without claiming or spawning')
+    .option('--plan <slug>', 'queen plan slug')
+    .option('--subtask <index>', 'queen subtask index')
+    .option('--agent <agent>', 'agent runtime for gx agents start: codex or claude', 'codex')
+    .option('--session-id <id>', 'Colony session id to claim the subtask as')
+    .option('--repo-root <path>', 'repo root containing the Queen plan')
+    .option('--gx-command <command>', 'GitGuardex command name or path', 'gx')
+    .option('--base <branch>', 'base branch passed through to gx agents start')
+    .option(
+      '--verify-command <command>',
+      'verification command included in the launch packet',
+      'pnpm --filter @imdeadpool/colony-cli test',
+    )
+    .action(async (opts: SpawnOpts) => {
       if (opts.executor !== 'gx') {
-        throw new Error(`unsupported executor: ${opts.executor ?? '(missing)'}`);
+        throw new Error(`unsupported executor: ${opts.executor}`);
       }
-      const agent = parseAgent(opts.agent);
-      const subtaskIndex = parseOptionalSubtask(opts.subtask);
+
       const repoRoot = resolve(opts.repoRoot ?? process.cwd());
+      const agent = parseAgent(opts.agent);
+      const subtaskIndex = parseSubtaskIndex(opts.subtask);
+      const sessionId = opts.sessionId ?? process.env.COLONY_SESSION_ID ?? `colony-cli-${agent}`;
       const settings = loadSettings();
 
       await withStore(settings, (store) => {
-        try {
-          const result = spawnGitGuardexAgent({
-            store,
-            repoRoot,
-            agent,
-            base: opts.base ?? 'main',
-            dryRun: opts.dryRun === true,
-            ...(opts.plan !== undefined ? { planSlug: opts.plan } : {}),
-            ...(subtaskIndex !== undefined ? { subtaskIndex } : {}),
-          });
-          process.stdout.write(renderSpawnResult(result, opts.json === true));
-        } catch (err) {
-          if (
-            opts.dryRun === true &&
-            err instanceof GitGuardexExecutorError &&
-            err.code === 'NO_READY_SUBTASK'
-          ) {
-            process.stdout.write(
-              opts.json === true
-                ? `${JSON.stringify({ dry_run: true, ready: false, error: err.message }, null, 2)}\n`
-                : `${kleur.yellow('no ready Colony plan subtasks')}\n${err.message}\n`,
-            );
-            return;
+        const plan = buildGitGuardexSpawnPlan(store, {
+          repoRoot,
+          ...(opts.plan !== undefined ? { planSlug: opts.plan } : {}),
+          ...(subtaskIndex !== undefined ? { subtaskIndex } : {}),
+          agent,
+          sessionId,
+          command: opts.gxCommand ?? 'gx',
+          ...(opts.base !== undefined ? { base: opts.base } : {}),
+          ...(opts.verifyCommand !== undefined ? { verificationCommand: opts.verifyCommand } : {}),
+        });
+
+        if (opts.dryRun === true) {
+          process.stdout.write(`${kleur.green('✓')} GitGuardex executor ready`);
+          if (plan.availability.version !== undefined) {
+            process.stdout.write(` ${plan.availability.version}`);
           }
-          throw err;
+          process.stdout.write('\n');
+          process.stdout.write('gx agents start command:\n');
+          process.stdout.write(`${plan.commandLine}\n\n`);
+          process.stdout.write('full agent prompt:\n');
+          process.stdout.write(`${plan.launchPacket.agent_prompt}\n`);
+          return;
+        }
+
+        if (plan.target !== null) {
+          claimGitGuardexSpawnTarget(store, plan, {
+            repoRoot,
+            planSlug: plan.target.plan.plan_slug,
+            subtaskIndex: plan.target.subtask.subtask_index,
+            agent,
+            sessionId,
+            command: opts.gxCommand ?? 'gx',
+            ...(opts.base !== undefined ? { base: opts.base } : {}),
+            ...(opts.verifyCommand !== undefined ? { verificationCommand: opts.verifyCommand } : {}),
+          });
+        }
+
+        const result = runGitGuardexSpawn(plan, { cwd: repoRoot });
+        if (result.stdout) process.stdout.write(result.stdout);
+        if (result.stderr) process.stderr.write(result.stderr);
+        if (result.error !== undefined) {
+          throw result.error;
+        }
+        if (result.status !== 0) {
+          process.stderr.write('\nGitGuardex launch packet for manual paste:\n');
+          process.stderr.write(`${plan.launchPacket.agent_prompt}\n`);
+          process.exitCode = result.status ?? 1;
         }
       });
     });
 }
 
-function renderSpawnResult(result: GitGuardexSpawnResult, json: boolean): string {
-  if (json) return `${JSON.stringify(result, null, 2)}\n`;
-  const lines = [
-    result.dry_run
-      ? `${kleur.green('gitguardex spawn dry-run')} ${result.plan_slug}/sub-${result.subtask_index}`
-      : `${kleur.green('gitguardex spawn')} ${result.plan_slug}/sub-${result.subtask_index}`,
-    `command: ${result.command}`,
-    `files: ${result.files.length > 0 ? result.files.join(', ') : '-'}`,
-  ];
-  if (result.colony_session_id) lines.push(`colony_session: ${result.colony_session_id}`);
-  if (result.gx_stdout) lines.push('', result.gx_stdout.trimEnd());
-  return `${lines.join('\n')}\n`;
-}
-
 function parseAgent(value: string | undefined): GitGuardexAgent {
   if (value === 'codex' || value === 'claude') return value;
-  throw new Error(`--agent must be codex or claude, got ${value ?? '(missing)'}`);
+  throw new Error('--agent must be codex or claude');
 }
 
-function parseOptionalSubtask(value: string | undefined): number | undefined {
+function parseSubtaskIndex(value: string | undefined): number | undefined {
   if (value === undefined) return undefined;
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed < 0) {
-    throw new Error(`--subtask must be a non-negative integer, got ${value}`);
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed < 0 || String(parsed) !== value) {
+    throw new Error('--subtask must be a non-negative integer');
   }
   return parsed;
 }
