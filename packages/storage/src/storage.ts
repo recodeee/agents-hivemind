@@ -455,7 +455,7 @@ export class Storage {
          GROUP BY session_id
        )
        SELECT l.session_id,
-              l.last_observation_ts,
+	              l.last_observation_ts,
 	              EXISTS (
 	                SELECT 1 FROM task_claims tc
 	                WHERE tc.session_id = l.session_id

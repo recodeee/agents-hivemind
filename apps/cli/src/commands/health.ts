@@ -1977,10 +1977,12 @@ function healthActionHints(payload: ColonyHealthPayloadWithoutHints): ActionHint
       status: 'bad',
       current: String(payload.signal_health.quota_pending_claims),
       target: '0',
-      action: 'Accept the quota relay or let the short TTL expire before treating it as ordinary weak ownership.',
+      action:
+        'Accept the quota relay or let the short TTL expire before treating it as ordinary weak ownership.',
       readiness_scope: 'signal_evaporation',
       priority: 39,
-      tool_call: 'mcp__colony__attention_inbox({ agent: <agent>, session_id: <session_id>, repo_root: <repo_root> })',
+      tool_call:
+        'mcp__colony__attention_inbox({ agent: <agent>, session_id: <session_id>, repo_root: <repo_root> })',
       command: 'colony inbox --json',
       prompt: codexPrompt({
         goal: 'resolve quota-pending ownership without deleting claim history',
@@ -2021,7 +2023,8 @@ function healthActionHints(payload: ColonyHealthPayloadWithoutHints): ActionHint
       action: 'Accept or reroute quota relays before waiting on downstream waves.',
       readiness_scope: 'queen_plan_readiness',
       priority: 24,
-      tool_call: 'mcp__colony__attention_inbox({ agent: <agent>, session_id: <session_id>, repo_root: <repo_root> })',
+      tool_call:
+        'mcp__colony__attention_inbox({ agent: <agent>, session_id: <session_id>, repo_root: <repo_root> })',
       command: 'colony inbox --json',
       prompt: codexPrompt({
         goal: 'unblock downstream Queen waves held by quota relays',
@@ -2426,8 +2429,7 @@ function readSubtaskLifecycle(
       claimed_at: initialStatus === 'claimed' ? initialTs : null,
       claimed_by_session_id:
         initialStatus === 'claimed' ? readStringOrNull(initialMeta.session_id) : null,
-      claimed_by_agent:
-        initialStatus === 'claimed' ? readStringOrNull(initialMeta.agent) : null,
+      claimed_by_agent: initialStatus === 'claimed' ? readStringOrNull(initialMeta.agent) : null,
       quota_handoff_pending,
     };
   }
