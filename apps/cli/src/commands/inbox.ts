@@ -34,9 +34,16 @@ export function registerInboxCommand(program: Command): void {
       'your agent name (e.g. claude, codex); inferred from session when omitted',
     )
     .option('--repo-root <path>', 'repo root to scan for stalled lanes')
+    .option('--stalled-lane-limit <n>', 'max stalled lane rows to print in JSON output', '8')
     .option('--json', 'emit the full inbox as JSON')
     .action(
-      async (opts: { session?: string; agent?: string; repoRoot?: string; json?: boolean }) => {
+      async (opts: {
+        session?: string;
+        agent?: string;
+        repoRoot?: string;
+        stalledLaneLimit?: string;
+        json?: boolean;
+      }) => {
         const session = opts.session?.trim() || sessionFromEnv();
         if (!session) {
           process.stderr.write(
@@ -59,6 +66,7 @@ export function registerInboxCommand(program: Command): void {
             session_id: session,
             agent,
             file_heat_half_life_ms: settings.fileHeatHalfLifeMinutes * 60_000,
+            stalled_lane_limit: Number(opts.stalledLaneLimit ?? 8),
             ...(opts.repoRoot !== undefined ? { repo_root: opts.repoRoot } : {}),
           });
 
@@ -130,6 +138,11 @@ export function registerInboxCommand(program: Command): void {
             for (const lane of inbox.stalled_lanes) {
               lines.push(
                 `  ${lane.branch} [${lane.activity}] ${lane.owner}: ${lane.activity_summary}`,
+              );
+            }
+            if (inbox.stalled_lanes_truncated) {
+              lines.push(
+                `  +${inbox.summary.stalled_lane_count - inbox.stalled_lanes.length} more; rerun with --stalled-lane-limit ${inbox.summary.stalled_lane_count}`,
               );
             }
           }

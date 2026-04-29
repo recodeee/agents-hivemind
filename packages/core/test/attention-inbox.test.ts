@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultSettings } from '@colony/config';
@@ -97,6 +97,61 @@ describe('buildAttentionInbox', () => {
     expect(inbox.summary.unread_message_count).toBe(2);
     expect(inbox.summary.hot_file_count).toBeGreaterThan(0);
     expect(inbox.summary.next_action).toMatch(/blocking task messages/i);
+  });
+
+  it('caps stalled lane rows while preserving the total count', () => {
+    const repo = join(dir, 'repo-stalled-lanes');
+    const sessionDir = join(repo, '.omx', 'state', 'active-sessions');
+    const now = Date.parse('2026-04-29T10:00:00.000Z');
+    mkdirSync(sessionDir, { recursive: true });
+
+    for (let i = 0; i < 12; i += 1) {
+      const heartbeat = new Date(now - (10 * 60_000 + i * 1000)).toISOString();
+      const worktreePath = join(repo, '.omx', 'agent-worktrees', `agent__codex__stalled-${i}`);
+      mkdirSync(worktreePath, { recursive: true });
+      writeFileSync(
+        join(sessionDir, `agent__codex__stalled-${i}.json`),
+        `${JSON.stringify(
+          {
+            repoRoot: repo,
+            branch: `agent/codex/stalled-${i}`,
+            taskName: `Stalled task ${i}`,
+            latestTaskPreview: `Stalled lane ${i}`,
+            agentName: 'codex',
+            worktreePath,
+            startedAt: heartbeat,
+            lastHeartbeatAt: heartbeat,
+            state: 'working',
+          },
+          null,
+          2,
+        )}\n`,
+      );
+    }
+
+    const inbox = buildAttentionInbox(store, {
+      session_id: 'codex',
+      agent: 'codex',
+      repo_root: repo,
+      now,
+    });
+
+    expect(inbox.summary.stalled_lane_count).toBe(12);
+    expect(inbox.stalled_lanes).toHaveLength(8);
+    expect(inbox.stalled_lanes_truncated).toBe(true);
+    expect(inbox.summary.next_action).toMatch(/stalled lanes/i);
+
+    const narrowed = buildAttentionInbox(store, {
+      session_id: 'codex',
+      agent: 'codex',
+      repo_root: repo,
+      stalled_lane_limit: 3,
+      now,
+    });
+
+    expect(narrowed.summary.stalled_lane_count).toBe(12);
+    expect(narrowed.stalled_lanes).toHaveLength(3);
+    expect(narrowed.stalled_lanes_truncated).toBe(true);
   });
 
   it('adds compact reply and mark-read suggestions to unread message items', () => {
