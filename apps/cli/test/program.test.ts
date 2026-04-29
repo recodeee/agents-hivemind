@@ -1,4 +1,8 @@
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { ensureWritableHookHome } from '../src/commands/hook.js';
 import { createProgram } from '../src/index.js';
 
 describe('Colony CLI program', () => {
@@ -112,6 +116,26 @@ describe('Colony CLI program', () => {
     expect(hook?.commands.map((c) => c.name())).toContain('run');
   });
 
+  it('defaults hook storage to a writable repo-local Colony home', () => {
+    const originalColonyHome = process.env.COLONY_HOME;
+    const originalCavememHome = process.env.CAVEMEM_HOME;
+    const cwd = mkdtempSync(join(tmpdir(), 'colony-hook-home-'));
+    try {
+      delete process.env.COLONY_HOME;
+      delete process.env.CAVEMEM_HOME;
+      const resolved = ensureWritableHookHome({ cwd });
+      expect(resolved).toBe(join(cwd, '.omx', 'colony-home'));
+      expect(process.env.COLONY_HOME).toBe(resolved);
+      expect(existsSync(resolved ?? '')).toBe(true);
+    } finally {
+      if (originalColonyHome === undefined) delete process.env.COLONY_HOME;
+      else process.env.COLONY_HOME = originalColonyHome;
+      if (originalCavememHome === undefined) delete process.env.CAVEMEM_HOME;
+      else process.env.CAVEMEM_HOME = originalCavememHome;
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it('exposes debrief JSON output for worker rendering', () => {
     const program = createProgram();
     const debrief = program.commands.find((c) => c.name() === 'debrief');
@@ -149,6 +173,7 @@ describe('Colony CLI program', () => {
     const queen = program.commands.find((c) => c.name() === 'queen');
     expect(queen).toBeDefined();
     expect(queen?.commands.map((c) => c.name()).sort()).toEqual([
+      'adoption-fixes',
       'list',
       'plan',
       'status',

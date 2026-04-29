@@ -75,6 +75,11 @@ describe('extractTouchedFiles', () => {
     expect(extractTouchedFiles('Edit', {})).toEqual([]);
     expect(extractTouchedFiles('Edit', { file_path: '' })).toEqual([]);
   });
+
+  it('ignores pseudo device paths', () => {
+    expect(extractTouchedFiles('Edit', { file_path: '/dev/null' })).toEqual([]);
+    expect(extractTouchedFiles('Write', { file_path: '/dev/stdout' })).toEqual([]);
+  });
 });
 
 describe('autoClaimFileForSession', () => {
@@ -944,5 +949,26 @@ describe('runHook integration: A edits -> B sees warning', () => {
     );
     expect(nextTurn.ok).toBe(true);
     expect(nextTurn.context).toContain('packages/hooks/src/generated.ts');
+  });
+
+  it('does not auto-claim pseudo paths from Bash redirects', async () => {
+    const task_id = seedTwoSessionTask();
+
+    const bash = await runHook(
+      'post-tool-use',
+      {
+        session_id: 'A',
+        ide: 'codex',
+        cwd: '/repo/packages/hooks',
+        tool_name: 'Bash',
+        tool_input: { command: 'printf "quiet" > /dev/null' },
+        tool_response: { success: true },
+      },
+      { store },
+    );
+
+    expect(bash.ok).toBe(true);
+    expect(store.storage.getClaim(task_id, '/dev/null')).toBeUndefined();
+    expect(store.storage.taskObservationsByKind(task_id, 'auto-claim')).toHaveLength(0);
   });
 });

@@ -1,3 +1,5 @@
+import { mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { inferIdeFromSessionId } from '@colony/core';
 import { type HookName, type HookResult, runHook } from '@colony/hooks';
 import type { Command } from 'commander';
@@ -38,6 +40,7 @@ export function registerHookCommand(program: Command): void {
       const hookName = name as HookName;
       const raw = await readStdin();
       const parsed = raw.trim() ? safeJson(raw) : {};
+      ensureWritableHookHome(parsed);
       const sessionId = readString(parsed.session_id) ?? 'unknown';
       const ide = opts.ide ?? readString(parsed.ide) ?? inferIdeFromSessionId(sessionId);
       const input = {
@@ -63,6 +66,19 @@ export function registerHookCommand(program: Command): void {
 
       writeIdeOutput(hookName, result);
     });
+}
+
+export function ensureWritableHookHome(input: Record<string, unknown>): string | null {
+  if (process.env.COLONY_HOME || process.env.CAVEMEM_HOME) return null;
+  const cwd = readString(input.cwd) ?? process.cwd();
+  const colonyHome = join(cwd, '.omx', 'colony-home');
+  try {
+    mkdirSync(colonyHome, { recursive: true });
+    process.env.COLONY_HOME = colonyHome;
+    return colonyHome;
+  } catch {
+    return null;
+  }
 }
 
 function writeIdeOutput(hook: HookName, result: HookResult): void {

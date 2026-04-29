@@ -12,6 +12,13 @@ import type { HookInput } from '../types.js';
  * parseBashCoordinationEvents so ordinary Write/Edit handling stays simple.
  */
 const WRITE_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+const PSEUDO_HOOK_FILE_PATHS = new Set([
+  '/dev/null',
+  '/dev/stdin',
+  '/dev/stdout',
+  '/dev/stderr',
+  'NUL',
+]);
 
 type BashPathContext = { cwd?: string | undefined; repoRoot?: string | undefined };
 
@@ -101,24 +108,36 @@ function normalizeBashEventPaths(
   events: BashCoordinationEvent[],
   context: BashPathContext,
 ): BashCoordinationEvent[] {
-  return events.map((event) => {
+  return events.flatMap((event) => {
     switch (event.kind) {
       case 'git-op':
-        return event;
+        return [event];
       case 'file-op':
-        return {
+        return compactFileOpEvent({
           ...event,
-          file_paths: unique(
+          file_paths: filterClaimableHookFilePaths(
             event.file_paths.map((filePath) => normalizeHookFilePath(filePath, context)),
           ),
-        };
+        });
       case 'auto-claim':
-        return {
+        return compactAutoClaimEvent({
           ...event,
           file_path: normalizeHookFilePath(event.file_path, context),
-        };
+        });
     }
   });
+}
+
+function compactFileOpEvent(
+  event: BashCoordinationEvent & { kind: 'file-op' },
+): BashCoordinationEvent[] {
+  return event.file_paths.length === 0 ? [] : [event];
+}
+
+function compactAutoClaimEvent(
+  event: BashCoordinationEvent & { kind: 'auto-claim' },
+): BashCoordinationEvent[] {
+  return isPseudoHookFilePath(event.file_path) ? [] : [event];
 }
 
 function normalizeHookFilePath(rawPath: string, context: BashPathContext): string {
@@ -209,6 +228,17 @@ function normalizeSlashes(value: string): string {
   return value.replaceAll(path.sep, '/');
 }
 
+function filterClaimableHookFilePaths(values: string[]): string[] {
+  return unique(
+    values.map((value) => value.trim()).filter((value) => value && !isPseudoHookFilePath(value)),
+  );
+}
+
+function isPseudoHookFilePath(value: string): boolean {
+  const normalized = normalizeSlashes(path.normalize(value.trim()));
+  return PSEUDO_HOOK_FILE_PATHS.has(normalized);
+}
+
 /**
  * Extract file paths that a tool call mutated. Returns `[]` when the tool
  * isn't a write tool or the input shape isn't recognisable — silent-skip
@@ -220,7 +250,7 @@ export function extractTouchedFiles(toolName: string, toolInput: unknown): strin
   if (typeof toolInput !== 'object' || toolInput === null) return [];
   const input = toolInput as Record<string, unknown>;
   if (typeof input.file_path === 'string' && input.file_path.length > 0) {
-    return [input.file_path];
+    return filterClaimableHookFilePaths([input.file_path]);
   }
   return [];
 }
@@ -274,13 +304,11 @@ export function autoClaimFromToolUse(
 function activeTaskCandidateForToolUse(
   store: MemoryStore,
   input: Pick<HookInput, 'session_id' | 'ide' | 'cwd'>,
-):
-  | {
-      task_id: number;
-      repo_root: string;
-      branch: string;
-    }
-  | null {
+): {
+  task_id: number;
+  repo_root: string;
+  branch: string;
+} | null {
   const session = store.storage.getSession(input.session_id);
   const cwd = input.cwd ?? session?.cwd ?? undefined;
   const detected = cwd ? detectRepoBranch(cwd) : null;
