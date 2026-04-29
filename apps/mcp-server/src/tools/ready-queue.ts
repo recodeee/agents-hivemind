@@ -550,12 +550,16 @@ function capabilityMatchScore(capabilityHint: string | null, profile: AgentProfi
 }
 
 function staleBlockerRescueCandidate(
-  plans: Array<{ plan_slug: string; subtasks: SubtaskInfo[] }>,
+  plans: Array<{
+    plan_slug: string;
+    subtasks: SubtaskInfo[];
+  }>,
 ): StaleBlockerRescueCandidate | null {
   const now = Date.now();
   const candidates: StaleBlockerRescueCandidate[] = [];
   for (const plan of plans) {
-    for (const subtask of plan.subtasks.filter((entry) => isStaleClaimedSubtask(entry, now))) {
+    for (const subtask of plan.subtasks) {
+      if (!isStaleClaimedSubtask(subtask, now)) continue;
       const unlock = unlockCandidateFor(subtask, plan.subtasks);
       if (!unlock) continue;
       candidates.push({
