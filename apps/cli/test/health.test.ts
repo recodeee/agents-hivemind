@@ -448,9 +448,14 @@ describe('colony health payload', () => {
       recent_claim_before_edit_rate: 1,
     });
     expect(payload.readiness_summary.execution_safety.root_cause?.summary).toBe(
-      '24h execution_safety is bad because older edit telemetry remains inside the selected window; no fresh bad edits detected recently.',
+      '24h claim-before-edit includes older edit telemetry; no fresh pre_tool_use_missing edits detected in the recent window.',
     );
     expect(formatColonyHealthOutput(payload)).not.toContain('Lifecycle bridge missing');
+    expect(payload.action_hints).toContainEqual(expect.objectContaining({
+      metric: 'old claim-before-edit telemetry',
+      current:
+        '24h claim-before-edit includes older edit telemetry; no fresh pre_tool_use_missing edits detected in the recent window.',
+    }));
   });
 
   it('keeps lifecycle bridge missing when bad edits are fresh', () => {
@@ -483,6 +488,8 @@ describe('colony health payload', () => {
         claimBeforeEdit: badClaimBeforeEditStats(),
         claimBeforeEditStatsBySince: (since) =>
           since >= recentSince ? emptyClaimBeforeEditStats() : badClaimBeforeEditStats(),
+        tasks: [],
+        claimsByTask: {},
       }),
       { since: SINCE, window_hours: 24, now: NOW, codex_sessions_root: NO_CODEX_ROOT },
     );
@@ -492,12 +499,51 @@ describe('colony health payload', () => {
     expect(payload.task_claim_file_before_edits.recent_hook_capable_edits).toBe(0);
     expect(payload.task_claim_file_before_edits.recent_claim_before_edit_rate).toBeNull();
     expect(payload.readiness_summary.execution_safety.root_cause?.summary).toBe(
-      '24h execution_safety is bad because older edit telemetry remains inside the selected window; no fresh bad edits detected recently.',
+      '24h claim-before-edit includes older edit telemetry; no fresh pre_tool_use_missing edits detected in the recent window.',
     );
     const text = formatColonyHealthOutput(payload);
     expect(text).toContain('recent 1h: hook_capable_edits=0');
     expect(text).toContain('claim-before-edit=n/a');
     expect(text).not.toContain('Lifecycle bridge missing');
+  });
+
+  it('prioritizes dirty contended files over old claim-before-edit telemetry', () => {
+    const recentSince = NOW - 3_600_000;
+    const payload = buildColonyHealthPayload(
+      fakeStorage({
+        calls: Array.from({ length: 12 }, (_, index) =>
+          call(index + 1, 'codex-old-session', 'mcp__colony__task_claim_file', SINCE + 1_000 + index),
+        ),
+        claimBeforeEdit: badClaimBeforeEditStats(),
+        claimBeforeEditStatsBySince: (since) =>
+          since >= recentSince ? emptyClaimBeforeEditStats() : badClaimBeforeEditStats(),
+        tasks: [],
+        claimsByTask: {},
+      }),
+      {
+        since: SINCE,
+        window_hours: 24,
+        now: NOW,
+        codex_sessions_root: NO_CODEX_ROOT,
+        repo_root: '/repo',
+        worktree_contention: fakeWorktreeContention(2),
+      },
+    );
+
+    expect(payload.live_contention_health).toMatchObject({
+      live_file_contentions: 0,
+      dirty_contended_files: 2,
+    });
+    expect(payload.task_claim_file_before_edits.old_telemetry_pollution).toBe(true);
+
+    const text = formatColonyHealthOutput(payload);
+    const nextFixes = outputSection(text, 'Next fixes');
+    expect(nextFixes).toContain('1. dirty contended files');
+    expect(nextFixes).toContain('2. old claim-before-edit telemetry');
+    expect(nextFixes.indexOf('1. dirty contended files')).toBeLessThan(
+      nextFixes.indexOf('2. old claim-before-edit telemetry'),
+    );
+    expect(nextFixes).not.toContain('Lifecycle bridge missing');
   });
 
   it('keeps execution safety bad when live contentions still exist', () => {
@@ -513,6 +559,7 @@ describe('colony health payload', () => {
         tasks: [
           { id: 1, repo_root: '/repo', branch: 'agent/codex/left' },
           { id: 2, repo_root: '/repo', branch: 'agent/claude/right' },
+          { id: 3, repo_root: '/repo', branch: 'agent/codex/stale' },
         ],
         claimsByTask: {
           1: [
@@ -531,12 +578,21 @@ describe('colony health payload', () => {
               claimed_at: NOW - 60_000,
             },
           ],
+          3: [
+            {
+              task_id: 3,
+              file_path: 'src/stale.ts',
+              session_id: 'codex-stale-session',
+              claimed_at: NOW - 90 * 60_000,
+            },
+          ],
         },
       }),
       {
         since: SINCE,
         window_hours: 24,
         now: NOW,
+        claim_stale_minutes: 60,
         codex_sessions_root: NO_CODEX_ROOT,
         repo_root: '/repo',
         hivemind: {
@@ -567,7 +623,23 @@ describe('colony health payload', () => {
 
     expect(payload.live_contention_health.live_file_contentions).toBe(1);
     expect(payload.readiness_summary.execution_safety.status).toBe('bad');
-    expect(payload.task_claim_file_before_edits.old_telemetry_pollution).toBe(false);
+    expect(payload.readiness_summary.execution_safety.root_cause).toMatchObject({
+      kind: 'old_telemetry_pollution',
+      summary:
+        '24h claim-before-edit includes older edit telemetry; no fresh pre_tool_use_missing edits detected in the recent window.',
+    });
+    expect(payload.task_claim_file_before_edits.old_telemetry_pollution).toBe(true);
+    const text = formatColonyHealthOutput(payload);
+    expect(text).toContain('1. live file contentions');
+    expect(text).toContain('2. stale claims');
+    expect(text).toContain('3. old claim-before-edit telemetry');
+    expect(text.indexOf('1. live file contentions')).toBeLessThan(
+      text.indexOf('2. stale claims'),
+    );
+    expect(text.indexOf('2. stale claims')).toBeLessThan(
+      text.indexOf('3. old claim-before-edit telemetry'),
+    );
+    expect(text).not.toContain('Lifecycle bridge missing');
   });
 
   it('builds a dry-run execution-safety recovery plan without running sweeps', () => {
@@ -1744,10 +1816,15 @@ describe('colony health payload', () => {
     ]);
 
     const text = formatColonyHealthOutput(payload);
+    const nextFixesStart = text.indexOf('Next fixes');
+    const adoptionStart = text.indexOf('\nAdoption thresholds', nextFixesStart);
+    const nextFixes = text.slice(nextFixesStart, adoptionStart);
     expect(text).toContain('Next fixes');
-    expect(text.indexOf('claim-before-edit: 0%')).toBeLessThan(text.indexOf('stale claims: 1'));
-    expect(text.indexOf('stale claims: 1')).toBeLessThan(
-      text.indexOf('task_post/task_note_working share: 0%'),
+    expect(nextFixes.indexOf('claim-before-edit: 0%')).toBeLessThan(
+      nextFixes.indexOf('stale claims: 1'),
+    );
+    expect(nextFixes.indexOf('stale claims: 1')).toBeLessThan(
+      nextFixes.indexOf('task_post/task_note_working share: 0%'),
     );
     expect(text).not.toContain('hivemind_context -> attention_inbox: 0%');
     expect(text).not.toContain('task_list -> task_ready_for_agent: 25%');
@@ -2137,6 +2214,14 @@ describe('colony health payload', () => {
   });
 });
 
+function outputSection(output: string, heading: string): string {
+  const start = output.indexOf(heading);
+  if (start === -1) return '';
+  const rest = output.slice(start);
+  const nextHeading = rest.slice(heading.length).search(/\n[A-Z][^\n]+\n/);
+  return nextHeading === -1 ? rest : rest.slice(0, heading.length + nextHeading);
+}
+
 function codexRolloutLine(tsMs: number, server: string, tool: string): string {
   return JSON.stringify({
     timestamp: new Date(tsMs).toISOString(),
@@ -2200,7 +2285,7 @@ function hivemindSession(args: {
   } as never;
 }
 
-function fakeWorktreeContention(): never {
+function fakeWorktreeContention(contentionCount = 1): never {
   return {
     generated_at: new Date(NOW).toISOString(),
     repo_root: '/repo',
@@ -2208,7 +2293,7 @@ function fakeWorktreeContention(): never {
       worktree_count: 2,
       dirty_worktree_count: 2,
       dirty_file_count: 2,
-      contention_count: 1,
+      contention_count: contentionCount,
     },
     inspected_roots: [],
     worktrees: [],
