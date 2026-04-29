@@ -91,6 +91,8 @@ const mocks = vi.hoisted(() => ({
     run({ kind: 'store' }),
   ),
   buildBridgeStatusPayload: vi.fn(),
+  readStdin: vi.fn(),
+  runOmxLifecycleEnvelope: vi.fn(),
 }));
 
 vi.mock('@colony/config', () => ({
@@ -151,5 +153,68 @@ describe('bridge status --json', () => {
       },
     );
     expect(JSON.parse(output.join(''))).toEqual(payload);
+  });
+});
+
+describe('bridge lifecycle --json', () => {
+  it('forwards stdin JSON to the lifecycle receiver', async () => {
+    mocks.readStdin.mockResolvedValue(
+      JSON.stringify({
+        event_id: 'evt_cli',
+        event_name: 'task_bind',
+        session_id: 'codex@cli',
+        agent: 'codex',
+        cwd: '/repo',
+        repo_root: '/repo',
+        branch: 'main',
+        timestamp: '2026-04-29T10:01:00.000Z',
+        source: 'omx',
+      }),
+    );
+    mocks.runOmxLifecycleEnvelope.mockResolvedValue({
+      ok: true,
+      ms: 3,
+      event_id: 'evt_cli',
+      event_type: 'task_bind',
+      route: 'task_bind',
+    });
+    const output: string[] = [];
+    vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: unknown) => {
+      output.push(String(chunk));
+      return true;
+    }) as typeof process.stdout.write);
+
+    const program = new Command();
+    registerBridgeCommand(program, {
+      readStdin: mocks.readStdin,
+      runOmxLifecycleEnvelope: mocks.runOmxLifecycleEnvelope,
+    });
+
+    await program.parseAsync(
+      ['node', 'test', 'bridge', 'lifecycle', '--json', '--ide', 'codex', '--cwd', '/repo'],
+      { from: 'node' },
+    );
+
+    expect(mocks.runOmxLifecycleEnvelope).toHaveBeenCalledWith(
+      {
+        event_id: 'evt_cli',
+        event_name: 'task_bind',
+        session_id: 'codex@cli',
+        agent: 'codex',
+        cwd: '/repo',
+        repo_root: '/repo',
+        branch: 'main',
+        timestamp: '2026-04-29T10:01:00.000Z',
+        source: 'omx',
+      },
+      { defaultCwd: '/repo', ide: 'codex' },
+    );
+    expect(JSON.parse(output.join(''))).toEqual({
+      ok: true,
+      ms: 3,
+      event_id: 'evt_cli',
+      event_type: 'task_bind',
+      route: 'task_bind',
+    });
   });
 });

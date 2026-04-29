@@ -35,8 +35,30 @@ type BridgeStatusBuilder = (
   claimed_file_count: number;
 }>;
 
+interface OmxLifecycleRunResult {
+  ok: boolean;
+  ms: number;
+  event_id?: string;
+  event_type?: string;
+  route?: string;
+  duplicate?: boolean;
+  context?: string;
+  error?: string;
+}
+
 interface BridgeCommandDeps {
   buildBridgeStatusPayload?: BridgeStatusBuilder;
+  readStdin?: () => Promise<string>;
+  runOmxLifecycleEnvelope?: (
+    payload: unknown,
+    options: { defaultCwd?: string; ide?: string },
+  ) => Promise<OmxLifecycleRunResult>;
+}
+
+interface BridgeLifecycleOptions {
+  json?: boolean;
+  ide?: string;
+  cwd?: string;
 }
 
 function sessionFromEnv(env: NodeJS.ProcessEnv = process.env): string | undefined {
@@ -140,4 +162,58 @@ export function registerBridgeCommand(program: Command, deps: BridgeCommandDeps 
         process.stdout.write(`  claimed files: ${payload.claimed_file_count}\n`);
       });
     });
+
+  bridge
+    .command('lifecycle')
+    .description('Receive a colony-omx-lifecycle-v1 envelope from stdin')
+    .option('--json', 'emit the routing result as JSON')
+    .option('--ide <name>', 'IDE/agent hint used when the envelope omits one')
+    .option('--cwd <path>', 'cwd hint used when the envelope uses relative paths')
+    .action(async (opts: BridgeLifecycleOptions) => {
+      const raw = await (deps.readStdin ?? readStdin)();
+      const payload = raw.trim() ? safeJson(raw) : {};
+      const runLifecycle =
+        deps.runOmxLifecycleEnvelope ?? (await import('@colony/hooks')).runOmxLifecycleEnvelope;
+      const result = await runLifecycle(payload, {
+        defaultCwd: opts.cwd?.trim() || process.cwd(),
+        ...(opts.ide?.trim() ? { ide: opts.ide.trim() } : {}),
+      });
+
+      if (opts.json) {
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      } else if (result.ok) {
+        const duplicate = result.duplicate === true ? ' duplicate=true' : '';
+        process.stdout.write(
+          `${kleur.green('ok')} event=${result.event_type ?? '-'} route=${result.route ?? '-'}${duplicate}\n`,
+        );
+      } else {
+        process.stderr.write(`${kleur.red('error')} ${result.error ?? 'lifecycle failed'}\n`);
+      }
+
+      if (!result.ok) process.exitCode = 1;
+    });
+}
+
+function safeJson(s: string): Record<string, unknown> {
+  try {
+    const v = JSON.parse(s);
+    return v && typeof v === 'object' ? (v as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function readStdin(): Promise<string> {
+  return new Promise((resolve) => {
+    if (process.stdin.isTTY) {
+      resolve('');
+      return;
+    }
+    let data = '';
+    process.stdin.setEncoding('utf8');
+    process.stdin.on('data', (chunk) => {
+      data += chunk;
+    });
+    process.stdin.on('end', () => resolve(data));
+  });
 }

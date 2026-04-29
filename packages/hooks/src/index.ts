@@ -1,4 +1,16 @@
 export { runHook } from './runner.js';
+export {
+  OMX_LIFECYCLE_SCHEMA,
+  OMX_LIFECYCLE_SCHEMA_ID,
+  isOmxLifecycleEnvelopeLike,
+  parseOmxLifecycleEnvelope,
+  runOmxLifecycleEnvelope,
+  type NormalizedOmxLifecycleEvent,
+  type OmxLifecycleEventType,
+  type OmxLifecycleRunResult,
+  type ParseOmxLifecycleEnvelopeResult,
+  type RunOmxLifecycleEnvelopeOptions,
+} from './lifecycle-envelope.js';
 export { ensureWorkerRunning } from './auto-spawn.js';
 export {
   activeTaskCandidatesForSession,
