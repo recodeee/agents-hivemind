@@ -97,6 +97,9 @@ describe('tool classification', () => {
     expect(classifyTool('mcp__colony__task_note_working')).toBe('commit');
     expect(classifyTool('mcp__colony__hivemind_context')).toBe('read');
     expect(classifyTool('Edit')).toBe('edit');
+    expect(classifyTool('apply_patch')).toBe('edit');
+    expect(classifyTool('ApplyPatch')).toBe('edit');
+    expect(classifyTool('Patch')).toBe('edit');
     expect(classifyTool('made_up')).toBe('other');
   });
 });
@@ -181,6 +184,8 @@ describe('colony health read queries', () => {
     toolUse('codex@health', 'mcp__colony__task_ready_for_agent', 2_000);
     claim('codex@health', 'src/claimed.ts', 2_500);
     toolUse('codex@health', 'Edit', 3_000, 'src/claimed.ts');
+    claim('codex@health', 'src/patched.ts', 3_500);
+    toolUse('codex@health', 'apply_patch', 3_600, 'src/patched.ts');
     toolUse('claude@health', 'Edit', 4_000, 'src/unclaimed.ts');
     toolUse('claude@health', 'Edit', 5_000);
     session('colony-pre-tool-use-diagnostics');
@@ -202,17 +207,18 @@ describe('colony health read queries', () => {
       'mcp__colony__task_list',
       'mcp__colony__task_ready_for_agent',
       'Edit',
+      'apply_patch',
       'Edit',
       'Edit',
     ]);
     const stats = storage.claimBeforeEditStats(0);
     expect(stats).toMatchObject({
-      edit_tool_calls: 3,
-      edits_with_file_path: 2,
-      edits_claimed_before: 1,
+      edit_tool_calls: 4,
+      edits_with_file_path: 3,
+      edits_claimed_before: 2,
       claim_match_window_ms: 5 * 60_000,
       claim_match_sources: {
-        exact_session: 1,
+        exact_session: 2,
         repo_branch: 0,
         worktree: 0,
         agent_lane: 0,
