@@ -1,9 +1,10 @@
 import { loadSettings } from '@colony/config';
+import type { MemoryStore } from '@colony/core';
 import type { Command } from 'commander';
 import kleur from 'kleur';
 import { withStore } from '../util/store.js';
 
-interface BridgeStatusOptions {
+interface BridgeStatusCommandOptions {
   repoRoot?: string;
   sessionId?: string;
   agent?: string;
@@ -12,7 +13,7 @@ interface BridgeStatusOptions {
 }
 
 type BridgeStatusBuilder = (
-  store: unknown,
+  store: MemoryStore,
   options: {
     session_id: string;
     agent: string;
@@ -113,7 +114,7 @@ export function registerBridgeCommand(program: Command, deps: BridgeCommandDeps 
     .option('--agent <name>', 'agent name (e.g. codex, claude); inferred from session when omitted')
     .option('--branch <branch>', 'current branch hint used to pick the active lane')
     .option('--json', 'emit the bridge payload as JSON')
-    .action(async (opts: BridgeStatusOptions) => {
+    .action(async (opts: BridgeStatusCommandOptions) => {
       const sessionId = opts.sessionId?.trim() || sessionFromEnv();
       if (!sessionId) {
         process.stderr.write(
@@ -137,7 +138,7 @@ export function registerBridgeCommand(program: Command, deps: BridgeCommandDeps 
       await withStore(settings, async (store) => {
         const buildBridgeStatusPayload =
           deps.buildBridgeStatusPayload ??
-          (await import('../../../mcp-server/src/tools/bridge.js')).buildBridgeStatusPayload;
+          (await import('@colony/mcp-server')).buildBridgeStatusPayload;
         const payload = await buildBridgeStatusPayload(store, {
           session_id: sessionId,
           agent,
@@ -146,7 +147,7 @@ export function registerBridgeCommand(program: Command, deps: BridgeCommandDeps 
         });
 
         if (opts.json) {
-          process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+          process.stdout.write(`${JSON.stringify(payload)}\n`);
           return;
         }
 
