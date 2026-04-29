@@ -99,21 +99,57 @@ function seedFileLocks(repoRoot: string): void {
   );
 }
 
-function seedStrandedSession(): { sessionId: string; lastError: string } {
+function seedStrandedSession(options: { live?: boolean } = {}): {
+  sessionId: string;
+  lastError: string;
+  taskId: number;
+  repoRoot: string;
+  worktreePath: string;
+} {
   const now = Date.UTC(2026, 3, 28, 12, 0, 0);
   vi.setSystemTime(now);
   const sessionId = 'codex-stranded-session-abcdef';
   const lastActivity = now - 12 * 60_000;
+  const repoRoot = options.live ? join(dir, 'repo-colony') : '/repo/colony';
+  const worktreePath = join(repoRoot, '.omx', 'agent-worktrees', sessionId);
+  if (options.live) {
+    const activeSessionDir = join(repoRoot, '.omx', 'state', 'active-sessions');
+    mkdirSync(activeSessionDir, { recursive: true });
+    mkdirSync(worktreePath, { recursive: true });
+    writeFileSync(
+      join(activeSessionDir, `${sessionId}.json`),
+      `${JSON.stringify(
+        {
+          schemaVersion: 1,
+          repoRoot,
+          branch: 'agent/codex/plans-stranded',
+          taskName: 'plans stranded rescue surface',
+          latestTaskPreview: 'Preview and rescue stranded session',
+          agentName: 'codex',
+          worktreePath,
+          pid: process.pid,
+          cliName: 'codex',
+          sessionKey: sessionId,
+          startedAt: new Date(lastActivity - 1_000).toISOString(),
+          lastHeartbeatAt: new Date(now).toISOString(),
+          state: 'working',
+        },
+        null,
+        2,
+      )}\n`,
+      'utf8',
+    );
+  }
   store.storage.createSession({
     id: sessionId,
     ide: 'codex',
-    cwd: '/repo/colony',
+    cwd: repoRoot,
     started_at: lastActivity - 1_000,
     metadata: null,
   });
   const task = store.storage.findOrCreateTask({
     title: 'plans stranded rescue surface',
-    repo_root: '/repo/colony',
+    repo_root: repoRoot,
     branch: 'agent/codex/plans-stranded',
     created_by: sessionId,
   });
@@ -138,7 +174,7 @@ function seedStrandedSession(): { sessionId: string; lastError: string } {
     task_id: task.id,
     ts: lastActivity,
   });
-  return { sessionId, lastError };
+  return { sessionId, lastError, taskId: task.id, repoRoot, worktreePath };
 }
 
 function seedCoordinationEdits(counts: { unclaimed: number; claimed: number }): void {
@@ -550,9 +586,86 @@ describe('worker HTTP', () => {
 
     expect(body).toContain(`method="post"`);
     expect(body).toContain(`action="/api/colony/stranded/${encodeURIComponent(sessionId)}/rescue"`);
+    expect(body).toContain(
+      `data-preview-action="/api/colony/stranded/${encodeURIComponent(sessionId)}/rescue/preview"`,
+    );
     expect(body).toContain(`data-action="rescue-stranded"`);
     expect(body).toContain(`data-session-id="${sessionId}"`);
-    expect(body).toContain(`fetch(form.action, { method: 'POST'`);
+    expect(body).toContain(`data-role="confirm-rescue" hidden`);
+    expect(body).toContain('data-rescue-preview hidden');
+    expect(body).toContain('Loading rescue preview...');
+    expect(body).toContain('Applying rescue...');
+  });
+
+  it('GET /api/colony/stranded/:id/rescue/preview returns a safe preview only', async () => {
+    const { sessionId, taskId } = seedStrandedSession();
+
+    const res = await app.request(
+      `/api/colony/stranded/${encodeURIComponent(sessionId)}/rescue/preview`,
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ok: boolean;
+      mode: string;
+      rescued: Array<{
+        held_claim_count: number;
+        held_claims: Array<{ file_path: string }>;
+      }>;
+      command: string;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.mode).toBe('preview');
+    expect(body.command).toContain(`/api/colony/stranded/${encodeURIComponent(sessionId)}/rescue`);
+    expect(body.rescued[0]?.held_claim_count).toBe(4);
+    expect(body.rescued[0]?.held_claims.map((claim) => claim.file_path)).toEqual(
+      expect.arrayContaining([
+        'apps/worker/src/viewer.ts',
+        'apps/worker/src/server.ts',
+        'apps/worker/test/server.test.ts',
+        'packages/core/src/rescue.ts',
+      ]),
+    );
+    expect(store.storage.listClaims(taskId)).toHaveLength(4);
+    expect(store.storage.taskObservationsByKind(taskId, 'relay', 10)).toHaveLength(0);
+    expect(store.storage.taskObservationsByKind(taskId, 'rescue-stranded', 10)).toHaveLength(0);
+  });
+
+  it('POST /api/colony/stranded/:id/rescue applies only the selected rescue', async () => {
+    const { sessionId, taskId } = seedStrandedSession();
+
+    const res = await app.request(`/api/colony/stranded/${encodeURIComponent(sessionId)}/rescue`, {
+      method: 'POST',
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ok: boolean;
+      mode: string;
+      message: string;
+      rescued: Array<{ audit_observation_id: number; held_claim_count: number }>;
+    };
+    expect(body.ok).toBe(true);
+    expect(body.mode).toBe('apply');
+    expect(body.message).toContain('Rescue applied');
+    expect(body.rescued[0]?.audit_observation_id).toBeGreaterThan(0);
+    expect(body.rescued[0]?.held_claim_count).toBe(4);
+    expect(store.storage.listClaims(taskId)).toHaveLength(0);
+    expect(store.storage.taskObservationsByKind(taskId, 'relay', 10)).toHaveLength(0);
+    expect(store.storage.getObservation(body.rescued[0]?.audit_observation_id ?? -1)?.kind).toBe(
+      'rescue-stranded',
+    );
+    expect(store.storage.getSession(sessionId)?.ended_at).toEqual(expect.any(Number));
+  });
+
+  it('GET /api/colony/stranded/:id/rescue/preview reports failure for non-stranded sessions', async () => {
+    const res = await app.request('/api/colony/stranded/missing-session/rescue/preview');
+
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { ok: boolean; message: string; skipped: unknown[] };
+    expect(body.ok).toBe(false);
+    expect(body.message).toContain('not stranded');
+    expect(body.skipped).toEqual([{ session_id: 'missing-session', reason: 'not stranded' }]);
   });
 
   it('GET / renders the Hivemind runtime dashboard', async () => {

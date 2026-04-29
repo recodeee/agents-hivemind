@@ -8,6 +8,7 @@ import {
   type HivemindOptions,
   MemoryStore,
   buildDiscrepancyReport,
+  bulkRescueStrandedSessions,
   listPlans,
   readHivemind,
 } from '@colony/core';
@@ -109,6 +110,37 @@ export function buildApp(
         : {}),
     });
     return c.json(scan);
+  });
+
+  app.get('/api/colony/stranded/:id/rescue/preview', (c) => {
+    const sessionId = c.req.param('id');
+    const outcome = previewStrandedSessionRescue(store, sessionId);
+    const status = outcome.stranded.length > 0 ? 200 : 404;
+    return c.json(rescueResponse('preview', sessionId, outcome, c.req.path), status);
+  });
+
+  app.post('/api/colony/stranded/:id/rescue', (c) => {
+    const sessionId = c.req.param('id');
+    try {
+      const outcome = bulkRescueStrandedSessions(store, {
+        dry_run: false,
+        session_id: sessionId,
+      });
+      const status = outcome.rescued.length > 0 ? 200 : 404;
+      return c.json(rescueResponse('apply', sessionId, outcome, c.req.path), status);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json(
+        {
+          ok: false,
+          mode: 'apply',
+          session_id: sessionId,
+          error: message,
+          command: rescueCurlCommand(c.req.path),
+        },
+        500,
+      );
+    }
   });
 
   app.get('/api/colony/tasks', (c) => {
@@ -280,6 +312,58 @@ function parseSinceQuery(raw: string | undefined, fallback: number): number {
   if (Number.isFinite(numeric) && numeric >= 0) return numeric;
   const parsedDate = Date.parse(raw);
   return Number.isFinite(parsedDate) ? parsedDate : fallback;
+}
+
+type RescueMode = 'preview' | 'apply';
+type RescueOutcome = ReturnType<typeof bulkRescueStrandedSessions>;
+
+function previewStrandedSessionRescue(store: MemoryStore, sessionId: string): RescueOutcome {
+  return bulkRescueStrandedSessions(store, {
+    dry_run: true,
+    session_id: sessionId,
+  });
+}
+
+function rescueResponse(
+  mode: RescueMode,
+  sessionId: string,
+  outcome: RescueOutcome,
+  requestPath: string,
+): {
+  ok: boolean;
+  mode: RescueMode;
+  session_id: string;
+  command: string;
+  scanned: number;
+  rescued: RescueOutcome['rescued'];
+  skipped: RescueOutcome['skipped'];
+  released_claim_count: number;
+  audit_observation_ids: number[];
+  message: string;
+} {
+  const rescueRows = mode === 'preview' ? outcome.stranded : outcome.rescued;
+  const ok = rescueRows.length > 0;
+  const skippedReason = outcome.skipped.find((row) => row.session_id === sessionId)?.reason;
+  return {
+    ok,
+    mode,
+    session_id: sessionId,
+    command: rescueCurlCommand(requestPath.replace(/\/preview$/, '')),
+    scanned: outcome.scanned,
+    rescued: rescueRows,
+    skipped: outcome.skipped,
+    released_claim_count: outcome.released_claim_count,
+    audit_observation_ids: outcome.audit_observation_ids,
+    message: ok
+      ? mode === 'preview'
+        ? 'Preview ready. Confirm to release the stranded claims and mark the session rescued.'
+        : 'Rescue applied. Claims released and session marked rescued.'
+      : `No rescue applied: ${skippedReason ?? 'session is not currently rescueable'}.`,
+  };
+}
+
+function rescueCurlCommand(path: string): string {
+  return `curl -X POST http://127.0.0.1:${loadSettings().workerPort}${path}`;
 }
 
 type StrandedStorageReader = {

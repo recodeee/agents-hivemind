@@ -26,12 +26,14 @@ export type MessageAttentionState =
 export interface StrandedRescueOptions {
   stranded_after_ms?: number;
   dry_run?: boolean;
+  session_id?: string;
 }
 
 export interface BulkStrandedRescueOptions {
   stranded_after_ms?: number;
   dry_run?: boolean;
   now?: number;
+  session_id?: string;
 }
 
 export interface BulkStrandedClaim {
@@ -151,10 +153,18 @@ export function rescueStrandedSessions(
   const dryRun = options.dry_run ?? false;
   const now = Date.now();
   const storage = store.storage as typeof store.storage & RescueStorage;
-  const candidates = storage.findStrandedSessions({ stranded_after_ms });
+  const requestedSessionId = options.session_id?.trim();
+  const allCandidates = storage.findStrandedSessions({ stranded_after_ms });
+  const candidates = requestedSessionId
+    ? allCandidates.filter((candidate) => candidateSessionId(candidate) === requestedSessionId)
+    : allCandidates;
   const outcome: StrandedRescueOutcome = { scanned: candidates.length, rescued: [], skipped: [] };
   const orderedPlanContexts = orderedPlanContextByTask(store);
   const jobs: RescueJob[] = [];
+
+  if (requestedSessionId && candidates.length === 0) {
+    outcome.skipped.push({ session_id: requestedSessionId, reason: 'not stranded' });
+  }
 
   for (const candidate of candidates) {
     const session_id = candidateSessionId(candidate);
@@ -307,7 +317,11 @@ export function bulkRescueStrandedSessions(
   const dryRun = options.dry_run ?? true;
   const now = options.now ?? Date.now();
   const storage = store.storage as typeof store.storage & RescueStorage;
-  const candidates = storage.findStrandedSessions({ stranded_after_ms });
+  const requestedSessionId = options.session_id?.trim();
+  const allCandidates = storage.findStrandedSessions({ stranded_after_ms });
+  const candidates = requestedSessionId
+    ? allCandidates.filter((candidate) => candidateSessionId(candidate) === requestedSessionId)
+    : allCandidates;
   const outcome: BulkStrandedRescueOutcome = {
     dry_run: dryRun,
     scanned: candidates.length,
@@ -317,6 +331,10 @@ export function bulkRescueStrandedSessions(
     released_claim_count: 0,
     audit_observation_ids: [],
   };
+
+  if (requestedSessionId && candidates.length === 0) {
+    outcome.skipped.push({ session_id: requestedSessionId, reason: 'not stranded' });
+  }
 
   for (const candidate of candidates) {
     const session_id = candidateSessionId(candidate);
