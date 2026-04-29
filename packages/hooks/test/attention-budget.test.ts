@@ -311,6 +311,17 @@ describe('SessionStart attention budget preface', () => {
           is_claimable_broadcast: false,
           claimed_by_session_id: null,
           claimed_by_agent: null,
+          reply_tool: 'task_message',
+          reply_args: {
+            task_id: 1,
+            session_id: 'B',
+            agent: 'codex',
+            to_agent: 'any',
+            to_session_id: 'A',
+            reply_to: 1,
+            urgency: 'fyi',
+            content: '...',
+          },
           reply_with_tool: 'task_message',
           reply_with_args: {
             task_id: 1,
@@ -321,6 +332,11 @@ describe('SessionStart attention budget preface', () => {
             reply_to: 1,
             urgency: 'fyi',
             content: '...',
+          },
+          mark_read_tool: 'task_message_mark_read',
+          mark_read_args: {
+            message_observation_id: 1,
+            session_id: 'B',
           },
           mark_read_with_tool: 'task_message_mark_read',
           mark_read_with_args: {
