@@ -78,8 +78,7 @@ Rules:
 - Use `task_list` only for browsing/debugging. Do not use `task_list` as the normal work picker.
 - If an agent reaches for `task_list` repeatedly while choosing work, stop and call `task_ready_for_agent` instead. `task_list` is an inventory tool, not a scheduler.
 - Before editing files on an active task, call `task_claim_file` for each touched file.
-- Use `task_note_working` first for current working state.
-- Use `task_post` for task-thread notes, decisions, blockers, and explicit `task_id` updates.
+- Use `task_post` for task-thread notes, decisions, blockers, and working-state updates.
 - Use `task_message` / `task_messages` for directed agent-to-agent communication.
 - Use `get_observations` only after compact Colony tools return IDs worth hydrating.
 
@@ -97,14 +96,11 @@ Colony is preferred over generic notepad state.
 
 A working-state note should be task-scoped, searchable, and useful to another agent resuming the lane.
 
-When saving progress, try `task_note_working` first. It resolves the active task
-from `session_id` plus optional `repo_root` / `branch` and stores the full
-working note in Colony.
+When saving progress, use a task-scoped Colony note when possible:
 
 ```text
-task_note_working
+task_post kind=note
 content="branch=<branch>; task=<task>; blocker=<blocker>; next=<next>; evidence=<path|command|PR|spec>"
-pointer={branch, task, blocker, next, evidence}
 ```
 
 Use exactly these fields for handoff-style notes:
@@ -114,19 +110,6 @@ Use exactly these fields for handoff-style notes:
 - `blocker`
 - `next`
 - `evidence`
-
-If `task_note_working` succeeds, do not write the full content to
-`.omx/notepad.md`. If `bridge.writeOmxNotepadPointer=true`, the transition
-bridge may append only a tiny pointer:
-
-```text
-branch=<branch>; task=<task>; blocker=<blocker>; next=<next>; evidence=<path|command|PR|spec>; colony_observation_id=<id>
-```
-
-If `task_note_working` returns `ACTIVE_TASK_NOT_FOUND`, an agent may pass
-`allow_omx_notepad_fallback=true` to write that same tiny OMX pointer. If the
-task id is already known and the update is not current working state, use
-`task_post kind=note`.
 
 Do not store long proof dumps, stale narrative, or full logs in notepads. Put bulky proof in OpenSpec artifacts, PRs, or command output.
 
@@ -277,7 +260,7 @@ If another agent owns or recently touched nearby code:
 
 ### Handoff gate
 
-Before editing, post a one-line working-state note through Colony `task_note_working` when a task is active. Use `task_post` when the task id is already known and the update is not a current-state save.
+Before editing, post a one-line handoff note through Colony `task_post` when a task is active.
 
 Use `.omx/notepad.md` only when Colony is unavailable or the lane explicitly depends on legacy OMX state.
 
