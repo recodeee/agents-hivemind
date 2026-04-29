@@ -19,12 +19,17 @@ import {
   signalMetadataFromObservation,
   signalMetadataFromProposal,
 } from '@colony/core';
-import { sweepQueenPlans } from '@colony/queen';
+import {
+  sweepQueenPlans,
+  type QueenReplacementAgent,
+  type QueenReplacementRecommendation,
+} from '@colony/queen';
 import type {
   ClaimBeforeEditStats,
   ClaimMatchSources,
   ClaimMissReasons,
   NearestClaimExample,
+  OmxRuntimeSummaryStats,
   ObservationRow,
   ProposalRow,
   ReinforcementRow,
@@ -116,6 +121,10 @@ interface TaskPostNotepadPayload {
   colony_note_share: number | null;
 }
 
+interface OmxRuntimeBridgePayload extends OmxRuntimeSummaryStats {
+  latest_summary_age_ms: number | null;
+}
+
 interface SearchCallsPayload {
   total_search_calls: number;
   active_sessions: number;
@@ -202,6 +211,7 @@ interface QueenWavePlanSummary {
   stale_claims_blocking_downstream: number;
   downstream_blockers: QueenDownstreamBlockerReport[];
   quota_handoffs_blocking_downstream: number;
+  replacement_recommendation: QueenReplacementRecommendation | null;
 }
 
 interface QueenWaveHealthPayload {
@@ -212,6 +222,7 @@ interface QueenWaveHealthPayload {
   blocked_subtasks: number;
   stale_claims_blocking_downstream: number;
   quota_handoffs_blocking_downstream: number;
+  replacement_recommendation: QueenReplacementRecommendation | null;
   plans: QueenWavePlanSummary[];
   downstream_blockers: QueenDownstreamBlockerReport[];
 }
@@ -365,6 +376,7 @@ export interface ColonyHealthPayload {
   task_list_vs_task_ready_for_agent: TaskSelectionPayload;
   task_post_vs_task_message: TaskPostMessagePayload;
   task_post_vs_omx_notepad: TaskPostNotepadPayload;
+  omx_runtime_bridge: OmxRuntimeBridgePayload;
   search_calls_per_session: SearchCallsPayload;
   task_claim_file_before_edits: ClaimBeforeEditPayload;
   signal_health: SignalHealthPayload;
@@ -388,6 +400,7 @@ export function buildColonyHealthPayload(
     | 'claimBeforeEditStats'
     | 'listTasks'
     | 'listClaims'
+    | 'getSession'
     | 'taskTimeline'
     | 'taskObservationsByKind'
     | 'listProposalsForBranch'
@@ -435,6 +448,7 @@ export function buildColonyHealthPayload(
   const taskPostCalls = countTool(calls, 'task_post');
   const taskNoteWorkingCalls = countTool(calls, 'task_note_working');
   const taskMessageCalls = countTool(calls, 'task_message');
+  const omxRuntimeStats = omxRuntimeSummaryStats(storage, options.since);
   const searchCalls = searchCallsPerSession(calls);
   const claimBeforeEditStats = storage.claimBeforeEditStats(options.since);
   const taskSelection = taskSelectionPayload(calls);
@@ -469,6 +483,7 @@ export function buildColonyHealthPayload(
       task_message_share: ratio(taskMessageCalls, taskPostCalls + taskMessageCalls),
     },
     task_post_vs_omx_notepad: taskPostVsNotepadPayload(calls, taskPostCalls, taskNoteWorkingCalls),
+    omx_runtime_bridge: omxRuntimeBridgePayload(omxRuntimeStats, now),
     search_calls_per_session: searchCalls,
     task_claim_file_before_edits: claimBeforeEditPayload(
       claimBeforeEditStats,
@@ -623,6 +638,12 @@ export function formatColonyHealthOutput(
     `  task_post share:     ${formatPercent(payload.task_post_vs_omx_notepad.task_post_share)}`,
     `  colony note share:   ${formatPercent(payload.task_post_vs_omx_notepad.colony_note_share)}`,
     '',
+    kleur.bold('OMX runtime bridge'),
+    `  status:              ${payload.omx_runtime_bridge.status}`,
+    `  summaries ingested:  ${payload.omx_runtime_bridge.summaries_ingested}`,
+    `  latest summary age:  ${formatDuration(payload.omx_runtime_bridge.latest_summary_age_ms)}`,
+    `  warnings:            ${payload.omx_runtime_bridge.warning_count}`,
+    '',
     kleur.bold('Search calls per session'),
     `  total: ${payload.search_calls_per_session.total_search_calls}`,
     `  avg per active session: ${formatNumber(
@@ -680,6 +701,12 @@ export function formatColonyHealthOutput(
     `  stale claims blocking downstream:   ${payload.queen_wave_health.stale_claims_blocking_downstream}`,
     `  quota handoffs blocking downstream: ${payload.queen_wave_health.quota_handoffs_blocking_downstream}`,
   );
+  if (payload.queen_wave_health.replacement_recommendation) {
+    const rec = payload.queen_wave_health.replacement_recommendation;
+    lines.push(
+      `  recommended replacement:           ${rec.recommended_replacement_agent} (${rec.reason}; next ${rec.next_tool})`,
+    );
+  }
 
   if (payload.queen_wave_health.plans.length === 0) {
     lines.push(kleur.dim('  plans: none active'));
@@ -699,6 +726,11 @@ export function formatColonyHealthOutput(
       lines.push(
         `    ${blocker.plan_slug}/sub-${blocker.subtask_index} task #${blocker.task_id} ${blocker.file_path} owner=${blocker.owner_session_id} age=${blocker.age_minutes}m -> unlock candidate sub-${blocker.unlock_candidate.subtask_index}`,
       );
+      if (plan.replacement_recommendation) {
+        lines.push(
+          `    replacement: ${plan.replacement_recommendation.recommended_replacement_agent} - ${plan.replacement_recommendation.reason}`,
+        );
+      }
     }
   }
 
@@ -1204,6 +1236,32 @@ function taskPostVsNotepadPayload(
         ? ratio(colonyNoteCalls, colonyNoteCalls + omxNotepadWriteCalls)
         : null,
   };
+}
+
+function omxRuntimeBridgePayload(
+  stats: OmxRuntimeSummaryStats,
+  now: number,
+): OmxRuntimeBridgePayload {
+  return {
+    ...stats,
+    latest_summary_age_ms:
+      stats.latest_summary_ts === null ? null : Math.max(0, now - stats.latest_summary_ts),
+  };
+}
+
+function omxRuntimeSummaryStats(
+  storage: unknown,
+  since: number,
+): OmxRuntimeSummaryStats {
+  const maybe = storage as Partial<Pick<Storage, 'omxRuntimeSummaryStats'>>;
+  return (
+    maybe.omxRuntimeSummaryStats?.(since) ?? {
+      status: 'unavailable',
+      summaries_ingested: 0,
+      latest_summary_ts: null,
+      warning_count: 0,
+    }
+  );
 }
 
 function claimBeforeEditPayload(
@@ -2212,6 +2270,14 @@ function formatNumber(value: number | null): string {
   return value === null ? 'n/a' : value.toFixed(2);
 }
 
+function formatDuration(value: number | null): string {
+  if (value === null) return 'n/a';
+  const minutes = Math.round(value / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  return `${hours}h`;
+}
+
 function knownBranchProposals(
   storage: Pick<Storage, 'listProposalsForBranch'>,
   tasks: TaskRow[],
@@ -2267,6 +2333,7 @@ interface PlanSubtaskHealth {
   title: string;
   status: 'available' | 'claimed' | 'completed' | 'blocked';
   depends_on: number[];
+  file_scope: string[];
   claimed_at: number | null;
   claimed_by_session_id: string | null;
   claimed_by_agent: string | null;
@@ -2299,10 +2366,10 @@ function readPlanSubtasks(
       title: typeof initialMeta.title === 'string' ? initialMeta.title : titleLine,
       status: lifecycle.status,
       depends_on: readNumberArray(initialMeta.depends_on),
+      file_scope: readStringArrayMetadata(initialMeta.file_scope),
       claimed_at: lifecycle.claimed_at,
       claimed_by_session_id: lifecycle.claimed_by_session_id,
       claimed_by_agent: lifecycle.claimed_by_agent,
-      file_scope: readStringArray(initialMeta.file_scope),
       quota_handoff_pending: lifecycle.quota_handoff_pending,
       wave_index: 0,
       wave_name: 'Wave 1',
@@ -2358,13 +2425,9 @@ function readSubtaskLifecycle(
       status: initialStatus,
       claimed_at: initialStatus === 'claimed' ? initialTs : null,
       claimed_by_session_id:
-        initialStatus === 'claimed' && typeof initialMeta.session_id === 'string'
-          ? (initialMeta.session_id as string)
-          : null,
+        initialStatus === 'claimed' ? readStringOrNull(initialMeta.session_id) : null,
       claimed_by_agent:
-        initialStatus === 'claimed' && typeof initialMeta.agent === 'string'
-          ? (initialMeta.agent as string)
-          : null,
+        initialStatus === 'claimed' ? readStringOrNull(initialMeta.agent) : null,
       quota_handoff_pending,
     };
   }
@@ -2378,7 +2441,7 @@ function readSubtaskLifecycle(
 }
 
 function queenWaveHealthPayload(
-  storage: Pick<Storage, 'taskTimeline'>,
+  storage: Pick<Storage, 'taskTimeline' | 'taskObservationsByKind' | 'listClaims' | 'getSession'>,
   tasks: TaskRow[],
   options: { now: number; stale_claim_minutes: number },
 ): QueenWaveHealthPayload {
@@ -2405,6 +2468,7 @@ function queenWaveHealthPayload(
       quota_handoffs_blocking_downstream: subtasks.filter(
         (subtask) => subtask.quota_handoff_pending && blocksDownstream(subtask, subtasks),
       ).length,
+      replacement_recommendation: planReplacementRecommendation(storage, planSlug, subtasks, options),
     });
   }
 
@@ -2436,7 +2500,75 @@ function queenWaveHealthPayload(
       (sum, plan) => sum + plan.quota_handoffs_blocking_downstream,
       0,
     ),
+    replacement_recommendation:
+      plans.find((plan) => plan.replacement_recommendation !== null)
+        ?.replacement_recommendation ?? null,
     plans: plans.sort((a, b) => a.plan_slug.localeCompare(b.plan_slug)),
+  };
+}
+
+function planReplacementRecommendation(
+  storage: Pick<Storage, 'taskObservationsByKind' | 'listClaims' | 'getSession'>,
+  planSlug: string,
+  subtasks: PlanSubtaskHealth[],
+  options: { now: number; stale_claim_minutes: number },
+): QueenReplacementRecommendation | null {
+  const blocker = subtasks
+    .filter((subtask) => isStalePlanClaim(subtask, options) && blocksDownstream(subtask, subtasks))
+    .sort((a, b) => (a.claimed_at ?? options.now) - (b.claimed_at ?? options.now))[0];
+  if (!blocker || blocker.claimed_at === null) return null;
+
+  const ageMinutes = Math.max(0, Math.floor((options.now - blocker.claimed_at) / 60_000));
+  const claimedFileCount = storage.listClaims(blocker.task_id).length;
+  const taskSize = blocker.file_scope.length;
+  const runtimeHistory = blocker.claimed_by_session_id
+    ? (storage.getSession(blocker.claimed_by_session_id)?.ide ?? null)
+    : null;
+  const quotaHandoff = latestQuotaExhaustedHandoffForHealth(storage, blocker.task_id, options.now);
+  const staleAgent = normalizeRuntimeAgentForHealth(
+    quotaHandoff?.from_agent ?? blocker.claimed_by_agent ?? runtimeHistory,
+  );
+  const recommended = oppositeRuntimeForHealth(staleAgent, claimedFileCount, taskSize);
+
+  if (quotaHandoff !== null) {
+    return {
+      recommended_replacement_agent: recommended,
+      reason: `${displayRuntimeForHealth(staleAgent)} recently hit quota on this branch`,
+      next_tool: 'task_accept_handoff',
+      claim_args: {
+        handoff_observation_id: quotaHandoff.id,
+        session_id: '<session_id>',
+      },
+      signals: {
+        stale_blocker_age_minutes: ageMinutes,
+        claimed_file_count: claimedFileCount,
+        task_size: taskSize,
+        claimed_by_agent: blocker.claimed_by_agent,
+        runtime_history: runtimeHistory,
+        quota_exhausted_handoff_id: quotaHandoff.id,
+      },
+    };
+  }
+
+  return {
+    recommended_replacement_agent: recommended,
+    reason: `${displayRuntimeForHealth(staleAgent)} stale for ${ageMinutes}m on ${claimedFileCount} claimed file(s); task size ${taskSize} file(s)`,
+    next_tool: 'task_plan_claim_subtask',
+    claim_args: {
+      plan_slug: planSlug,
+      subtask_index: blocker.index,
+      session_id: '<session_id>',
+      agent: recommended,
+      file_scope: blocker.file_scope,
+    },
+    signals: {
+      stale_blocker_age_minutes: ageMinutes,
+      claimed_file_count: claimedFileCount,
+      task_size: taskSize,
+      claimed_by_agent: blocker.claimed_by_agent,
+      runtime_history: runtimeHistory,
+      quota_exhausted_handoff_id: null,
+    },
   };
 }
 
@@ -2699,6 +2831,64 @@ function isPlanSubtaskStatus(value: unknown): value is PlanSubtaskHealth['status
   return (
     value === 'available' || value === 'claimed' || value === 'completed' || value === 'blocked'
   );
+}
+
+function latestQuotaExhaustedHandoffForHealth(
+  storage: Pick<Storage, 'taskObservationsByKind'>,
+  taskId: number,
+  now: number,
+): { id: number; from_agent: string | null } | null {
+  const rows = storage.taskObservationsByKind(taskId, 'handoff', 100);
+  for (const row of rows) {
+    const meta = parseJsonObject(row.metadata);
+    const status = readStringOrNull(meta.status);
+    if (status !== null && status !== 'pending') continue;
+    const expiresAt = readNumber(meta.expires_at);
+    if (expiresAt !== null && now >= expiresAt) continue;
+    const text = [
+      row.content,
+      readStringMetadata(meta.reason),
+      readStringMetadata(meta.summary),
+      readStringMetadata(meta.one_line),
+      readStringArrayMetadata(meta.blockers).join(' '),
+    ]
+      .filter(Boolean)
+      .join(' ');
+    if (
+      meta.quota_exhausted === true ||
+      /\bquota(?:[-_\s]*exhausted|[-_\s]*hit|[-_\s]*reached|[-_\s]*exceeded)?\b/i.test(text)
+    ) {
+      return { id: row.id, from_agent: readStringOrNull(meta.from_agent) };
+    }
+  }
+  return null;
+}
+
+function normalizeRuntimeAgentForHealth(value: string | null | undefined): QueenReplacementAgent {
+  const normalized = value?.toLowerCase() ?? '';
+  if (normalized.includes('claude')) return 'claude-code';
+  if (normalized.includes('codex')) return 'codex';
+  return 'any';
+}
+
+function oppositeRuntimeForHealth(
+  staleAgent: QueenReplacementAgent,
+  claimedFileCount: number,
+  taskSize: number,
+): QueenReplacementAgent {
+  if (staleAgent === 'codex') return 'claude-code';
+  if (staleAgent === 'claude-code') return 'codex';
+  return claimedFileCount > 3 || taskSize > 3 ? 'any' : 'codex';
+}
+
+function displayRuntimeForHealth(agent: QueenReplacementAgent): string {
+  if (agent === 'claude-code') return 'Claude';
+  if (agent === 'codex') return 'Codex';
+  return 'Unknown runtime';
+}
+
+function readStringOrNull(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
 }
 
 function parseJsonObject(raw: string | null): Record<string, unknown> {

@@ -36,6 +36,17 @@ export {
   type ReconciledOmxActiveSession,
   type SkippedOmxActiveSession,
 } from './omx-session-reconcile.js';
+export {
+  defaultOmxRuntimeSummaryPaths,
+  ingestOmxRuntimeSummary,
+  ingestOmxRuntimeSummaryFile,
+  normalizeOmxRuntimeSummary,
+  type IngestOmxRuntimeSummaryFileResult,
+  type IngestOmxRuntimeSummaryResult,
+  type NormalizedOmxRuntimeSummary,
+  type OmxRuntimeSummaryInput,
+  type OmxRuntimeWarningKind,
+} from './omx-runtime-summary.js';
 export { hybridRank } from './ranker.js';
 export type { SearchResult, GetObservationsOptions, Observation, Session } from './types.js';
 export { createSessionId } from './ids.js';
@@ -133,6 +144,7 @@ export {
   type InboxFileHeat,
   type InboxLane,
   type InboxMessage,
+  type InboxOmxRuntimeWarning,
   type InboxPausedLane,
   type InboxRecentClaim,
   type InboxStaleClaimBranch,
