@@ -1,5 +1,6 @@
 import { quotaSafeOperatingContract } from '@colony/config';
 import {
+  quotaSafeOperatingContract,
   type AttentionBudgetOutput,
   type AttentionItem,
   type Embedder,

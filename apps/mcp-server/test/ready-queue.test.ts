@@ -73,6 +73,7 @@ async function claimAndComplete(planSlug: string, subtaskIndex: number): Promise
 interface ReadyResult {
   ready: ReadyEntry[];
   total_available: number;
+  mcp_capability_map: { summary: string[]; unknown_servers: string[] };
   next_action: string;
   next_tool?: 'task_plan_claim_subtask' | 'rescue_stranded_scan';
   plan_slug?: string;
@@ -256,6 +257,7 @@ describe('task_ready_for_agent', () => {
 
     expect(result.ready).toEqual([]);
     expect(result.total_available).toBe(0);
+    expect(result.mcp_capability_map.summary).toEqual(expect.any(Array));
     expect(result.empty_state).toBe(EMPTY_READY_STATE);
     expect(result.next_tool).toBeUndefined();
     expect(result.next_action).toBe('Publish a Queen/task plan for multi-agent work.');
