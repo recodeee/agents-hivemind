@@ -68,6 +68,19 @@ export interface CoordinationSweepResult {
     released_same_branch_duplicate_claim_count: number;
     released_stale_claim_count: number;
     downgraded_stale_claim_count: number;
+    /** Normalized safe-cleanup counters for CLI/health reporting. */
+    stale_claims: number;
+    expired_or_weak_claims: number;
+    quota_pending_claims: number;
+    released_claims: number;
+    downgraded_claims: number;
+    skipped_dirty_claims: number;
+    skipped_active_claims: number;
+    skipped_downstream_blocking_claims: number;
+    /**
+     * Legacy field: counts every skipped safe-cleanup claim, including
+     * dirty, active-session, and downstream-blocking skips.
+     */
     skipped_dirty_claim_count: number;
   };
   active_claims: FreshClaimSignal[];
@@ -91,6 +104,19 @@ export interface CoordinationSweepResult {
   released_stale_claims: ReleasedStaleClaim[];
   downgraded_stale_claims: DowngradedStaleClaim[];
   skipped_dirty_claims: SkippedDirtyClaim[];
+  safe_cleanup: CoordinationSweepSafeCleanupReport;
+  recommended_actions: string[];
+}
+
+export interface CoordinationSweepSafeCleanupReport {
+  stale_claims: number;
+  expired_or_weak_claims: number;
+  quota_pending_claims: number;
+  released_claims: number;
+  downgraded_claims: number;
+  skipped_dirty_claims: number;
+  skipped_active_claims: number;
+  skipped_downstream_blocking_claims: number;
   recommended_actions: string[];
 }
 
@@ -111,6 +137,9 @@ export interface ClaimSignal {
   original_strength: number;
   current_strength: number;
   latest_deposited_at: number | null;
+  state: TaskClaimRow['state'];
+  expires_at: number | null;
+  handoff_observation_id: number | null;
   cleanup_action: ClaimCleanupAction;
   weak_reason: ClaimWeakReason | null;
   cleanup_summary: string;
@@ -387,6 +416,12 @@ export function buildCoordinationSweep(
     released_stale_claims: staleClaimCleanup.released_stale_claims,
     downgraded_stale_claims: staleClaimCleanup.downgraded_stale_claims,
   });
+  const safe_cleanup = safeCleanupReport({
+    stale_claims: staleClaims,
+    expired_weak_claims: expiredWeakClaims,
+    cleanup: staleClaimCleanup,
+    recommended_actions,
+  });
 
   return {
     generated_at: now,
@@ -412,6 +447,14 @@ export function buildCoordinationSweep(
       released_same_branch_duplicate_claim_count: released_same_branch_duplicate_claims.length,
       released_stale_claim_count: staleClaimCleanup.released_stale_claims.length,
       downgraded_stale_claim_count: staleClaimCleanup.downgraded_stale_claims.length,
+      stale_claims: safe_cleanup.stale_claims,
+      expired_or_weak_claims: safe_cleanup.expired_or_weak_claims,
+      quota_pending_claims: safe_cleanup.quota_pending_claims,
+      released_claims: safe_cleanup.released_claims,
+      downgraded_claims: safe_cleanup.downgraded_claims,
+      skipped_dirty_claims: safe_cleanup.skipped_dirty_claims,
+      skipped_active_claims: safe_cleanup.skipped_active_claims,
+      skipped_downstream_blocking_claims: safe_cleanup.skipped_downstream_blocking_claims,
       skipped_dirty_claim_count: staleClaimCleanup.skipped_dirty_claims.length,
     },
     active_claims: activeClaims,
@@ -434,6 +477,7 @@ export function buildCoordinationSweep(
     released_stale_claims: staleClaimCleanup.released_stale_claims,
     downgraded_stale_claims: staleClaimCleanup.downgraded_stale_claims,
     skipped_dirty_claims: staleClaimCleanup.skipped_dirty_claims,
+    safe_cleanup,
   };
 }
 
@@ -487,6 +531,9 @@ function collectClaimBuckets(
           age_class: classification.age_class,
           ownership_strength: classification.ownership_strength,
           ...strength,
+          state: claim.state,
+          expires_at: claim.expires_at,
+          handoff_observation_id: claim.handoff_observation_id,
           cleanup_action: 'keep_fresh',
           weak_reason: null,
           cleanup_summary: 'keep active; claim is inside the fresh window',
@@ -508,6 +555,9 @@ function collectClaimBuckets(
         age_class: classification.age_class,
         ownership_strength: classification.ownership_strength,
         ...strength,
+        state: claim.state,
+        expires_at: claim.expires_at,
+        handoff_observation_id: claim.handoff_observation_id,
         cleanup_action: isExpiredWeak ? 'expire_weak_claim' : 'review_stale_claim',
         weak_reason: weakReason,
         cleanup_summary: claimCleanupSummary(weakReason),
@@ -649,6 +699,9 @@ function collectSameBranchDuplicateClaims(
         original_strength: claim.original_strength,
         current_strength: claim.current_strength,
         latest_deposited_at: claim.latest_deposited_at,
+        state: claim.state,
+        expires_at: claim.expires_at,
+        handoff_observation_id: claim.handoff_observation_id,
         duplicate_session_ids: sessionIds.filter((sessionId) => sessionId !== claim.session_id),
         cleanup_action: 'release_same_branch_duplicate',
         cleanup_summary:
@@ -988,6 +1041,14 @@ function recommendedActions(args: {
   if (args.skipped_dirty_claims.some((claim) => claim.reason === 'dirty_worktree')) {
     actions.add('dirty stale claim(s) skipped: require handoff or rescue before release');
   }
+  if (args.skipped_dirty_claims.some((claim) => claim.reason === 'active_session')) {
+    actions.add('active stale claim(s) skipped: owner still visible; wait or hand off first');
+  }
+  if (args.skipped_dirty_claims.some((claim) => claim.reason === 'stale_downstream_blocker')) {
+    actions.add(
+      'downstream-blocking stale claim(s) skipped: use --release-stale-blockers only after owner/rescue review',
+    );
+  }
   if (
     args.released_same_branch_duplicate_claims.length > 0 ||
     args.released_stale_claims.length > 0 ||
@@ -996,6 +1057,29 @@ function recommendedActions(args: {
     actions.add('audit history retained in coordination-sweep observations');
   }
   return [...actions];
+}
+
+function safeCleanupReport(args: {
+  stale_claims: StaleClaimSignal[];
+  expired_weak_claims: ExpiredWeakClaimSignal[];
+  cleanup: StaleClaimCleanupResult;
+  recommended_actions: string[];
+}): CoordinationSweepSafeCleanupReport {
+  const skipped = args.cleanup.skipped_dirty_claims;
+  return {
+    stale_claims: args.stale_claims.length,
+    expired_or_weak_claims: args.expired_weak_claims.length,
+    quota_pending_claims: args.stale_claims.filter((claim) => claim.state === 'handoff_pending')
+      .length,
+    released_claims: args.cleanup.released_stale_claims.length,
+    downgraded_claims: args.cleanup.downgraded_stale_claims.length,
+    skipped_dirty_claims: skipped.filter((claim) => claim.reason === 'dirty_worktree').length,
+    skipped_active_claims: skipped.filter((claim) => claim.reason === 'active_session').length,
+    skipped_downstream_blocking_claims: skipped.filter(
+      (claim) => claim.reason === 'stale_downstream_blocker',
+    ).length,
+    recommended_actions: args.recommended_actions,
+  };
 }
 
 function staleClaimKey(claim: { task_id: number; file_path: string; session_id: string }): string {

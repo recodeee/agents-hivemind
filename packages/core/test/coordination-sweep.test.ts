@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { defaultSettings } from '@colony/config';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildCoordinationSweep } from '../src/coordination-sweep.js';
+import type { HivemindSnapshot } from '../src/hivemind.js';
 import { MemoryStore } from '../src/memory-store.js';
 import { TaskThread } from '../src/task-thread.js';
 import type { WorktreeContentionReport } from '../src/worktree-contention.js';
@@ -28,6 +29,108 @@ afterEach(() => {
 });
 
 describe('buildCoordinationSweep stale claim cleanup', () => {
+  it('releases expired/weak stale claims and keeps audit observations', () => {
+    const filePath = 'src/expired.ts';
+    seedStaleClaim('agent/expired', filePath, 'codex@expired', '/repo', 600);
+    const taskId = taskIdByBranch('agent/expired');
+
+    const result = buildCoordinationSweep(store, {
+      repo_root: '/repo',
+      now: NOW,
+      release_safe_stale_claims: true,
+      worktree_contention: emptyWorktreeContention(),
+      hivemind: emptyHivemind(),
+    });
+
+    expect(result.summary).toMatchObject({
+      stale_claims: 1,
+      expired_or_weak_claims: 1,
+      quota_pending_claims: 0,
+      released_claims: 1,
+      downgraded_claims: 0,
+      skipped_dirty_claims: 0,
+      skipped_active_claims: 0,
+      skipped_downstream_blocking_claims: 0,
+      stale_claim_count: 0,
+      released_stale_claim_count: 1,
+    });
+    expect(result.safe_cleanup).toMatchObject({
+      stale_claims: 1,
+      expired_or_weak_claims: 1,
+      released_claims: 1,
+    });
+    expect(result.released_stale_claims).toEqual([
+      expect.objectContaining({
+        task_id: taskId,
+        file_path: filePath,
+        session_id: 'codex@expired',
+      }),
+    ]);
+    expect(store.storage.getClaim(taskId, filePath)).toBeUndefined();
+    expectAuditRetained(taskId);
+  });
+
+  it('downgrades stale inactive non-dirty claims and keeps audit observations', () => {
+    const filePath = 'src/stale.ts';
+    seedStaleClaim('agent/stale', filePath, 'codex@stale', '/repo', 300);
+    const taskId = taskIdByBranch('agent/stale');
+
+    const result = buildCoordinationSweep(store, {
+      repo_root: '/repo',
+      now: NOW,
+      release_safe_stale_claims: true,
+      worktree_contention: emptyWorktreeContention(),
+      hivemind: emptyHivemind(),
+    });
+
+    expect(result.summary).toMatchObject({
+      stale_claims: 1,
+      expired_or_weak_claims: 0,
+      quota_pending_claims: 0,
+      released_claims: 0,
+      downgraded_claims: 1,
+      skipped_dirty_claims: 0,
+      skipped_active_claims: 0,
+      skipped_downstream_blocking_claims: 0,
+      stale_claim_count: 0,
+      downgraded_stale_claim_count: 1,
+    });
+    expect(result.downgraded_stale_claims).toEqual([
+      expect.objectContaining({
+        task_id: taskId,
+        file_path: filePath,
+        session_id: 'codex@stale',
+      }),
+    ]);
+    expect(store.storage.getClaim(taskId, filePath)).toBeUndefined();
+    expectAuditRetained(taskId);
+  });
+
+  it('counts quota-pending stale claims in normalized cleanup reporting', () => {
+    const filePath = 'src/quota.ts';
+    seedStaleClaim('agent/quota', filePath, 'codex@quota', '/repo', 300);
+    const taskId = taskIdByBranch('agent/quota');
+    markQuotaPendingClaim(taskId, filePath, 'codex@quota');
+
+    const result = buildCoordinationSweep(store, {
+      repo_root: '/repo',
+      now: NOW,
+      release_safe_stale_claims: true,
+      worktree_contention: emptyWorktreeContention(),
+      hivemind: emptyHivemind(),
+    });
+
+    expect(result.summary).toMatchObject({
+      stale_claims: 1,
+      quota_pending_claims: 1,
+      downgraded_claims: 1,
+    });
+    expect(result.safe_cleanup).toMatchObject({
+      quota_pending_claims: 1,
+      downgraded_claims: 1,
+    });
+  });
+
   it('skips stale claims when the owning managed worktree has the file dirty', () => {
     const filePath = 'src/dirty.ts';
     seedStaleClaim('agent/dirty', filePath, 'codex@dirty');
@@ -43,6 +146,9 @@ describe('buildCoordinationSweep stale claim cleanup', () => {
     expect(result.summary).toMatchObject({
       released_stale_claim_count: 0,
       downgraded_stale_claim_count: 0,
+      skipped_dirty_claims: 1,
+      skipped_active_claims: 0,
+      skipped_downstream_blocking_claims: 0,
       skipped_dirty_claim_count: 1,
       stale_claim_count: 1,
     });
@@ -59,6 +165,81 @@ describe('buildCoordinationSweep stale claim cleanup', () => {
     const taskId = taskIdByBranch('agent/dirty');
     expect(store.storage.getClaim(taskId, filePath)?.session_id).toBe('codex@dirty');
     expect(store.storage.taskObservationsByKind(taskId, 'coordination-sweep')).toHaveLength(0);
+  });
+
+  it('skips stale claims when the owner session is still active', () => {
+    const filePath = 'src/active.ts';
+    seedStaleClaim('agent/active', filePath, 'codex@active');
+
+    const result = buildCoordinationSweep(store, {
+      repo_root: '/repo',
+      now: NOW,
+      release_safe_stale_claims: true,
+      worktree_contention: emptyWorktreeContention(),
+      hivemind: activeHivemind('codex@active'),
+    });
+
+    expect(result.summary).toMatchObject({
+      released_claims: 0,
+      downgraded_claims: 0,
+      skipped_dirty_claims: 0,
+      skipped_active_claims: 1,
+      skipped_downstream_blocking_claims: 0,
+      skipped_dirty_claim_count: 1,
+      stale_claim_count: 1,
+    });
+    expect(result.skipped_dirty_claims).toEqual([
+      expect.objectContaining({
+        branch: 'agent/active',
+        file_path: filePath,
+        reason: 'active_session',
+      }),
+    ]);
+    expect(result.recommended_actions).toEqual(
+      expect.arrayContaining([expect.stringContaining('active stale claim')]),
+    );
+    const taskId = taskIdByBranch('agent/active');
+    expect(store.storage.getClaim(taskId, filePath)?.session_id).toBe('codex@active');
+    expect(store.storage.taskObservationsByKind(taskId, 'coordination-sweep')).toHaveLength(0);
+  });
+
+  it('skips stale claims that block downstream plan work', () => {
+    const seeded = seedDownstreamBlockingClaim();
+
+    const result = buildCoordinationSweep(store, {
+      repo_root: '/repo',
+      now: NOW,
+      release_safe_stale_claims: true,
+      worktree_contention: emptyWorktreeContention(),
+      hivemind: emptyHivemind(),
+    });
+
+    expect(result.summary).toMatchObject({
+      released_claims: 0,
+      downgraded_claims: 0,
+      skipped_dirty_claims: 0,
+      skipped_active_claims: 0,
+      skipped_downstream_blocking_claims: 1,
+      skipped_dirty_claim_count: 1,
+      stale_downstream_blocker_count: 1,
+      stale_claim_count: 1,
+    });
+    expect(result.skipped_dirty_claims).toEqual([
+      expect.objectContaining({
+        task_id: seeded.taskId,
+        file_path: seeded.filePath,
+        reason: 'stale_downstream_blocker',
+      }),
+    ]);
+    expect(result.recommended_actions).toEqual(
+      expect.arrayContaining([expect.stringContaining('downstream-blocking stale claim')]),
+    );
+    expect(store.storage.getClaim(seeded.taskId, seeded.filePath)?.session_id).toBe(
+      'codex@blocker',
+    );
+    expect(store.storage.taskObservationsByKind(seeded.taskId, 'coordination-sweep')).toHaveLength(
+      0,
+    );
   });
 
   it('releases same-branch duplicate claims to audit-only history', () => {
@@ -111,8 +292,9 @@ function seedStaleClaim(
   filePath: string,
   sessionId: string,
   repoRoot = '/repo',
+  ageMinutes = 300,
 ): void {
-  vi.setSystemTime(NOW - 300 * MINUTE_MS);
+  vi.setSystemTime(NOW - ageMinutes * MINUTE_MS);
   store.startSession({ id: sessionId, ide: 'codex', cwd: repoRoot });
   const thread = TaskThread.open(store, {
     repo_root: repoRoot,
@@ -123,6 +305,120 @@ function seedStaleClaim(
   thread.join(sessionId, 'codex');
   thread.claimFile({ session_id: sessionId, file_path: filePath });
   vi.setSystemTime(NOW);
+}
+
+function markQuotaPendingClaim(taskId: number, filePath: string, sessionId: string): void {
+  const handoffObservationId = store.addObservation({
+    session_id: sessionId,
+    task_id: taskId,
+    kind: 'relay',
+    content: 'quota relay pending claim',
+    metadata: { kind: 'relay', reason: 'quota' },
+  });
+  store.storage.markClaimHandoffPending({
+    task_id: taskId,
+    file_path: filePath,
+    session_id: sessionId,
+    expires_at: NOW + 60 * MINUTE_MS,
+    handoff_observation_id: handoffObservationId,
+  });
+}
+
+function seedDownstreamBlockingClaim(): { taskId: number; filePath: string } {
+  const sessionId = 'codex@blocker';
+  const slug = 'blocking-sweep';
+  const filePath = 'src/blocker.ts';
+  vi.setSystemTime(NOW - 300 * MINUTE_MS);
+  store.startSession({ id: sessionId, ide: 'codex', cwd: '/repo' });
+  const parent = TaskThread.open(store, {
+    repo_root: '/repo',
+    branch: `spec/${slug}`,
+    session_id: sessionId,
+    title: 'Blocking sweep',
+  });
+  store.addObservation({
+    session_id: sessionId,
+    task_id: parent.task_id,
+    kind: 'plan-config',
+    content: `plan ${slug}`,
+    metadata: { plan_slug: slug, auto_archive: false },
+  });
+
+  const blocker = TaskThread.open(store, {
+    repo_root: '/repo',
+    branch: `spec/${slug}/sub-0`,
+    session_id: sessionId,
+    title: 'Blocker',
+  });
+  store.addObservation({
+    session_id: sessionId,
+    task_id: blocker.task_id,
+    kind: 'plan-subtask',
+    content: 'Blocker\n\nBlocker work.',
+    metadata: {
+      parent_plan_slug: slug,
+      parent_plan_title: 'Blocking sweep',
+      parent_spec_task_id: parent.task_id,
+      subtask_index: 0,
+      title: 'Blocker',
+      description: 'Blocker work.',
+      file_scope: [filePath],
+      depends_on: [],
+      spec_row_id: null,
+      capability_hint: 'api_work',
+      status: 'available',
+    },
+  });
+  blocker.join(sessionId, 'codex');
+  blocker.claimFile({ session_id: sessionId, file_path: filePath });
+  store.addObservation({
+    session_id: sessionId,
+    task_id: blocker.task_id,
+    kind: 'plan-subtask-claim',
+    content: 'claimed sub-task 0',
+    metadata: {
+      kind: 'plan-subtask-claim',
+      subtask_index: 0,
+      status: 'claimed',
+      session_id: sessionId,
+      agent: 'codex',
+    },
+  });
+
+  const downstream = TaskThread.open(store, {
+    repo_root: '/repo',
+    branch: `spec/${slug}/sub-1`,
+    session_id: sessionId,
+    title: 'Downstream',
+  });
+  store.addObservation({
+    session_id: sessionId,
+    task_id: downstream.task_id,
+    kind: 'plan-subtask',
+    content: 'Downstream\n\nDownstream work.',
+    metadata: {
+      parent_plan_slug: slug,
+      parent_plan_title: 'Blocking sweep',
+      parent_spec_task_id: parent.task_id,
+      subtask_index: 1,
+      title: 'Downstream',
+      description: 'Downstream work.',
+      file_scope: ['src/downstream.ts'],
+      depends_on: [0],
+      spec_row_id: null,
+      capability_hint: 'api_work',
+      status: 'available',
+    },
+  });
+  vi.setSystemTime(NOW);
+  return { taskId: blocker.task_id, filePath };
+}
+
+function expectAuditRetained(taskId: number): void {
+  expect(store.storage.taskObservationsByKind(taskId, 'claim')).toHaveLength(1);
+  const audit = store.storage.taskObservationsByKind(taskId, 'coordination-sweep');
+  expect(audit).toHaveLength(1);
+  expect(audit[0]?.content).toContain('audit history retained');
 }
 
 function taskIdByBranch(branch: string): number {
@@ -179,5 +475,20 @@ function emptyHivemind() {
     session_count: 0,
     counts: {},
     sessions: [],
+  };
+}
+
+function activeHivemind(sessionId: string): HivemindSnapshot {
+  return {
+    generated_at: new Date(NOW).toISOString(),
+    repo_roots: ['/repo'],
+    session_count: 1,
+    counts: { working: 1 },
+    sessions: [
+      {
+        activity: 'working',
+        session_key: sessionId,
+      } as HivemindSnapshot['sessions'][number],
+    ],
   };
 }
