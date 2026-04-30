@@ -108,6 +108,48 @@ describe('task_post directed message hints', () => {
     });
   });
 
+  it('suggests task_message for a note asking a specific agent to review', async () => {
+    const { task_id, sessionA } = seedTwoSessionTask();
+
+    const result = await call<{
+      suggested_tool?: string;
+      suggested_args?: { to_agent: string; urgency: string };
+      hint?: string;
+    }>('task_post', {
+      task_id,
+      session_id: sessionA,
+      kind: 'note',
+      content: '@codex can you review the final merge evidence?',
+    });
+
+    expect(result.suggested_tool).toBe('mcp__colony__task_message');
+    expect(result.suggested_args).toMatchObject({
+      to_agent: 'codex',
+      urgency: 'needs_reply',
+    });
+    expect(result.hint).toContain('posts that need a reply');
+  });
+
+  it('suggests task_message with to_agent any when a post needs a reply without a named agent', async () => {
+    const { task_id, sessionA } = seedTwoSessionTask();
+
+    const result = await call<{
+      suggested_tool?: string;
+      suggested_args?: { to_agent: string; urgency: string };
+    }>('task_post', {
+      task_id,
+      session_id: sessionA,
+      kind: 'question',
+      content: 'Can you check whether the inbox shows this request?',
+    });
+
+    expect(result.suggested_tool).toBe('mcp__colony__task_message');
+    expect(result.suggested_args).toMatchObject({
+      to_agent: 'any',
+      urgency: 'needs_reply',
+    });
+  });
+
   it('does not suggest task_message for a general decision note', async () => {
     const { task_id, sessionA } = seedTwoSessionTask();
 
@@ -120,5 +162,19 @@ describe('task_post directed message hints', () => {
 
     expect(result.suggested_tool).toBeUndefined();
     expect(result.suggested_call).toBeUndefined();
+  });
+
+  it('keeps normal shared task notes on task_post', async () => {
+    const { task_id, sessionA } = seedTwoSessionTask();
+
+    const result = await call<{ suggested_tool?: string; hint?: string }>('task_post', {
+      task_id,
+      session_id: sessionA,
+      kind: 'note',
+      content: 'agent-18 recorded shared verification evidence for the task thread.',
+    });
+
+    expect(result.suggested_tool).toBeUndefined();
+    expect(result.hint).toBe('If you do not know task_id, use task_note_working.');
   });
 });

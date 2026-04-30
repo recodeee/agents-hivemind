@@ -24,6 +24,7 @@ export {
   type WorktreeActiveSession,
   type WorktreeContentionOptions,
   type WorktreeContentionParticipant,
+  type WorktreeContentionMessageTemplate,
   type WorktreeContentionReport,
   type WorktreeDirtyContention,
   type WorktreeDirtyFile,

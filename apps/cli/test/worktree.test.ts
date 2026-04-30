@@ -42,17 +42,40 @@ describe('colony worktree CLI', () => {
 
     const json = JSON.parse(output) as {
       summary: { worktree_count: number; contention_count: number };
-      contentions: Array<{ file_path: string; worktrees: Array<{ branch: string }> }>;
+      contentions: Array<{
+        file_path: string;
+        worktrees: Array<{ branch: string }>;
+        task_message_templates: Array<{
+          tool: string;
+          urgency: string;
+          auto_send: boolean;
+          suggested_call: string;
+        }>;
+      }>;
     };
     expect(json.summary).toMatchObject({ worktree_count: 2, contention_count: 1 });
     expect(json.contentions).toEqual([
-      {
+      expect.objectContaining({
         file_path: 'src/shared.ts',
         worktrees: [
           expect.objectContaining({ branch: 'agent/codex/left' }),
           expect.objectContaining({ branch: 'agent/codex/right' }),
         ],
-      },
+        task_message_templates: [
+          expect.objectContaining({
+            tool: 'task_message',
+            urgency: 'needs_reply',
+            auto_send: false,
+            suggested_call: expect.stringContaining('mcp__colony__task_message'),
+          }),
+          expect.objectContaining({
+            tool: 'task_message',
+            urgency: 'needs_reply',
+            auto_send: false,
+            suggested_call: expect.stringContaining('mcp__colony__task_message'),
+          }),
+        ],
+      }),
     ]);
   });
 
@@ -73,6 +96,9 @@ describe('colony worktree CLI', () => {
     expect(output).toContain('src/shared.ts');
     expect(output).toContain('agent/codex/left');
     expect(output).toContain('agent/codex/right');
+    expect(output).toContain('task_message templates (manual only):');
+    expect(output).toContain('mcp__colony__task_message');
+    expect(output).toContain('urgency: "needs_reply"');
   });
 });
 

@@ -48,5 +48,9 @@ function renderHumanReport(report: ReturnType<typeof readWorktreeContentionRepor
       const claimed = worktree.claimed ? ' claimed' : '';
       process.stdout.write(`  ${worktree.branch} ${worktree.dirty_status}${claimed}${session}\n`);
     }
+    process.stdout.write('  task_message templates (manual only):\n');
+    for (const template of contention.task_message_templates) {
+      process.stdout.write(`    - to ${template.target_branch}: ${template.suggested_call}\n`);
+    }
   }
 }

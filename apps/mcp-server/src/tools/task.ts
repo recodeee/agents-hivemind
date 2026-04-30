@@ -37,6 +37,7 @@ const TASK_POST_FUTURE_WORK_PREFIX_RE =
   /^\s*(?:future work|follow-?up|deferred|later|todo|not in this (?:pr|patch|change))\s*[:.-]?\s*/i;
 const TASK_POST_RECOMMENDATION_SUMMARY_LIMIT = 140;
 const TASK_POST_RECOMMENDATION_RATIONALE_LIMIT = 320;
+type TaskMessageSuggestionTarget = 'claude' | 'codex' | 'any';
 
 interface TaskPostProposalRecommendation {
   tool: 'task_propose';
@@ -140,8 +141,8 @@ export function register(server: McpServer, ctx: ToolContext): void {
   server.tool(
     'task_post',
     [
-      'Post shared task notes, decisions, blockers, questions, answers, or warnings.',
-      'Use task_message for directed agent-to-agent coordination.',
+      'Post shared task notes, questions, decisions, blockers.',
+      'Use task_message for directed agent-to-agent coordination or reply-needed posts.',
       'Use task_note_working for unknown task_id.',
       'Future-work notes return task_propose recommendation.',
     ].join(' '),
@@ -179,7 +180,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
       });
       return jsonReply({
         id,
-        hint: taskPostHint(content),
+        hint: taskPostHint(kind, content),
         ...(directedMessageSuggestion ?? {}),
         ...(recommendation ? { recommendation } : {}),
       });
@@ -527,26 +528,14 @@ function jsonReply(value: unknown): { content: Array<{ type: 'text'; text: strin
   return { content: [{ type: 'text', text: JSON.stringify(value) }] };
 }
 
-function looksLikeDirectedCoordination(content: string): boolean {
-  const normalized = content.toLowerCase();
-  const mentionsAgent = /(^|[^a-z0-9_@])@?(claude|codex|agent[-_\s]?\d+)(?=$|[^a-z0-9_])/.test(
-    normalized,
-  );
-  const asksForActionOrReply =
-    /(^|[^a-z])(reply|respond|answer|ack|confirm)(?=$|[^a-z])/.test(normalized) ||
-    /\b(can|could|would)\s+you\b/.test(normalized) ||
-    /\b(please|pls)\b/.test(normalized) ||
-    /\b(review|take|claim|fix|run|check|look|finish|verify|handle|continue|update|send|post|mark|merge|open|close|re-?run|inspect|investigate)\b/.test(
-      normalized,
-    ) ||
-    /\?/.test(normalized);
-  return mentionsAgent || asksForActionOrReply;
+function looksLikeDirectedCoordination(kind: string, content: string): boolean {
+  return directedPostTargetAgent(kind, content) !== null;
 }
 
-function taskPostHint(content: string): string {
+function taskPostHint(kind: string, content: string): string {
   const fallback = 'If you do not know task_id, use task_note_working.';
-  if (!looksLikeDirectedCoordination(content)) return fallback;
-  return `For directed agent coordination, use task_message. ${fallback}`;
+  if (!looksLikeDirectedCoordination(kind, content)) return fallback;
+  return `For directed agent coordination or posts that need a reply, use task_message. ${fallback}`;
 }
 
 function taskMessageSuggestionForPost(
@@ -560,14 +549,14 @@ function taskMessageSuggestionForPost(
         task_id: number;
         session_id: string;
         agent: string;
-        to_agent: 'claude' | 'codex';
+        to_agent: TaskMessageSuggestionTarget;
         urgency: 'needs_reply';
         content: string;
       };
     }
   | undefined {
-  if (post.kind !== 'blocker') return undefined;
-  const toAgent = directedPostTargetAgent(post.content);
+  if (post.kind === 'decision') return undefined;
+  const toAgent = directedPostTargetAgent(post.kind, post.content);
   if (!toAgent) return undefined;
 
   const args = {
@@ -591,13 +580,33 @@ function taskMessageSuggestionForPost(
   };
 }
 
-function directedPostTargetAgent(content: string): 'claude' | 'codex' | null {
+function directedPostTargetAgent(kind: string, content: string): TaskMessageSuggestionTarget | null {
   const normalized = normalizePostContent(content).toLowerCase();
   const target =
     normalized.match(/\bto_agent\s*[:=]\s*["']?(claude|codex)\b/)?.[1] ??
     normalized.match(/\btarget(?:_agent)?\s*[:=]\s*["']?(claude|codex)\b/)?.[1] ??
-    normalized.match(/(^|[^a-z0-9_@])@?(claude|codex)(?=$|[^a-z0-9_])/)?.[2];
-  return target === 'claude' || target === 'codex' ? target : null;
+    normalized.match(/\bhandoff\s+to\s+(claude|codex)\b/)?.[1] ??
+    normalized.match(/(^|[^a-z0-9_])@(claude|codex)\b/)?.[2] ??
+    normalized.match(/(^|[^a-z0-9_@])(claude|codex)\s*[:,]/)?.[2] ??
+    normalized.match(
+      /(^|[^a-z0-9_@])(claude|codex)\s+(?:please|pls|can\s+you|could\s+you|would\s+you|needs?\s+reply|check|review|answer|respond|reply|confirm|ack|handle|take|claim|fix|run|verify|finish|inspect|investigate)\b/,
+    )?.[2] ??
+    normalized.match(
+      /\b(?:can|could|would)\s+(?:you\s+)?(?:ask\s+)?(claude|codex)\s+(?:check|review|answer|respond|reply|confirm|verify)\b/,
+    )?.[1];
+  if (target === 'claude' || target === 'codex') return target;
+  if (requiresGenericTaskMessage(kind, normalized)) return 'any';
+  return null;
+}
+
+function requiresGenericTaskMessage(kind: string, normalized: string): boolean {
+  if (kind === 'decision') return false;
+  return (
+    /\bneeds?\s+reply\b/.test(normalized) ||
+    /\b(can|could|would)\s+you\b/.test(normalized) ||
+    /\b(please|pls)\b/.test(normalized) ||
+    /\bhandoff\s+to\b/.test(normalized)
+  );
 }
 
 function postingAgentForSession(

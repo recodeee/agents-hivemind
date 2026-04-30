@@ -592,7 +592,7 @@ describe('task threads — handoff lifecycle', () => {
     });
 
     expect(hint).toBe(
-      'For directed agent coordination, use task_message. If you do not know task_id, use task_note_working.',
+      'For directed agent coordination or posts that need a reply, use task_message. If you do not know task_id, use task_note_working.',
     );
     const row = store.storage.getObservation(id);
     expect(row).toMatchObject({
@@ -614,7 +614,7 @@ describe('task threads — handoff lifecycle', () => {
     });
 
     expect(hint).toBe(
-      'For directed agent coordination, use task_message. If you do not know task_id, use task_note_working.',
+      'For directed agent coordination or posts that need a reply, use task_message. If you do not know task_id, use task_note_working.',
     );
     expect(store.storage.getObservation(id)).toMatchObject({
       id,
@@ -624,7 +624,7 @@ describe('task threads — handoff lifecycle', () => {
     });
   });
 
-  it('task_post hints for agent mentions even without an explicit ask', async () => {
+  it('task_post keeps shared agent mentions on task_post without a task_message hint', async () => {
     const { task_id, sessionA } = seedTwoSessionTask();
 
     const { hint } = await call<{ id: number; hint?: string }>('task_post', {
@@ -634,9 +634,7 @@ describe('task threads — handoff lifecycle', () => {
       content: 'agent-18 recorded shared verification evidence for the task thread',
     });
 
-    expect(hint).toBe(
-      'For directed agent coordination, use task_message. If you do not know task_id, use task_note_working.',
-    );
+    expect(hint).toBe('If you do not know task_id, use task_note_working.');
   });
 
   it('task_post hints for action requests even without an agent mention', async () => {
@@ -650,8 +648,28 @@ describe('task threads — handoff lifecycle', () => {
     });
 
     expect(hint).toBe(
-      'For directed agent coordination, use task_message. If you do not know task_id, use task_note_working.',
+      'For directed agent coordination or posts that need a reply, use task_message. If you do not know task_id, use task_note_working.',
     );
+  });
+
+  it('task_post keeps shared task notes on task_post without a task_message hint', async () => {
+    const { task_id, sessionA } = seedTwoSessionTask();
+
+    const { id, hint } = await call<{ id: number; hint?: string }>('task_post', {
+      task_id,
+      session_id: sessionA,
+      kind: 'note',
+      content:
+        'branch=agent/demo; task=shared coordination state; blocker=none; next=none; evidence=pnpm test',
+    });
+
+    expect(hint).toBe('If you do not know task_id, use task_note_working.');
+    expect(store.storage.getObservation(id)).toMatchObject({
+      id,
+      kind: 'note',
+      content:
+        'branch=agent/demo; task=shared coordination state; blocker=none; next=none; evidence=pnpm test',
+    });
   });
 
   it('task_post nudges future-work notes toward task_propose', async () => {
