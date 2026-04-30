@@ -6,6 +6,7 @@ import {
 } from '@colony/core';
 import type { SessionRow } from '@colony/storage';
 import { html, layout, raw } from './html.js';
+import { renderAdoptionHealth } from './sections/adoption-health.js';
 import { renderAttentionSidebar } from './sections/attention.js';
 import {
   type BuildDiscrepancyReport,
@@ -21,6 +22,7 @@ const DEFAULT_FILE_HEAT_HALF_LIFE_MINUTES = 30;
 export type ClaimCoverageSnapshot = ReturnType<MemoryStore['storage']['claimCoverageSnapshot']>;
 export type { StrandedSessionSummary };
 export { buildFileHeatRows };
+export { buildViewerAdoptionHealthPayload } from './sections/adoption-health.js';
 
 export function buildClaimCoverageSnapshot(
   store: MemoryStore,
@@ -103,6 +105,7 @@ function renderColonyState(
         <div class="viewer-main">
           ${raw(renderDiagnostic(store))}
           ${raw(renderCoordinationBehavior(store, reportBuilder))}
+          ${raw(renderAdoptionHealth(store))}
           ${raw(renderFileHeatMap(storage, tasks, fileHeatHalfLifeMinutes))}
           ${raw(renderToolUsageHistogram())}
         </div>

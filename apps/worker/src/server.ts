@@ -20,6 +20,7 @@ import { type CaffeinateHandle, startCaffeinate } from './caffeinate.js';
 import { type EmbedLoopHandle, startEmbedLoop, stateFilePath } from './embed-loop.js';
 import { type RescueLoopHandle, startRescueLoop } from './rescue-loop.js';
 import {
+  buildViewerAdoptionHealthPayload,
   type StrandedSessionSummary,
   buildClaimCoverageSnapshot,
   buildFileHeatRows,
@@ -85,6 +86,11 @@ export function buildApp(
         options.fileHeatHalfLifeMinutes ?? defaultSettings.fileHeatHalfLifeMinutes,
       ),
     );
+  });
+
+  app.get('/api/colony/adoption-health', (c) => {
+    const since = parseSinceQuery(c.req.query('since'), Date.now() - 24 * 60 * 60_000);
+    return c.json(buildViewerAdoptionHealthPayload(store, { since }));
   });
 
   app.get('/api/colony/stranded', (c) => {

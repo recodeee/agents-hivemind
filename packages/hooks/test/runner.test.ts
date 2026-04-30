@@ -470,7 +470,7 @@ describe('runHook', () => {
     expect(timeline.some((obs) => obs.kind === 'auto-claim')).toBe(false);
   });
 
-  it('warn policy surfaces strong claim conflicts and continues', async () => {
+  it('warn policy surfaces strong claim conflicts and continues without takeover', async () => {
     const taskId = seedClaimConflict();
 
     const result = await runHook(
@@ -494,7 +494,7 @@ describe('runHook', () => {
       conflict_strength: 'strong',
       owner: 'A',
     });
-    expect(store.storage.getClaim(taskId, 'src/viewer.tsx')?.session_id).toBe('B');
+    expect(store.storage.getClaim(taskId, 'src/viewer.tsx')?.session_id).toBe('A');
   });
 
   it('denies protected live contentions even when bridge policy is warn', async () => {
@@ -701,7 +701,7 @@ describe('runHook', () => {
     expect(result.permissionDecision).toBe('allow');
     expect(result.context).toBe('');
     expect(result.permissionDecisionReason).toBeUndefined();
-    expect(store.storage.getClaim(taskId, 'src/viewer.tsx')?.session_id).toBe('B');
+    expect(store.storage.getClaim(taskId, 'src/viewer.tsx')?.session_id).toBe('A');
     const telemetry = store.storage.taskObservationsByKind(taskId, 'claim-before-edit');
     expect(metadataOf(telemetry[0])).toMatchObject({
       policy_mode: 'audit-only',

@@ -42,6 +42,19 @@ const style = `
   .coordination-row[data-rate-level="red"] { --coord-color: #ef4444; }
   .coordination-row[data-rate-level="yellow"] { --coord-color: #e7b85b; }
   .coordination-row[data-rate-level="green"] { --coord-color: #8bd5a6; }
+  .adoption-health { display: grid; gap: 10px; }
+  .adoption-grid { display: grid; gap: 8px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+  .adoption-tile { border: 1px solid #263041; border-radius: 6px; padding: 9px; background: #151a22; display: grid; gap: 6px; min-width: 0; }
+  .adoption-tile[data-health="bad"] { border-color: #6d2630; background: #211217; }
+  .adoption-tile[data-health="ok"] { border-color: #5f4b1f; background: #1f1a12; }
+  .adoption-tile[data-health="good"] { border-color: #1f6b3a; background: #102019; }
+  .adoption-tile-head { display: flex; gap: 8px; align-items: center; justify-content: space-between; min-width: 0; }
+  .adoption-tile-head strong { min-width: 0; overflow-wrap: anywhere; }
+  .adoption-value { font-size: 18px; font-weight: 700; color: #f2f5f8; }
+  .health-badge { display: inline-block; flex: 0 0 auto; padding: 2px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .health-badge[data-health="bad"] { background: #5f1d25; color: #fecaca; }
+  .health-badge[data-health="ok"] { background: #5f4b1f; color: #fde68a; }
+  .health-badge[data-health="good"] { background: #1f6b3a; color: #bbf7d0; }
   .attention-item { border-top: 1px solid #222; padding-top: 8px; margin-top: 8px; }
   .attention-item:first-child { border-top: 0; padding-top: 0; margin-top: 0; }
   .stranded-section { margin-bottom: 18px; }

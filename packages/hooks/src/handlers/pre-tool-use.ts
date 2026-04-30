@@ -258,6 +258,35 @@ export function claimBeforeEditFromToolUse(
       continue;
     }
 
+    if (
+      conflict &&
+      (claim.code === 'CLAIM_HELD_BY_ACTIVE_OWNER' ||
+        claim.code === 'CLAIM_TAKEOVER_RECOMMENDED')
+    ) {
+      result.edits_missing_claim.push(file_path);
+      recordClaimBeforeEditFailure(store, input.session_id, {
+        task_id: conflict.task_id,
+        file_path,
+        tool: toolName,
+        code: 'LIVE_FILE_CONTENTION',
+        error: conflict.warning,
+        candidates: [],
+        policy_mode: policyMode,
+        conflict,
+        extracted_paths: files,
+      });
+      result.warnings.push(
+        claimWarning(input.session_id, file_path, toolName, policyMode, {
+          ok: false,
+          code: 'LIVE_FILE_CONTENTION',
+          error: conflict.warning,
+          candidates: [],
+          conflict,
+        }),
+      );
+      continue;
+    }
+
     result.edits_missing_claim.push(file_path);
     const warningDebounced = claimWarningDebounced(store, input.session_id, file_path, claim.code);
     recordClaimBeforeEditFailure(store, input.session_id, {
