@@ -293,6 +293,64 @@ function seedBashCoordinationEvents(counts: { gitOps: number; fileOps: number })
   }
 }
 
+function seedLowAdoptionHealth(): void {
+  const repoRoot = '/repo-adoption';
+  const branch = 'agent/codex/adoption-task';
+  store.startSession({ id: 'adoption-session', ide: 'codex', cwd: repoRoot });
+  const task = store.storage.findOrCreateTask({
+    title: 'adoption-task',
+    repo_root: repoRoot,
+    branch,
+    created_by: 'adoption-session',
+  });
+  for (let i = 0; i < 4; i++) {
+    store.addObservation({
+      session_id: 'adoption-session',
+      kind: 'tool_use',
+      content: `Tool: colony.task_post ${i}`,
+      task_id: task.id,
+      metadata: { tool: 'mcp__colony__task_post' },
+    });
+  }
+  store.storage.insertProposal({
+    repo_root: repoRoot,
+    branch,
+    summary: 'adopt proposal lane',
+    rationale: 'future work should not stay chat-only',
+    touches_files: '[]',
+    proposed_by: 'adoption-session',
+  });
+
+  const planRoot = store.storage.findOrCreateTask({
+    title: 'Adoption plan',
+    repo_root: repoRoot,
+    branch: 'spec/adoption-plan',
+    created_by: 'adoption-session',
+  });
+  const subtask = store.storage.findOrCreateTask({
+    title: 'Adoption plan subtask',
+    repo_root: repoRoot,
+    branch: 'spec/adoption-plan/sub-1',
+    created_by: 'adoption-session',
+  });
+  store.addObservation({
+    session_id: 'adoption-session',
+    kind: 'plan-subtask',
+    content: 'Claim ready adoption panel\n\nWire the viewer adoption panel.',
+    task_id: subtask.id,
+    metadata: {
+      status: 'available',
+      subtask_index: 1,
+      title: 'Claim ready adoption panel',
+      description: 'Wire the viewer adoption panel.',
+      depends_on: [],
+      file_scope: ['apps/worker/src/viewer.ts'],
+      parent_plan_title: 'Adoption plan',
+      parent_spec_task_id: planRoot.id,
+    },
+  });
+}
+
 function setDiscrepancyReport(report: TestDiscrepancyReport): void {
   discrepancyReportMockState.reportByStore.set(store, report);
 }
@@ -477,6 +535,33 @@ describe('worker HTTP', () => {
     expect(body.bash_git_file_op_count).toBe(3);
     expect(body.bash_git_op_count).toBe(1);
     expect(body.bash_file_op_count).toBe(2);
+  });
+
+  it('GET /api/colony/adoption-health returns the health adoption payload fields', async () => {
+    seedLowAdoptionHealth();
+
+    const res = await app.request('/api/colony/adoption-health?since=0');
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      task_post_vs_task_message: { task_post_calls: number; task_message_calls: number };
+      proposal_health: { proposals_seen: number; pending: number; promoted: number };
+      ready_to_claim_vs_claimed: { plan_subtasks: number; ready_to_claim: number; claimed: number };
+    };
+
+    expect(body.task_post_vs_task_message).toMatchObject({
+      task_post_calls: 4,
+      task_message_calls: 0,
+    });
+    expect(body.proposal_health).toMatchObject({
+      proposals_seen: 1,
+      pending: 1,
+      promoted: 0,
+    });
+    expect(body.ready_to_claim_vs_claimed).toMatchObject({
+      plan_subtasks: 1,
+      ready_to_claim: 1,
+      claimed: 0,
+    });
   });
 
   it('GET /api/sessions/:id/observations returns expanded text', async () => {
@@ -743,6 +828,24 @@ describe('worker HTTP', () => {
     expect(body.indexOf('Coordination behavior')).toBeLessThan(
       body.indexOf('File activity heat-map'),
     );
+  });
+
+  it('GET / renders adoption-health badges for low coordination adoption', async () => {
+    seedLowAdoptionHealth();
+
+    const res = await app.request('/');
+    expect(res.status).toBe(200);
+    const body = await res.text();
+
+    expect(body).toContain('Adoption health');
+    expect(body).toContain('directed messages low');
+    expect(body).toContain('proposal adoption low');
+    expect(body).toContain('ready subtasks unclaimed');
+    expect(body).toContain('task_post_vs_task_message');
+    expect(body).toContain('proposal_health');
+    expect(body).toContain('ready_to_claim_vs_claimed');
+    expect(body.indexOf('Coordination behavior')).toBeLessThan(body.indexOf('Adoption health'));
+    expect(body.indexOf('Adoption health')).toBeLessThan(body.indexOf('File activity heat-map'));
   });
 
   it('GET / renders the edits-without-claims rate from seeded data', async () => {
