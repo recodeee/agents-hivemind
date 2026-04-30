@@ -127,6 +127,64 @@ describe('colony health next fixes', () => {
     expect(snippets).not.toContain('future-work candidates');
   });
 
+  it('prints a copy-paste task_message call while keeping shared notes on task_post', () => {
+    const payload = buildColonyHealthPayload(
+      fakeStorage({
+        calls: [
+          call(1, 'session-a', 'mcp__colony__hivemind_context', NOW - 90_000),
+          call(2, 'session-a', 'mcp__colony__attention_inbox', NOW - 89_000),
+          call(3, 'session-a', 'mcp__colony__task_ready_for_agent', NOW - 88_000),
+          ...calls(80, 10, 'session-a', 'mcp__colony__task_post'),
+          ...calls(4, 200, 'session-a', 'mcp__colony__task_message'),
+        ],
+        claimBeforeEdit: {
+          edit_tool_calls: 0,
+          edits_with_file_path: 0,
+          edits_claimed_before: 0,
+        },
+      }),
+      {
+        since: SINCE,
+        window_hours: 24,
+        now: NOW,
+        codex_sessions_root: NO_CODEX_ROOT,
+      },
+    );
+
+    expect(payload.task_post_vs_task_message).toMatchObject({
+      task_post_calls: 80,
+      task_message_calls: 4,
+      task_message_share: 4 / 84,
+    });
+
+    const hint = payload.action_hints.find((entry) => entry.metric === 'task_message adoption');
+    expect(hint).toMatchObject({
+      action:
+        'Use task_message when a post names an agent, asks can you/please/check/review/answer, says needs reply, or says handoff to; keep task_post for shared task-thread notes and decisions.',
+      tool_call:
+        'mcp__colony__task_message({ agent: "codex", session_id: "<session_id>", task_id: <task_id>, to_agent: "codex", urgency: "needs_reply", content: "<short directed request>" })',
+    });
+    expect(hint?.prompt).toContain('directed patterns: @claude/@codex');
+    expect(hint?.prompt).toContain('directed call: mcp__colony__task_message({ agent: "codex"');
+    expect(hint?.prompt).toContain('shared note: mcp__colony__task_post({ task_id: <task_id>');
+    expect(hint?.prompt).toContain('shared task notes and decisions keep task_post');
+
+    const nextFixes = outputSection(
+      formatColonyHealthOutput(payload, { verbose: true }),
+      'Next fixes',
+    );
+    expect(nextFixes).toContain(
+      'tool: mcp__colony__task_message({ agent: "codex", session_id: "<session_id>", task_id: <task_id>, to_agent: "codex", urgency: "needs_reply", content: "<short directed request>" })',
+    );
+
+    const snippets = outputSection(
+      formatColonyHealthOutput(payload, { prompts: true, verbose: true }),
+      'Codex prompt snippets',
+    );
+    expect(snippets).toContain('directed call: mcp__colony__task_message');
+    expect(snippets).toContain('shared note: mcp__colony__task_post');
+  });
+
   it('points dominant pre_tool_use_missing at a silent lifecycle bridge when manual claims are high', () => {
     const payload = buildColonyHealthPayload(
       fakeStorage({
@@ -427,9 +485,7 @@ describe('colony health next fixes', () => {
       },
     });
     const json = JSON.parse(formatColonyHealthOutput(payload, { json: true }));
-    expect(json.task_claim_file_before_edits.root_cause.kind).toBe(
-      'lifecycle_claim_mismatch',
-    );
+    expect(json.task_claim_file_before_edits.root_cause.kind).toBe('lifecycle_claim_mismatch');
   });
 
   it('reports no hook-capable edits when recent claims exist but no edit event exists yet', () => {

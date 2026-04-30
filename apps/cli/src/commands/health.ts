@@ -57,6 +57,10 @@ const TARGET_READY_TO_CLAIM = 0.3;
 const TARGET_CLAIM_BEFORE_EDIT = 0.5;
 const TARGET_COLONY_NOTE_SHARE = 0.7;
 const TARGET_TASK_MESSAGE_SHARE = 0.2;
+const TASK_MESSAGE_ADOPTION_DIRECTED_CALL =
+  'mcp__colony__task_message({ agent: "codex", session_id: "<session_id>", task_id: <task_id>, to_agent: "codex", urgency: "needs_reply", content: "<short directed request>" })';
+const TASK_MESSAGE_ADOPTION_SHARED_NOTE_CALL =
+  'mcp__colony__task_post({ task_id: <task_id>, session_id: "<session_id>", kind: "note", content: "branch=<branch>; task=<task>; blocker=<blocker>; next=<next>; evidence=<evidence>" })';
 const RECENT_CLAIM_BEFORE_EDIT_MIN_SAMPLE = 5;
 const LIFECYCLE_BRIDGE_MISSING_MIN_TASK_CLAIM_FILE_CALLS = 10;
 const LIFECYCLE_BRIDGE_MISSING_MIN_HOOK_CAPABLE_EDITS = 10;
@@ -272,6 +276,8 @@ interface QueenWavePlanSummary {
   ready_subtasks: number;
   claimed_subtasks: number;
   blocked_subtasks: number;
+  next_ready_subtask_index: number | null;
+  next_ready_subtask_title: string | null;
   stale_claims_blocking_downstream: number;
   downstream_blockers: QueenDownstreamBlockerReport[];
   quota_handoffs_blocking_downstream: number;
@@ -422,6 +428,8 @@ interface ActionHint {
   action: string;
   readiness_scope: ReadinessScope;
   priority: number;
+  plan_slug?: string;
+  current_wave?: string | null;
   tool_call?: string;
   command?: string;
   prompt: string;
@@ -1060,12 +1068,15 @@ function readinessSummaryPayload(
     queen.orphan_subtasks > 0 ||
     queen.inactive_plans_with_remaining_subtasks > 0 ||
     queen.archived_plans_with_remaining_subtasks > 0;
+  const readyUnclaimedPlan = firstReadyUnclaimedQueenPlan(queen);
   const queenStatus: ReadinessStatus = brokenPlanState
     ? 'bad'
     : queen.active_plans > 0
-      ? queen.ready_subtasks + queen.claimed_subtasks > 0
-        ? 'good'
-        : 'ok'
+      ? readyUnclaimedPlan
+        ? 'bad'
+        : queen.ready_subtasks + queen.claimed_subtasks > 0
+          ? 'good'
+          : 'ok'
       : queen.completed_plans > 0 || queen.archived_plans > 0
         ? 'ok'
         : 'bad';
@@ -2568,9 +2579,7 @@ function formatEditSourceBreakdown(payload: ClaimBeforeEditPayload): string[] {
 }
 
 function omxRuntimeBridgeNeedsAttention(payload: ColonyHealthPayloadWithoutHints): boolean {
-  if (
-    payload.task_claim_file_before_edits.root_cause?.kind === 'lifecycle_bridge_unavailable'
-  ) {
+  if (payload.task_claim_file_before_edits.root_cause?.kind === 'lifecycle_bridge_unavailable') {
     return true;
   }
   if (payload.omx_runtime_bridge.status === 'available') return false;
@@ -2797,6 +2806,37 @@ function healthActionHints(payload: ColonyHealthPayloadWithoutHints): ActionHint
     });
   }
 
+  const readyUnclaimedPlan = firstReadyUnclaimedQueenPlan(payload.queen_wave_health);
+  if (
+    readyUnclaimedPlan &&
+    readyUnclaimedPlan.next_ready_subtask_index !== null &&
+    readyUnclaimedPlan.ready_subtasks > 0
+  ) {
+    const currentWave = readyUnclaimedPlan.current_wave ?? 'n/a';
+    const planSlug = readyUnclaimedPlan.plan_slug;
+    const subtaskIndex = readyUnclaimedPlan.next_ready_subtask_index;
+    hints.push({
+      metric: 'Queen ready subtasks unclaimed',
+      status: 'bad',
+      current: `${planSlug} / ${currentWave}: ${readyUnclaimedPlan.ready_subtasks} ready, ${readyUnclaimedPlan.claimed_subtasks} claimed`,
+      target: 'ready subtasks claimed through task_plan_claim_subtask',
+      action: `Call task_ready_for_agent for ${planSlug} (${currentWave}), then call task_plan_claim_subtask with the returned claim args. First ready subtask index: ${subtaskIndex}.`,
+      readiness_scope: 'queen_plan_readiness',
+      priority: 25,
+      plan_slug: planSlug,
+      current_wave: readyUnclaimedPlan.current_wave,
+      tool_call: `mcp__colony__task_ready_for_agent({ agent: "<agent>", session_id: "<session_id>", repo_root: "<repo_root>" }) -> mcp__colony__task_plan_claim_subtask({ agent: "<agent>", session_id: "<session_id>", plan_slug: ${JSON.stringify(planSlug)}, subtask_index: ${subtaskIndex} })`,
+      prompt: codexPrompt({
+        goal: `claim ready Queen work for ${planSlug}`,
+        current: `plan_slug=${planSlug}; current_wave=${currentWave}; ready_subtasks=${readyUnclaimedPlan.ready_subtasks}; claimed_subtasks=${readyUnclaimedPlan.claimed_subtasks}`,
+        inspect:
+          'mcp__colony__task_ready_for_agent, mcp__colony__task_plan_claim_subtask, mcp__colony__task_plan_list, packages/queen',
+        acceptance:
+          'health no longer shows an active plan with ready subtasks and zero claimed subtasks',
+      }),
+    });
+  }
+
   const messageShare = payload.task_post_vs_task_message.task_message_share;
   if (
     payload.task_post_vs_task_message.task_post_calls > 0 &&
@@ -2808,18 +2848,16 @@ function healthActionHints(payload: ColonyHealthPayloadWithoutHints): ActionHint
       current: `${payload.task_post_vs_task_message.task_message_calls} task_message / ${payload.task_post_vs_task_message.task_post_calls} task_post (${formatPercent(messageShare)})`,
       target: `${formatPercent(TARGET_TASK_MESSAGE_SHARE)}+`,
       action:
-        'Use task_message for directed agent-to-agent coordination; keep task_post for task-thread notes and decisions.',
+        'Use task_message when a post names an agent, asks can you/please/check/review/answer, says needs reply, or says handoff to; keep task_post for shared task-thread notes and decisions.',
       readiness_scope: 'adoption_followup',
       priority: 80,
-      tool_call:
-        'mcp__colony__task_message({ agent: "<agent>", session_id: "<session_id>", task_id: <task_id>, to_agent: "<agent|any>", urgency: "needs_reply", content: "<short request>" })',
+      tool_call: TASK_MESSAGE_ADOPTION_DIRECTED_CALL,
       prompt: codexPrompt({
         goal: 'move agent-to-agent coordination from task_post notes to task_message',
         current: `${payload.task_post_vs_task_message.task_message_calls} task_message calls, ${payload.task_post_vs_task_message.task_post_calls} task_post calls`,
-        inspect:
-          'mcp__colony__task_message, mcp__colony__task_messages, mcp__colony__attention_inbox, docs/mcp.md',
+        inspect: `directed patterns: @claude/@codex, can you, please, check, review, answer, needs reply, handoff to; directed call: ${TASK_MESSAGE_ADOPTION_DIRECTED_CALL}; shared note: ${TASK_MESSAGE_ADOPTION_SHARED_NOTE_CALL}; mcp__colony__task_messages, mcp__colony__attention_inbox, docs/mcp.md`,
         acceptance:
-          'directed coordination uses task_message and unread replies surface in attention_inbox',
+          'directed coordination and reply-needed posts use task_message, shared task notes and decisions keep task_post, and unread replies surface in attention_inbox',
       }),
     });
   }
@@ -3810,17 +3848,21 @@ function queenWaveHealthPayload(
     const currentWaveIndex = Math.min(...incomplete.map((subtask) => subtask.wave_index));
     const currentWave =
       planSubtasks.find((subtask) => subtask.wave_index === currentWaveIndex)?.wave_name ?? null;
+    const readySubtasks = planSubtasks
+      .filter((subtask) => isReadyPlanSubtask(subtask, planSubtasks))
+      .sort((a, b) => a.index - b.index);
     const downstreamBlockers = staleDownstreamBlockers(planSubtasks, options);
 
     plans.push({
       plan_slug: planSlug,
       current_wave: currentWave,
-      ready_subtasks: planSubtasks.filter((subtask) => isReadyPlanSubtask(subtask, planSubtasks))
-        .length,
+      ready_subtasks: readySubtasks.length,
       claimed_subtasks: planSubtasks.filter((subtask) => subtask.status === 'claimed').length,
       blocked_subtasks: planSubtasks.filter((subtask) =>
         isBlockedPlanSubtask(subtask, planSubtasks),
       ).length,
+      next_ready_subtask_index: readySubtasks[0]?.index ?? null,
+      next_ready_subtask_title: readySubtasks[0]?.title ?? null,
       stale_claims_blocking_downstream: downstreamBlockers.length,
       downstream_blockers: downstreamBlockers,
       quota_handoffs_blocking_downstream: planSubtasks.filter(
@@ -3885,6 +3927,10 @@ function queenWaveHealthPayload(
     plans: plans.sort((a, b) => a.plan_slug.localeCompare(b.plan_slug)),
     plan_state_recommendations: stateRecommendations,
   };
+}
+
+function firstReadyUnclaimedQueenPlan(queen: QueenWaveHealthPayload): QueenWavePlanSummary | null {
+  return queen.plans.find((plan) => plan.ready_subtasks > 0 && plan.claimed_subtasks === 0) ?? null;
 }
 
 function planReplacementRecommendation(

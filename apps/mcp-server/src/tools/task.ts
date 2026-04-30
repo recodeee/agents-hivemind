@@ -580,7 +580,10 @@ function taskMessageSuggestionForPost(
   };
 }
 
-function directedPostTargetAgent(kind: string, content: string): TaskMessageSuggestionTarget | null {
+function directedPostTargetAgent(
+  kind: string,
+  content: string,
+): TaskMessageSuggestionTarget | null {
   const normalized = normalizePostContent(content).toLowerCase();
   const target =
     normalized.match(/\bto_agent\s*[:=]\s*["']?(claude|codex)\b/)?.[1] ??
