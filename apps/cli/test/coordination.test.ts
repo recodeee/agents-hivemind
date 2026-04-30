@@ -325,11 +325,75 @@ describe('colony coordination CLI', () => {
     });
   });
 
-  it('auto-releases safe stale claims in JSON mode while preserving audit history', async () => {
+  it('keeps safe stale claims read-only in JSON without the explicit release flag', async () => {
     await seedSweepSignals();
 
     await createProgram().parseAsync(
       ['node', 'test', 'coordination', 'sweep', '--repo-root', repoRoot, '--json'],
+      { from: 'node' },
+    );
+
+    const json = JSON.parse(output) as {
+      summary: {
+        stale_claim_count: number;
+        expired_weak_claim_count: number;
+        released_stale_claim_count: number;
+        downgraded_stale_claim_count: number;
+        skipped_dirty_claim_count: number;
+      };
+      released_stale_claims: Array<{ file_path: string; reason: string }>;
+      downgraded_stale_claims: Array<{ file_path: string; reason: string }>;
+      skipped_dirty_claims: Array<{ file_path: string; reason: string }>;
+      recommended_action: string;
+      recommended_actions: string[];
+    };
+
+    expect(json.summary).toMatchObject({
+      stale_claim_count: 4,
+      expired_weak_claim_count: 1,
+      released_stale_claim_count: 0,
+      downgraded_stale_claim_count: 0,
+      skipped_dirty_claim_count: 1,
+    });
+    expect(json.released_stale_claims).toHaveLength(0);
+    expect(json.downgraded_stale_claims).toHaveLength(0);
+    expect(json.skipped_dirty_claims).toEqual([
+      expect.objectContaining({
+        file_path: 'src/blocked-0.ts',
+        reason: 'stale_downstream_blocker',
+      }),
+    ]);
+    expect(json.recommended_action).toBe(json.recommended_actions[0]);
+
+    const settings = loadSettings();
+    await withStore(settings, (store) => {
+      const mainTaskId = taskIdByBranch(store, 'main');
+      expect(
+        store.storage
+          .listClaims(mainTaskId)
+          .map((claim) => claim.file_path)
+          .sort(),
+      ).toEqual(['src/expired.ts', 'src/fresh.ts', 'src/stale-active.ts', 'src/stale.ts']);
+      expect(store.storage.taskObservationsByKind(mainTaskId, 'coordination-sweep')).toHaveLength(
+        0,
+      );
+    });
+  });
+
+  it('releases safe stale claims only with the explicit flag while preserving audit history', async () => {
+    await seedSweepSignals();
+
+    await createProgram().parseAsync(
+      [
+        'node',
+        'test',
+        'coordination',
+        'sweep',
+        '--repo-root',
+        repoRoot,
+        '--release-safe-stale-claims',
+        '--json',
+      ],
       { from: 'node' },
     );
 
@@ -390,6 +454,70 @@ describe('colony coordination CLI', () => {
       );
       expect(store.storage.taskObservationsByKind(mainTaskId, 'handoff')).toHaveLength(1);
       expect(store.storage.taskObservationsByKind(mainTaskId, 'message')).toHaveLength(1);
+    });
+  });
+
+  it('does not mutate safe stale claims when the explicit flag is paired with dry-run', async () => {
+    await seedSweepSignals();
+
+    await createProgram().parseAsync(
+      [
+        'node',
+        'test',
+        'coordination',
+        'sweep',
+        '--repo-root',
+        repoRoot,
+        '--release-safe-stale-claims',
+        '--dry-run',
+        '--json',
+      ],
+      { from: 'node' },
+    );
+
+    const json = JSON.parse(output) as {
+      dry_run: boolean;
+      summary: {
+        stale_claim_count: number;
+        expired_weak_claim_count: number;
+        released_stale_claim_count: number;
+        downgraded_stale_claim_count: number;
+        skipped_dirty_claim_count: number;
+      };
+      released_stale_claims: Array<{ file_path: string; reason: string }>;
+      downgraded_stale_claims: Array<{ file_path: string; reason: string }>;
+      skipped_dirty_claims: Array<{ file_path: string; reason: string }>;
+    };
+
+    expect(json.dry_run).toBe(true);
+    expect(json.summary).toMatchObject({
+      stale_claim_count: 4,
+      expired_weak_claim_count: 1,
+      released_stale_claim_count: 0,
+      downgraded_stale_claim_count: 0,
+      skipped_dirty_claim_count: 1,
+    });
+    expect(json.released_stale_claims).toHaveLength(0);
+    expect(json.downgraded_stale_claims).toHaveLength(0);
+    expect(json.skipped_dirty_claims).toEqual([
+      expect.objectContaining({
+        file_path: 'src/blocked-0.ts',
+        reason: 'stale_downstream_blocker',
+      }),
+    ]);
+
+    const settings = loadSettings();
+    await withStore(settings, (store) => {
+      const mainTaskId = taskIdByBranch(store, 'main');
+      expect(
+        store.storage
+          .listClaims(mainTaskId)
+          .map((claim) => claim.file_path)
+          .sort(),
+      ).toEqual(['src/expired.ts', 'src/fresh.ts', 'src/stale-active.ts', 'src/stale.ts']);
+      expect(store.storage.taskObservationsByKind(mainTaskId, 'coordination-sweep')).toHaveLength(
+        0,
+      );
     });
   });
 

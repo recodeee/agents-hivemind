@@ -351,7 +351,7 @@ interface HealthFixPlanPayload {
   generated_at: string;
   mode: 'dry-run' | 'apply';
   safety: {
-    mutates_claims: false;
+    mutates_claims: boolean;
     installs_hooks: false;
     ran_coordination_sweep: boolean;
     ran_queen_sweep: boolean;
@@ -976,7 +976,11 @@ export function registerHealthCommand(program: Command): void {
     )
     .option(
       '--apply',
-      'with --fix-plan, run coordination and queen sweeps; never releases claims or installs hooks',
+      'with --fix-plan, run coordination and queen sweeps; claim cleanup requires --release-safe-stale-claims',
+    )
+    .option(
+      '--release-safe-stale-claims',
+      'with --fix-plan --apply, release only safe stale claims through the coordination sweep',
     )
     .action(
       async (opts: {
@@ -988,6 +992,7 @@ export function registerHealthCommand(program: Command): void {
         verbose?: boolean;
         fixPlan?: boolean;
         apply?: boolean;
+        releaseSafeStaleClaims?: boolean;
       }) => {
         const hours = parseHours(opts.hours);
         const recentWindowHours = parseHours(opts.recentWindowHours);
@@ -1008,6 +1013,7 @@ export function registerHealthCommand(program: Command): void {
               opts.apply === true
                 ? buildCoordinationSweep(store, {
                     repo_root: repoRoot,
+                    release_safe_stale_claims: opts.releaseSafeStaleClaims === true,
                   })
                 : undefined;
             const queenSweep =
@@ -1020,6 +1026,7 @@ export function registerHealthCommand(program: Command): void {
             const fixPlan = buildHealthFixPlan(payload, {
               repo_root: repoRoot,
               apply: opts.apply === true,
+              release_safe_stale_claims: opts.releaseSafeStaleClaims === true,
               ...(coordinationSweep !== undefined ? { coordination_sweep: coordinationSweep } : {}),
               ...(queenSweep !== undefined ? { queen_sweep: queenSweep } : {}),
             });
@@ -1057,6 +1064,7 @@ export function buildHealthFixPlan(
   options: {
     repo_root: string;
     apply: boolean;
+    release_safe_stale_claims?: boolean;
     coordination_sweep?: CoordinationSweepResult;
     queen_sweep?: ReturnType<typeof sweepQueenPlans>;
   },
@@ -1067,6 +1075,7 @@ export function buildHealthFixPlan(
   const healthCommand = `colony health --repo-root ${shellQuote(options.repo_root)} --json`;
   const coordinationCommand = `colony coordination sweep --repo-root ${shellQuote(options.repo_root)} --json`;
   const queenCommand = `colony queen sweep --repo-root ${shellQuote(options.repo_root)} --json`;
+  const mutatesClaims = options.apply && options.release_safe_stale_claims === true;
   const steps: HealthFixPlanStep[] = [];
 
   if (preToolUseMissingDominates && !claim.old_telemetry_pollution) {
@@ -1106,7 +1115,7 @@ export function buildHealthFixPlan(
       detail:
         options.coordination_sweep === undefined
           ? 'Coordination sweep result was not provided.'
-          : `stale=${options.coordination_sweep.summary.stale_claim_count}, expired/weak=${options.coordination_sweep.summary.expired_weak_claim_count}; ${options.coordination_sweep.recommended_action}`,
+          : `stale=${options.coordination_sweep.summary.stale_claim_count}, expired/weak=${options.coordination_sweep.summary.expired_weak_claim_count}; mutates_claims: ${mutatesClaims}; ${options.coordination_sweep.recommended_action}`,
       command: coordinationCommand,
     });
     steps.push({
@@ -1123,7 +1132,7 @@ export function buildHealthFixPlan(
       title: 'Run coordination sweep',
       status: 'planned',
       detail:
-        'Dry-run only: pass --apply to run this sweep. The command reports stale claims and keeps audit history.',
+        'Dry-run only: pass --apply to run this sweep. Claim mutation stays off unless --release-safe-stale-claims is also set.',
       command: coordinationCommand,
     });
     steps.push({
@@ -1139,7 +1148,7 @@ export function buildHealthFixPlan(
     generated_at: payload.generated_at,
     mode: options.apply ? 'apply' : 'dry-run',
     safety: {
-      mutates_claims: false,
+      mutates_claims: mutatesClaims,
       installs_hooks: false,
       ran_coordination_sweep: options.apply,
       ran_queen_sweep: options.apply,
@@ -1166,10 +1175,13 @@ export function buildHealthFixPlan(
 }
 
 export function formatHealthFixPlanOutput(plan: HealthFixPlanPayload): string {
+  const claimSafety = plan.safety.mutates_claims
+    ? 'releases only safe stale claims; skips dirty, active-session, and downstream-blocking claims; preserves audit observations'
+    : 'does not release claims';
   const lines = [
     kleur.bold('colony health --fix-plan'),
     `mode: ${plan.mode}${plan.mode === 'dry-run' ? ' (no sweeps run)' : ' (sweeps run)'}`,
-    'safety: does not release claims; does not install hooks; queen sweep auto-message disabled',
+    `safety: mutates_claims: ${plan.safety.mutates_claims}; ${claimSafety}; does not install hooks; queen sweep auto-message disabled`,
     '',
     kleur.bold('Current health'),
     `  pre_tool_use_missing: ${plan.current.pre_tool_use_missing}${plan.current.pre_tool_use_missing_dominates ? ' (dominates)' : ''}`,

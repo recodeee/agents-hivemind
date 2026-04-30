@@ -12,6 +12,7 @@ interface SweepOpts {
   dryRun?: boolean;
   releaseStaleBlockers?: boolean;
   releaseSameBranchDuplicates?: boolean;
+  releaseSafeStaleClaims?: boolean;
   json?: boolean;
 }
 
@@ -33,20 +34,27 @@ export function registerCoordinationCommand(program: Command): void {
       '--release-same-branch-duplicates',
       'release same-branch duplicate claims to audit-only; audit history retained',
     )
+    .option(
+      '--release-safe-stale-claims',
+      'release expired safe stale claims and downgrade inactive stale claims to audit-only; audit history retained',
+    )
     .option('--json', 'emit sweep result as JSON')
     .action(async (opts: SweepOpts) => {
       const repoRoot = resolve(opts.repoRoot ?? process.cwd());
       const repoRoots = repoRootAliases(repoRoot);
+      const releaseStaleBlockers = opts.releaseStaleBlockers === true && opts.dryRun !== true;
       const releaseSameBranchDuplicates =
         opts.releaseSameBranchDuplicates === true && opts.dryRun !== true;
+      const releaseSafeStaleClaims =
+        opts.releaseSafeStaleClaims === true && opts.dryRun !== true;
       const settings = loadSettings();
       await withStore(settings, (store) => {
         const result = buildCoordinationSweep(store, {
           repo_root: repoRoot,
           repo_roots: repoRoots,
-          release_stale_blockers: opts.releaseStaleBlockers === true,
+          release_stale_blockers: releaseStaleBlockers,
           release_same_branch_duplicates: releaseSameBranchDuplicates,
-          release_safe_stale_claims: opts.json === true && opts.dryRun !== true,
+          release_safe_stale_claims: releaseSafeStaleClaims,
         });
         if (opts.json) {
           process.stdout.write(
@@ -57,8 +65,9 @@ export function registerCoordinationCommand(program: Command): void {
         process.stdout.write(
           `${renderCoordinationSweep(result, {
             appliedModes: appliedSweepModes({
-              releaseStaleBlockers: opts.releaseStaleBlockers === true,
+              releaseStaleBlockers,
               releaseSameBranchDuplicates,
+              releaseSafeStaleClaims,
             }),
           })}\n`,
         );
@@ -249,10 +258,12 @@ function renderCoordinationSweep(
 function appliedSweepModes(opts: {
   releaseStaleBlockers: boolean;
   releaseSameBranchDuplicates: boolean;
+  releaseSafeStaleClaims: boolean;
 }): string[] {
   const modes: string[] = [];
   if (opts.releaseStaleBlockers) modes.push('release-stale-blockers');
   if (opts.releaseSameBranchDuplicates) modes.push('release-same-branch-duplicates');
+  if (opts.releaseSafeStaleClaims) modes.push('release-safe-stale-claims');
   return modes;
 }
 

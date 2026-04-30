@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { loadSettings } from '@colony/config';
+import { type MemoryStore, TaskThread } from '@colony/core';
 import {
   type ClaimBeforeEditStats,
   type ClaimMatchSources,
@@ -20,6 +22,7 @@ import {
   formatHealthFixPlanOutput,
 } from '../src/commands/health.js';
 import { createProgram } from '../src/index.js';
+import { withStore } from '../src/util/store.js';
 
 const NOW = 1_800_000_000_000;
 const SINCE = NOW - 24 * 3_600_000;
@@ -740,6 +743,7 @@ describe('colony health payload', () => {
       stale_claims: 1,
     });
     expect(text).toContain('mode: dry-run (no sweeps run)');
+    expect(text).toContain('mutates_claims: false');
     expect(text).toContain('[suggested] Reinstall/restart lifecycle hooks');
     expect(text).toContain('colony install --ide codex  # then restart Codex/OMX');
     expect(text).toContain('[planned] Run coordination sweep');
@@ -795,11 +799,171 @@ describe('colony health payload', () => {
       ran_queen_sweep: true,
     });
     expect(text).toContain('mode: apply (sweeps run)');
+    expect(text).toContain('mutates_claims: false');
     expect(text).toContain('[ran] Run coordination sweep');
+    expect(text).toContain('mutates_claims: false');
     expect(text).toContain('stale=2, expired/weak=1');
     expect(text).toContain('[ran] Run queen sweep');
     expect(text).toContain('stalled=1, unclaimed=1, ready-to-archive=1');
     expect(text).toContain("colony queen sweep --repo-root '/repo with space' --json");
+  });
+
+  it('marks fix-plan apply as claim-mutating only with the safe stale claim flag', () => {
+    const payload = buildColonyHealthPayload(
+      fakeStorage({
+        calls: healthyWindowCalls(),
+        claimBeforeEdit: {
+          edit_tool_calls: 0,
+          edits_with_file_path: 0,
+          edits_claimed_before: 0,
+        },
+      }),
+      {
+        since: SINCE,
+        window_hours: 24,
+        now: NOW,
+        codex_sessions_root: NO_CODEX_ROOT,
+        repo_root: '/repo',
+      },
+    );
+
+    const plan = buildHealthFixPlan(payload, {
+      repo_root: '/repo',
+      apply: true,
+      release_safe_stale_claims: true,
+      coordination_sweep: {
+        summary: {
+          stale_claim_count: 1,
+          expired_weak_claim_count: 1,
+        },
+        recommended_action: 'applied: released 1 safe stale claim; audit history retained',
+      } as never,
+    });
+    const text = formatHealthFixPlanOutput(plan);
+
+    expect(plan.safety.mutates_claims).toBe(true);
+    expect(text).toContain('mutates_claims: true');
+    expect(text).toContain('skips dirty, active-session, and downstream-blocking claims');
+    expect(text).toContain('preserves audit observations');
+  });
+
+  it('shows the safe stale claim release flag in health help', () => {
+    const program = createProgram();
+    const health = program.commands.find((command) => command.name() === 'health');
+
+    expect(health?.helpInformation()).toContain('--release-safe-stale-claims');
+  });
+
+  it('keeps health fix-plan apply from mutating claims by default', async () => {
+    const fixture = createHealthFixPlanFixture();
+    const originalColonyHome = process.env.COLONY_HOME;
+    let output = '';
+    try {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      process.env.COLONY_HOME = fixture.dataDir;
+      await seedHealthSafeStaleClaims(fixture.repoRoot);
+      vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+        output += String(chunk);
+        return true;
+      });
+
+      await createProgram().parseAsync(
+        [
+          'node',
+          'test',
+          'health',
+          '--fix-plan',
+          '--apply',
+          '--json',
+          '--repo-root',
+          fixture.repoRoot,
+        ],
+        { from: 'node' },
+      );
+
+      const json = JSON.parse(output) as {
+        safety: { mutates_claims: boolean };
+        coordination_sweep: {
+          summary: {
+            released_stale_claim_count: number;
+            downgraded_stale_claim_count: number;
+          };
+        };
+      };
+
+      expect(json.safety.mutates_claims).toBe(false);
+      expect(json.coordination_sweep.summary).toMatchObject({
+        released_stale_claim_count: 0,
+        downgraded_stale_claim_count: 0,
+      });
+      await expectHealthFixtureClaims(fixture.repoRoot, [
+        'src/expired.ts',
+        'src/fresh.ts',
+        'src/stale.ts',
+      ]);
+    } finally {
+      if (originalColonyHome === undefined) delete process.env.COLONY_HOME;
+      else process.env.COLONY_HOME = originalColonyHome;
+      vi.useRealTimers();
+      fixture.cleanup();
+    }
+  });
+
+  it('passes safe stale claim cleanup when the health fix-plan opt-in flag is set', async () => {
+    const fixture = createHealthFixPlanFixture();
+    const originalColonyHome = process.env.COLONY_HOME;
+    let output = '';
+    try {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      process.env.COLONY_HOME = fixture.dataDir;
+      await seedHealthSafeStaleClaims(fixture.repoRoot);
+      vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+        output += String(chunk);
+        return true;
+      });
+
+      await createProgram().parseAsync(
+        [
+          'node',
+          'test',
+          'health',
+          '--fix-plan',
+          '--apply',
+          '--release-safe-stale-claims',
+          '--json',
+          '--repo-root',
+          fixture.repoRoot,
+        ],
+        { from: 'node' },
+      );
+
+      const json = JSON.parse(output) as {
+        safety: { mutates_claims: boolean };
+        coordination_sweep: {
+          summary: {
+            released_stale_claim_count: number;
+            downgraded_stale_claim_count: number;
+            skipped_dirty_claim_count: number;
+          };
+        };
+      };
+
+      expect(json.safety.mutates_claims).toBe(true);
+      expect(json.coordination_sweep.summary).toMatchObject({
+        released_stale_claim_count: 1,
+        downgraded_stale_claim_count: 1,
+        skipped_dirty_claim_count: 0,
+      });
+      await expectHealthFixtureClaims(fixture.repoRoot, ['src/fresh.ts']);
+      await expectHealthFixtureAuditCount(fixture.repoRoot, 2);
+    } finally {
+      if (originalColonyHome === undefined) delete process.env.COLONY_HOME;
+      else process.env.COLONY_HOME = originalColonyHome;
+      vi.useRealTimers();
+      fixture.cleanup();
+    }
   });
 
   it('keeps expired claims out of stale and active health counts', () => {
@@ -2378,6 +2542,78 @@ function fakeWorktreeContention(contentionCount = 1): never {
       },
     ],
   } as never;
+}
+
+function createHealthFixPlanFixture(): {
+  dataDir: string;
+  repoRoot: string;
+  cleanup: () => void;
+} {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'colony-health-fix-plan-data-'));
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'colony-health-fix-plan-repo-'));
+  return {
+    dataDir,
+    repoRoot,
+    cleanup: () => {
+      fs.rmSync(dataDir, { recursive: true, force: true });
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    },
+  };
+}
+
+async function seedHealthSafeStaleClaims(repoRoot: string): Promise<void> {
+  const settings = loadSettings();
+  await withStore(settings, (store) => {
+    vi.setSystemTime(NOW - 720 * 60_000);
+    store.startSession({ id: 'codex@stale', ide: 'codex', cwd: repoRoot });
+    const thread = TaskThread.open(store, {
+      repo_root: repoRoot,
+      branch: 'main',
+      title: 'health safe stale claims',
+      session_id: 'codex@stale',
+    });
+    thread.join('codex@stale', 'codex');
+    thread.claimFile({ session_id: 'codex@stale', file_path: 'src/expired.ts' });
+
+    vi.setSystemTime(NOW - 300 * 60_000);
+    thread.claimFile({ session_id: 'codex@stale', file_path: 'src/stale.ts' });
+
+    vi.setSystemTime(NOW - 10 * 60_000);
+    thread.claimFile({ session_id: 'codex@stale', file_path: 'src/fresh.ts' });
+
+    vi.setSystemTime(NOW);
+  });
+}
+
+async function expectHealthFixtureClaims(repoRoot: string, expected: string[]): Promise<void> {
+  const settings = loadSettings();
+  await withStore(settings, (store) => {
+    const taskId = healthFixtureTaskId(store, repoRoot);
+    expect(
+      store.storage
+        .listClaims(taskId)
+        .map((claim) => claim.file_path)
+        .sort(),
+    ).toEqual([...expected].sort());
+  });
+}
+
+async function expectHealthFixtureAuditCount(repoRoot: string, expected: number): Promise<void> {
+  const settings = loadSettings();
+  await withStore(settings, (store) => {
+    const taskId = healthFixtureTaskId(store, repoRoot);
+    expect(store.storage.taskObservationsByKind(taskId, 'coordination-sweep')).toHaveLength(
+      expected,
+    );
+  });
+}
+
+function healthFixtureTaskId(store: MemoryStore, repoRoot: string): number {
+  const task = store.storage
+    .listTasks(100)
+    .find((candidate) => candidate.repo_root === repoRoot && candidate.branch === 'main');
+  if (!task) throw new Error(`missing health fixture task for ${repoRoot}`);
+  return task.id;
 }
 
 function fakeStorage(args: {
