@@ -23,7 +23,8 @@ export const quotaSafeOperatingContract = [
   '4. Release or weaken claims before abandoning work so stale strong ownership does not block the next agent.',
   '',
   'Before quota/session stop:',
-  '1. Emit a quota_exhausted handoff with task_hand_off or task_relay.',
+  '1. Emit a quota_exhausted handoff with task_hand_off or task_relay, or release owned claims.',
   '2. Include claimed files, dirty files from git status, branch, last verification, and next step.',
   '3. Mark claims handoff-pending or release them before exit; do not leave strong claims without a handoff or TTL.',
+  '4. When unsure, run coordination sweep guidance first and follow its release/handoff recommendation.',
 ].join('\n');

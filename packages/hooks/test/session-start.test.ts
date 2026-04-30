@@ -126,11 +126,14 @@ describe('SessionStart predictive suggestion preface', () => {
       expect(preface).toContain('commit finished work, hand off unfinished work, or clean');
       expect(preface).toContain('Write task_note_working with branch, task, dirty files');
       expect(preface).toContain('Release or weaken claims before abandoning work');
-      expect(preface).toContain('Emit a quota_exhausted handoff with task_hand_off or task_relay.');
+      expect(preface).toContain(
+        'Emit a quota_exhausted handoff with task_hand_off or task_relay, or release owned claims.',
+      );
       expect(preface).toContain(
         'claimed files, dirty files from git status, branch, last verification, and next step',
       );
       expect(preface).toContain('Mark claims handoff-pending or release them before exit');
+      expect(preface).toContain('When unsure, run coordination sweep guidance first');
       expect(preface).toContain('Coordination truth lives in Colony.');
       expect(preface).toContain('Use OMX for runtime memory summaries.');
       expect(preface).toContain('Use available MCP servers for repo, GitHub, CI, and docs context');
