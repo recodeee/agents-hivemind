@@ -1031,7 +1031,26 @@ describe('colony health payload', () => {
           edits_claimed_before: 0,
         },
         tasks: [{ id: 1, repo_root: '/r', branch: 'b' }],
-        observationsByTask: { 1: [] },
+        observationsByTask: {
+          1: [
+            observation(7, 'relay', NOW - 10 * 60_000, {
+              kind: 'relay',
+              reason: 'quota',
+              status: 'pending',
+              from_session_id: 'quota',
+              from_agent: 'codex',
+              expires_at: NOW + 5 * 60_000,
+            }),
+            observation(8, 'relay', NOW - 20 * 60_000, {
+              kind: 'relay',
+              reason: 'quota',
+              status: 'pending',
+              from_session_id: 'quota-old',
+              from_agent: 'codex',
+              expires_at: NOW - 60_000,
+            }),
+          ],
+        },
         claimsByTask: {
           1: [
             {
@@ -1072,10 +1091,153 @@ describe('colony health payload', () => {
       quota_pending_claims: 2,
       expired_quota_pending_claims: 1,
     });
+    expect(payload.signal_health.quota_relay_actions.top_action).toBe('release expired');
+    expect(payload.signal_health.quota_relay_examples).toEqual([
+      expect.objectContaining({
+        task_id: 1,
+        handoff_observation_id: 8,
+        old_owner: 'codex/quota-old',
+        age_minutes: 20,
+        files: ['src/quota-expired.ts'],
+        state: 'expired',
+        recommended_action: 'release expired',
+        tool_call:
+          'mcp__colony__task_claim_quota_release_expired({ task_id: 1, session_id: "<session_id>", handoff_observation_id: 8 })',
+      }),
+      expect.objectContaining({
+        task_id: 1,
+        handoff_observation_id: 7,
+        old_owner: 'codex/quota',
+        age_minutes: 10,
+        files: ['src/quota.ts'],
+        state: 'active',
+        recommended_action: 'accept',
+        tool_call:
+          'mcp__colony__task_claim_quota_accept({ task_id: 1, session_id: "<session_id>", handoff_observation_id: 7 })',
+        decline_tool_call:
+          'mcp__colony__task_claim_quota_decline({ task_id: 1, session_id: "<session_id>", handoff_observation_id: 7, reason: "<reason>" })',
+      }),
+    ]);
 
     const text = formatColonyHealthOutput(payload);
     expect(text).toContain('quota pending:    2');
     expect(text).toContain('quota expired:    1');
+    expect(text).toContain('quota top action: release expired task 1 relay #8');
+    expect(text).toContain(
+      'Top action: release expired task 1 relay #8 (src/quota-expired.ts). Accept the quota relay, decline/reroute it, or release expired quota-pending claims',
+    );
+
+    const verboseText = formatColonyHealthOutput(payload, { verbose: true });
+    expect(verboseText).toContain('quota relay examples:');
+    expect(verboseText).toContain(
+      'task_id=1 old_owner=codex/quota-old age=20m files=src/quota-expired.ts state=expired recommended_action=release expired',
+    );
+    expect(verboseText).toContain(
+      'tool: mcp__colony__task_claim_quota_release_expired({ task_id: 1, session_id: "<session_id>", handoff_observation_id: 8 })',
+    );
+    expect(verboseText).toContain(
+      'task_id=1 old_owner=codex/quota age=10m files=src/quota.ts state=active recommended_action=accept',
+    );
+    expect(verboseText).toContain(
+      'decline/reroute: mcp__colony__task_claim_quota_decline({ task_id: 1, session_id: "<session_id>", handoff_observation_id: 7, reason: "<reason>" })',
+    );
+  });
+
+  it('renders no quota relay action when no quota relay exists', () => {
+    const payload = buildColonyHealthPayload(
+      fakeStorage({
+        calls: healthyWindowCalls(),
+        claimBeforeEdit: {
+          edit_tool_calls: 0,
+          edits_with_file_path: 0,
+          edits_claimed_before: 0,
+        },
+        tasks: [{ id: 1, repo_root: '/r', branch: 'b' }],
+        observationsByTask: { 1: [] },
+        claimsByTask: { 1: [] },
+      }),
+      {
+        since: SINCE,
+        window_hours: 24,
+        now: NOW,
+        codex_sessions_root: NO_CODEX_ROOT,
+      },
+    );
+
+    expect(payload.signal_health.quota_pending_claims).toBe(0);
+    expect(payload.signal_health.quota_relay_examples).toEqual([]);
+    expect(payload.signal_health.quota_relay_actions.top_action).toBe('none');
+    expect(formatColonyHealthOutput(payload)).toContain('quota top action: none');
+    expect(formatColonyHealthOutput(payload, { verbose: true })).toContain(
+      'quota relay examples: none',
+    );
+  });
+
+  it('keeps accepted quota relays out of actionable health hints', () => {
+    const payload = buildColonyHealthPayload(
+      fakeStorage({
+        calls: healthyWindowCalls(),
+        claimBeforeEdit: {
+          edit_tool_calls: 0,
+          edits_with_file_path: 0,
+          edits_claimed_before: 0,
+        },
+        tasks: [{ id: 1, repo_root: '/r', branch: 'b' }],
+        observationsByTask: {
+          1: [
+            observation(9, 'relay', NOW - 5 * 60_000, {
+              kind: 'relay',
+              reason: 'quota',
+              status: 'accepted',
+              from_session_id: 'quota-done',
+              from_agent: 'codex',
+              accepted_by_session_id: 'replacement',
+              accepted_at: NOW - 60_000,
+              expires_at: NOW + 5 * 60_000,
+            }),
+          ],
+        },
+        claimsByTask: {
+          1: [
+            {
+              task_id: 1,
+              file_path: 'src/accepted.ts',
+              session_id: 'quota-done',
+              claimed_at: NOW - 60_000,
+              state: 'handoff_pending',
+              expires_at: NOW + 5 * 60_000,
+              handoff_observation_id: 9,
+            },
+          ],
+        },
+      }),
+      {
+        since: SINCE,
+        window_hours: 24,
+        now: NOW,
+        codex_sessions_root: NO_CODEX_ROOT,
+      },
+    );
+
+    expect(payload.signal_health.quota_pending_claims).toBe(1);
+    expect(payload.signal_health.quota_relay_examples).toEqual([
+      expect.objectContaining({
+        task_id: 1,
+        handoff_observation_id: 9,
+        old_owner: 'codex/quota-done',
+        state: 'accepted',
+        recommended_action: 'none',
+        tool_call: null,
+      }),
+    ]);
+    expect(payload.signal_health.quota_relay_actions.top_action).toBe('none');
+    expect(payload.action_hints.map((hint) => hint.metric)).not.toContain(
+      'quota relay accept/release',
+    );
+    expect(formatColonyHealthOutput(payload)).toContain('quota top action: none');
+    expect(formatColonyHealthOutput(payload, { verbose: true })).toContain(
+      'task_id=1 old_owner=codex/quota-done age=5m files=src/accepted.ts state=accepted recommended_action=none',
+    );
   });
 
   it('emits parseable JSON with the same top-level sections', () => {
@@ -2974,7 +3136,7 @@ function fakeStorage(args: {
       file_path: string;
       session_id: string;
       claimed_at: number;
-      state?: 'active' | 'handoff_pending';
+      state?: 'active' | 'handoff_pending' | 'weak_expired';
       expires_at?: number | null;
       handoff_observation_id?: number | null;
     }>

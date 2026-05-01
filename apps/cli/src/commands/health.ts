@@ -47,6 +47,7 @@ import { readCodexEditToolCallsSince, readCodexMcpToolCallsSince } from '../lib/
 const DEFAULT_HOURS = 24;
 const DEFAULT_RECENT_WINDOW_HOURS = 1;
 const HEALTH_TOOL_LIMIT = 5;
+const QUOTA_RELAY_EXAMPLE_LIMIT = 5;
 const DEFAULT_HANDOFF_TTL_MS = 2 * 60 * 60_000;
 const PLAN_SUBTASK_BRANCH_RE = /^spec\/([a-z0-9-]+)\/sub-(\d+)$/;
 const PLAN_ROOT_BRANCH_RE = /^spec\/([a-z0-9-]+)$/;
@@ -202,9 +203,38 @@ interface SignalHealthPayload {
   weak_claims: number;
   quota_pending_claims: number;
   expired_quota_pending_claims: number;
+  quota_relay_actions: QuotaRelayActionsPayload;
+  quota_relay_examples: QuotaRelayExample[];
   stale_claim_minutes: number;
   expired_handoffs: number;
   expired_messages: number;
+}
+
+type QuotaRelayState = 'active' | 'expired' | 'accepted' | 'declined/rerouted' | 'unknown';
+type QuotaRelayRecommendedAction = 'accept' | 'release expired' | 'decline/reroute' | 'none';
+
+interface QuotaRelayExample {
+  task_id: number;
+  baton_kind: 'handoff' | 'relay';
+  handoff_observation_id: number;
+  old_owner: string;
+  age_ms: number;
+  age_minutes: number;
+  files: string[];
+  state: QuotaRelayState;
+  recommended_action: QuotaRelayRecommendedAction;
+  tool_call: string | null;
+  decline_tool_call: string | null;
+  command: string;
+}
+
+interface QuotaRelayActionsPayload {
+  accept: number;
+  release_expired: number;
+  decline_reroute: number;
+  none: number;
+  top_action: QuotaRelayRecommendedAction;
+  top_example: QuotaRelayExample | null;
 }
 
 interface ProposalHealthPayload {
@@ -818,6 +848,10 @@ export function formatColonyHealthOutput(
     `  expired/weak:     ${payload.signal_health.expired_claims}`,
     `  quota pending:    ${payload.signal_health.quota_pending_claims}`,
     `  quota expired:    ${payload.signal_health.expired_quota_pending_claims}`,
+    `  quota top action: ${formatQuotaRelayTopAction(payload.signal_health.quota_relay_actions)}`,
+    ...(options.verbose
+      ? formatQuotaRelayExamples(payload.signal_health.quota_relay_examples)
+      : []),
     `  expired handoffs: ${payload.signal_health.expired_handoffs}`,
     `  expired messages: ${payload.signal_health.expired_messages}`,
     '',
@@ -1103,6 +1137,33 @@ function formatHealthFocus(payload: ColonyHealthPayload, visibleHints: ActionHin
   if (topHint.tool_call) lines.push(kleur.dim(`  tool: ${topHint.tool_call}`));
   if (topHint.command) lines.push(kleur.dim(`  cmd:  ${topHint.command}`));
   return lines;
+}
+
+function formatQuotaRelayTopAction(actions: QuotaRelayActionsPayload): string {
+  if (!actions.top_example || actions.top_action === 'none') return 'none';
+  return `${actions.top_action} task ${actions.top_example.task_id} ${actions.top_example.baton_kind} #${actions.top_example.handoff_observation_id} (${formatQuotaRelayFiles(actions.top_example.files)})`;
+}
+
+function formatQuotaRelayExamples(examples: QuotaRelayExample[]): string[] {
+  if (examples.length === 0) return [kleur.dim('  quota relay examples: none')];
+  const lines = ['  quota relay examples:'];
+  for (const example of examples) {
+    lines.push(
+      `    - task_id=${example.task_id} old_owner=${example.old_owner} age=${formatDuration(
+        example.age_ms,
+      )} files=${formatQuotaRelayFiles(example.files)} state=${example.state} recommended_action=${example.recommended_action}`,
+    );
+    if (example.tool_call) lines.push(kleur.dim(`      tool: ${example.tool_call}`));
+    if (example.decline_tool_call) {
+      lines.push(kleur.dim(`      decline/reroute: ${example.decline_tool_call}`));
+    }
+    lines.push(kleur.dim(`      cmd:  ${example.command}`));
+  }
+  return lines;
+}
+
+function formatQuotaRelayFiles(files: string[]): string {
+  return files.length > 0 ? files.join(', ') : '-';
 }
 
 function formatMalformedSummaryExamples(
@@ -1762,6 +1823,8 @@ function signalHealthPayload(
   const expiredQuotaPendingClaims = classified.filter(
     (claim) => claim.state === 'handoff_pending' && claim.age_class === 'expired/weak',
   ).length;
+  const quotaRelayExamples = quotaRelayExamplesPayload(storage, tasks, claims, options.now);
+  const quotaRelayActions = quotaRelayActionsPayload(quotaRelayExamples);
   let expiredHandoffs = 0;
   let expiredMessages = 0;
 
@@ -1785,10 +1848,209 @@ function signalHealthPayload(
     weak_claims: weakClaims,
     quota_pending_claims: quotaPendingClaims,
     expired_quota_pending_claims: expiredQuotaPendingClaims,
+    quota_relay_actions: quotaRelayActions,
+    quota_relay_examples: quotaRelayExamples,
     stale_claim_minutes: options.stale_claim_minutes,
     expired_handoffs: expiredHandoffs,
     expired_messages: expiredMessages,
   };
+}
+
+function quotaRelayExamplesPayload(
+  storage: Pick<Storage, 'taskObservationsByKind'>,
+  tasks: TaskRow[],
+  claims: Array<{
+    task_id: number;
+    file_path: string;
+    session_id: string;
+    claimed_at: number;
+    state?: string;
+    expires_at?: number | null;
+    handoff_observation_id?: number | null;
+  }>,
+  now: number,
+): QuotaRelayExample[] {
+  const taskById = new Map(tasks.map((task) => [task.id, task]));
+  const observationsByTask = new Map<number, Map<number, ObservationRow>>();
+  for (const task of tasks) {
+    const rows = [
+      ...storage.taskObservationsByKind(task.id, 'handoff', 1000),
+      ...storage.taskObservationsByKind(task.id, 'relay', 1000),
+    ];
+    observationsByTask.set(task.id, new Map(rows.map((row) => [row.id, row])));
+  }
+
+  const groups = new Map<
+    string,
+    {
+      task: TaskRow;
+      old_owner: string;
+      handoff_observation_id: number;
+      claims: typeof claims;
+    }
+  >();
+
+  for (const claim of claims) {
+    if (claim.handoff_observation_id === null || claim.handoff_observation_id === undefined) {
+      continue;
+    }
+    const task = taskById.get(claim.task_id);
+    if (!task) continue;
+    const key = `${claim.task_id}:${claim.handoff_observation_id}:${claim.session_id}`;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.claims.push(claim);
+    } else {
+      groups.set(key, {
+        task,
+        old_owner: claim.session_id,
+        handoff_observation_id: claim.handoff_observation_id,
+        claims: [claim],
+      });
+    }
+  }
+
+  return [...groups.values()]
+    .map((group): QuotaRelayExample | null => {
+      const row = observationsByTask.get(group.task.id)?.get(group.handoff_observation_id);
+      if (!row || (row.kind !== 'handoff' && row.kind !== 'relay')) return null;
+      const metadata = parseJsonObject(row.metadata);
+      if (!isQuotaRelayHealthObservation(row, metadata)) return null;
+      const state = quotaRelayState(group.claims, metadata, now);
+      const files = [...new Set(group.claims.map((claim) => claim.file_path))].sort();
+      const action = quotaRelayRecommendedAction(state);
+      const ageMs = Math.max(0, now - row.ts);
+      const example: QuotaRelayExample = {
+        task_id: group.task.id,
+        baton_kind: row.kind,
+        handoff_observation_id: group.handoff_observation_id,
+        old_owner: quotaRelayOldOwner(group.old_owner, metadata),
+        age_ms: ageMs,
+        age_minutes: Math.floor(ageMs / 60_000),
+        files,
+        state,
+        recommended_action: action,
+        tool_call: quotaRelayToolCall(action, group.task.id, group.handoff_observation_id),
+        decline_tool_call:
+          action === 'accept'
+            ? quotaRelayToolCall('decline/reroute', group.task.id, group.handoff_observation_id)
+            : null,
+        command: quotaRelayCommand(group.task.repo_root),
+      };
+      return example;
+    })
+    .filter((example): example is QuotaRelayExample => example !== null)
+    .sort((a, b) => {
+      const actionRank =
+        quotaRelayActionRank(a.recommended_action) - quotaRelayActionRank(b.recommended_action);
+      return actionRank || b.age_ms - a.age_ms || a.task_id - b.task_id;
+    })
+    .slice(0, QUOTA_RELAY_EXAMPLE_LIMIT);
+}
+
+function quotaRelayActionsPayload(examples: QuotaRelayExample[]): QuotaRelayActionsPayload {
+  const accept = examples.filter((example) => example.recommended_action === 'accept').length;
+  const releaseExpired = examples.filter(
+    (example) => example.recommended_action === 'release expired',
+  ).length;
+  const declineReroute = examples.filter(
+    (example) => example.recommended_action === 'decline/reroute',
+  ).length;
+  const none = examples.filter((example) => example.recommended_action === 'none').length;
+  const topExample =
+    examples.find((example) => example.recommended_action !== 'none') ?? examples[0] ?? null;
+  return {
+    accept,
+    release_expired: releaseExpired,
+    decline_reroute: declineReroute,
+    none,
+    top_action: topExample?.recommended_action ?? 'none',
+    top_example: topExample,
+  };
+}
+
+function quotaRelayActionRank(action: QuotaRelayRecommendedAction): number {
+  if (action === 'release expired') return 0;
+  if (action === 'accept') return 1;
+  if (action === 'decline/reroute') return 2;
+  return 3;
+}
+
+function quotaRelayState(
+  claims: Array<{ state?: string; expires_at?: number | null }>,
+  metadata: Record<string, unknown>,
+  now: number,
+): QuotaRelayState {
+  const status = readStringOrNull(metadata.status);
+  if (status === 'accepted') return 'accepted';
+  if (status === 'cancelled') return 'declined/rerouted';
+  if (status === 'expired') return 'expired';
+  if (
+    claims.some(
+      (claim) =>
+        claim.state === 'weak_expired' ||
+        (typeof claim.expires_at === 'number' && now >= claim.expires_at),
+    )
+  ) {
+    return 'expired';
+  }
+  if (status === null || status === 'pending') return 'active';
+  return 'unknown';
+}
+
+function quotaRelayRecommendedAction(state: QuotaRelayState): QuotaRelayRecommendedAction {
+  if (state === 'expired') return 'release expired';
+  if (state === 'active') return 'accept';
+  return 'none';
+}
+
+function quotaRelayToolCall(
+  action: QuotaRelayRecommendedAction,
+  taskId: number,
+  handoffObservationId: number,
+): string | null {
+  if (action === 'accept') {
+    return `mcp__colony__task_claim_quota_accept({ task_id: ${taskId}, session_id: "<session_id>", handoff_observation_id: ${handoffObservationId} })`;
+  }
+  if (action === 'release expired') {
+    return `mcp__colony__task_claim_quota_release_expired({ task_id: ${taskId}, session_id: "<session_id>", handoff_observation_id: ${handoffObservationId} })`;
+  }
+  if (action === 'decline/reroute') {
+    return `mcp__colony__task_claim_quota_decline({ task_id: ${taskId}, session_id: "<session_id>", handoff_observation_id: ${handoffObservationId}, reason: "<reason>" })`;
+  }
+  return null;
+}
+
+function quotaRelayCommand(repoRoot: string): string {
+  return `colony task ready --repo-root ${shellQuote(repoRoot)} --agent <agent> --session <session_id> --json`;
+}
+
+function quotaRelayOldOwner(oldOwnerSessionId: string, metadata: Record<string, unknown>): string {
+  const sessionId = readStringOrNull(metadata.from_session_id) ?? oldOwnerSessionId;
+  const agent = readStringOrNull(metadata.from_agent);
+  return agent ? `${agent}/${shortSession(sessionId)}` : shortSession(sessionId);
+}
+
+function isQuotaRelayHealthObservation(
+  row: ObservationRow,
+  metadata: Record<string, unknown>,
+): boolean {
+  const reason = readStringOrNull(metadata.reason);
+  if (row.kind === 'relay' && reason === 'quota') return true;
+  if (row.kind === 'handoff' && reason === 'quota_exhausted') return true;
+  const text = [
+    row.content,
+    readStringMetadata(metadata.reason),
+    readStringMetadata(metadata.summary),
+    readStringMetadata(metadata.one_line),
+    readStringArrayMetadata(metadata.blockers).join(' '),
+  ]
+    .filter(Boolean)
+    .join(' ');
+  return (
+    metadata.quota_exhausted === true ||
+    /\bquota(?:[-_\s]*exhausted|[-_\s]*hit|[-_\s]*reached|[-_\s]*exceeded)?\b/i.test(text)
+  );
 }
 
 function proposalHealthPayload(
@@ -2046,6 +2308,45 @@ function omxRuntimeBridgeNeedsAttention(payload: ColonyHealthPayloadWithoutHints
       payload.signal_health.quota_pending_claims > 0) ||
     payload.task_claim_file_before_edits.codex_rollout_without_bridge
   );
+}
+
+function quotaRelayActionHint(payload: SignalHealthPayload): {
+  current: string;
+  action: string;
+  tool_call: string;
+  command: string;
+  inspect: string;
+} {
+  const top = payload.quota_relay_actions.top_example;
+  if (!top || payload.quota_relay_actions.top_action === 'none') {
+    return {
+      current: String(payload.quota_pending_claims),
+      action:
+        'Accept the quota relay, decline/reroute it, or release expired quota-pending claims before treating the lane as ordinary weak ownership.',
+      tool_call:
+        'mcp__colony__attention_inbox({ agent: <agent>, session_id: <session_id>, repo_root: <repo_root> })',
+      command: 'colony inbox --json',
+      inspect:
+        'colony inbox --json, mcp__colony__attention_inbox, mcp__colony__task_claim_quota_accept',
+    };
+  }
+
+  const action = formatQuotaRelayTopAction(payload.quota_relay_actions);
+  const details = `${payload.quota_pending_claims} quota-pending claim(s); top action: ${action}`;
+  const toolCall =
+    top.tool_call ??
+    quotaRelayToolCall('decline/reroute', top.task_id, top.handoff_observation_id) ??
+    'mcp__colony__attention_inbox({ agent: <agent>, session_id: <session_id>, repo_root: <repo_root> })';
+  const declineHint = top.decline_tool_call
+    ? ` If you will not take it, decline/reroute with ${top.decline_tool_call}.`
+    : '';
+  return {
+    current: details,
+    action: `Top action: ${action}. Accept the quota relay, decline/reroute it, or release expired quota-pending claims before treating the lane as ordinary weak ownership.${declineHint}`,
+    tool_call: toolCall,
+    command: top.command,
+    inspect: `${top.command}, ${toolCall}`,
+  };
 }
 
 function healthActionHints(payload: ColonyHealthPayloadWithoutHints): ActionHint[] {
@@ -2550,23 +2851,26 @@ function healthActionHints(payload: ColonyHealthPayloadWithoutHints): ActionHint
     });
   }
 
-  if (payload.signal_health.quota_pending_claims > 0) {
+  if (
+    payload.signal_health.quota_pending_claims > 0 &&
+    (payload.signal_health.quota_relay_examples.length === 0 ||
+      payload.signal_health.quota_relay_actions.top_action !== 'none')
+  ) {
+    const quotaAction = quotaRelayActionHint(payload.signal_health);
     hints.push({
       metric: 'quota relay accept/release',
       status: 'bad',
-      current: String(payload.signal_health.quota_pending_claims),
+      current: quotaAction.current,
       target: '0',
-      action:
-        'Accept the quota relay, decline/reroute it, or release expired quota-pending claims before treating the lane as ordinary weak ownership.',
+      action: quotaAction.action,
       readiness_scope: 'signal_evaporation',
       priority: 6,
-      tool_call:
-        'mcp__colony__attention_inbox({ agent: <agent>, session_id: <session_id>, repo_root: <repo_root> })',
-      command: 'colony inbox --json',
+      tool_call: quotaAction.tool_call,
+      command: quotaAction.command,
       prompt: codexPrompt({
         goal: 'resolve quota-pending ownership without deleting claim history',
-        current: `${payload.signal_health.quota_pending_claims} quota-pending claims`,
-        inspect: 'colony inbox --json, mcp__colony__attention_inbox, task_accept_relay',
+        current: quotaAction.current,
+        inspect: quotaAction.inspect,
         acceptance: 'quota relay is accepted or expires into weak audit-only ownership',
       }),
     });
