@@ -6,6 +6,7 @@ import { maybeReexecAfterAutoBuild } from './auto-build.js';
 import { registerAgentsCommand } from './commands/agents.js';
 import { registerBackfillCommand } from './commands/backfill.js';
 import { registerBridgeCommand } from './commands/bridge.js';
+import { registerClaimsCommand } from './commands/claims.js';
 import { registerCockpitCommand } from './commands/cockpit.js';
 import { registerCompressCommands } from './commands/compress.js';
 import { registerConfigCommand } from './commands/config.js';
@@ -47,6 +48,7 @@ export function createProgram(): Command {
 
   registerAgentsCommand(program);
   registerCockpitCommand(program);
+  registerClaimsCommand(program);
   registerInstallCommand(program);
   registerLaneCommand(program);
   registerUninstallCommand(program);

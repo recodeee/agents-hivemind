@@ -12,6 +12,7 @@ describe('Colony CLI program', () => {
     const expected = [
       'agents',
       'bridge',
+      'claims',
       'cockpit',
       'coordination',
       'doctor',
@@ -60,6 +61,7 @@ describe('Colony CLI program', () => {
                                             external executor
         cockpit [options]                   Open a GitGuardex cockpit for
                                             Colony-managed plan lanes
+        claims                              Inspect Colony file claim coverage
         install [options]                   Register hooks + MCP server for an IDE
         lane                                Pause, resume, and take over contended
                                             lanes
