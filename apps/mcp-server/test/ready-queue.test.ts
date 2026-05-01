@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { defaultSettings } from '@colony/config';
 import { MemoryStore, TaskThread } from '@colony/core';
 import { colonyAdoptionFixesPlan } from '@colony/queen';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Client } from '@modelcontextprotocol/sdk/client';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildServer } from '../src/server.js';
@@ -40,10 +40,49 @@ interface ReadyEntry {
   };
 }
 
+interface QuotaRelayReadyEntry {
+  kind: 'quota_relay_ready';
+  next_tool: 'task_claim_quota_accept';
+  next_action_reason: string;
+  task_id: number;
+  old_owner: {
+    session_id: string;
+    agent: string | null;
+  };
+  files: string[];
+  age: {
+    milliseconds: number;
+    minutes: number;
+  };
+  repo_root: string;
+  branch: string;
+  expires_at: number | null;
+  blocks_downstream: boolean;
+  quota_observation_id: number;
+  quota_observation_kind: 'handoff' | 'relay';
+  task_active: boolean;
+  claim_args: {
+    repo_root: string;
+    branch: string;
+    task_id: number;
+    quota_observation_id: number;
+    session_id: string;
+    agent: string;
+    files: string[];
+  };
+}
+
 interface ClaimResult {
   task_id: number;
   branch: string;
   file_scope: string[];
+}
+
+interface QuotaAcceptResult {
+  status: 'accepted' | 'claimed_expired_quota';
+  task_id: number;
+  quota_observation_id: number;
+  files: string[];
 }
 
 async function claimSubtask(
@@ -87,20 +126,22 @@ interface ReadyResult {
     message: string;
   }>;
   next_action: string;
-  next_tool?: 'task_plan_claim_subtask' | 'rescue_stranded_scan';
+  next_tool?: 'task_plan_claim_subtask' | 'task_claim_quota_accept' | 'rescue_stranded_scan';
   plan_slug?: string;
   subtask_index?: number;
   reason?: 'continue_current_task' | 'urgent_override' | 'ready_high_score';
   assigned_agent?: string;
   routing_reason?: string;
-  claim_args?: {
-    repo_root: string;
-    plan_slug: string;
-    subtask_index: number;
-    session_id: string;
-    agent: string;
-    file_scope: string[];
-  };
+  claim_args?:
+    | {
+        repo_root: string;
+        plan_slug: string;
+        subtask_index: number;
+        session_id: string;
+        agent: string;
+        file_scope: string[];
+      }
+    | QuotaRelayReadyEntry['claim_args'];
   rescue_candidate?: {
     plan_slug: string;
     task_id: number;
@@ -203,6 +244,61 @@ function recordQuotaHandoff(taskId: number, agent = 'codex'): void {
       expires_at: Date.now() + 60_000,
     },
   });
+}
+
+async function stopSubtaskWithQuotaHandoff(args: {
+  plan_slug: string;
+  subtask_index: number;
+  session_id?: string;
+  agent?: string;
+  expires_in_ms?: number;
+}): Promise<{ claim: ClaimResult; handoffId: number }> {
+  const sessionId = args.session_id ?? 'quota-session';
+  const agent = args.agent ?? 'codex';
+  store.startSession({ id: sessionId, ide: agent, cwd: repoRoot });
+  const claim = await claimSubtask(args.plan_slug, args.subtask_index, sessionId, agent);
+  const handoffId = new TaskThread(store, claim.task_id).handOff({
+    from_session_id: sessionId,
+    from_agent: agent,
+    to_agent: 'any',
+    summary: 'Session hit usage limit; takeover requested.',
+    next_steps: ['Continue the quota-stopped subtask.'],
+    blockers: ['quota_exhausted'],
+    reason: 'quota_exhausted',
+    expires_in_ms: args.expires_in_ms ?? 60 * 60_000,
+  });
+  return { claim, handoffId };
+}
+
+function openQuotaRelayTask(args: {
+  session_id?: string;
+  agent?: string;
+  branch?: string;
+  file_path?: string;
+  expires_in_ms?: number;
+}): { taskId: number; relayId: number; filePath: string; branch: string } {
+  const sessionId = args.session_id ?? 'quota-session';
+  const agent = args.agent ?? 'codex';
+  const branch = args.branch ?? 'agent/codex/quota-relay';
+  const filePath = args.file_path ?? 'apps/api/quota-relay.ts';
+  store.startSession({ id: sessionId, ide: agent, cwd: repoRoot });
+  const thread = TaskThread.open(store, {
+    repo_root: repoRoot,
+    branch,
+    session_id: sessionId,
+    title: 'Quota relay task',
+  });
+  thread.join(sessionId, agent);
+  thread.claimFile({ session_id: sessionId, file_path: filePath });
+  const relayId = thread.relay({
+    from_session_id: sessionId,
+    from_agent: agent,
+    reason: 'quota',
+    one_line: 'quota stopped this task',
+    base_branch: 'main',
+    expires_in_ms: args.expires_in_ms ?? 60_000,
+  });
+  return { taskId: thread.task_id, relayId, filePath, branch };
 }
 
 function releaseSubtaskClaim(
@@ -596,6 +692,213 @@ describe('task_ready_for_agent', () => {
         agent: 'codex',
         file_scope: ['apps/api/wave-two.ts'],
       },
+    });
+  });
+
+  it('surfaces quota-pending claims as replacement work with exact accept args', async () => {
+    const t0 = Date.parse('2026-05-01T10:00:00.000Z');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(t0);
+
+    await call('task_plan_publish', {
+      ...publishArgs(
+        [
+          {
+            title: 'Quota stopped API',
+            description: 'This claimed task stopped on quota.',
+            file_scope: ['apps/api/quota-stopped.ts'],
+            capability_hint: 'api_work',
+          },
+          {
+            title: 'Downstream API',
+            description: 'Blocked until the quota-stopped work is claimed.',
+            file_scope: ['apps/api/downstream.ts'],
+            depends_on: [0],
+            capability_hint: 'api_work',
+          },
+        ],
+        { slug: 'quota-ready-plan', session_id: 'queen', agent: 'queen' },
+      ),
+    });
+    const { claim, handoffId } = await stopSubtaskWithQuotaHandoff({
+      plan_slug: 'quota-ready-plan',
+      subtask_index: 0,
+      expires_in_ms: 60 * 60_000,
+    });
+
+    vi.setSystemTime(t0 + 5 * 60_000);
+    const result = await call<ReadyResult>('task_ready_for_agent', {
+      session_id: 'agent-session',
+      agent: 'codex',
+      repo_root: repoRoot,
+      limit: 10,
+    });
+
+    const quota = result.ready[0] as unknown as QuotaRelayReadyEntry;
+    expect(result.total_available).toBe(1);
+    expect(result.next_tool).toBe('task_claim_quota_accept');
+    expect(result.next_action).toContain('task_claim_quota_accept');
+    expect(quota).toMatchObject({
+      kind: 'quota_relay_ready',
+      next_tool: 'task_claim_quota_accept',
+      task_id: claim.task_id,
+      old_owner: { session_id: 'quota-session', agent: 'codex' },
+      files: ['apps/api/quota-stopped.ts'],
+      age: { minutes: 5 },
+      repo_root: repoRoot,
+      branch: 'spec/quota-ready-plan/sub-0',
+      expires_at: t0 + 60 * 60_000,
+      blocks_downstream: true,
+      quota_observation_id: handoffId,
+      quota_observation_kind: 'handoff',
+      task_active: true,
+      claim_args: {
+        repo_root: repoRoot,
+        branch: 'spec/quota-ready-plan/sub-0',
+        task_id: claim.task_id,
+        quota_observation_id: handoffId,
+        session_id: 'agent-session',
+        agent: 'codex',
+        files: ['apps/api/quota-stopped.ts'],
+      },
+    });
+    expect(result.claim_args).toEqual(quota.claim_args);
+    expect(result.codex_mcp_call).toContain('mcp__colony__task_claim_quota_accept');
+
+    const accepted = await call<QuotaAcceptResult>(quota.next_tool, quota.claim_args);
+    expect(accepted).toEqual({
+      status: 'accepted',
+      task_id: claim.task_id,
+      quota_observation_id: handoffId,
+      files: ['apps/api/quota-stopped.ts'],
+    });
+    expect(store.storage.listClaims(claim.task_id)).toEqual([
+      expect.objectContaining({
+        file_path: 'apps/api/quota-stopped.ts',
+        session_id: 'agent-session',
+        state: 'active',
+      }),
+    ]);
+  });
+
+  it('ranks downstream-blocking quota relays above ordinary ready work', async () => {
+    await call('task_plan_publish', {
+      ...publishArgs(
+        [
+          {
+            title: 'Quota blocker',
+            description: 'This quota-stopped work blocks the next wave.',
+            file_scope: ['apps/api/quota-blocker.ts'],
+            capability_hint: 'api_work',
+          },
+          {
+            title: 'Blocked next wave',
+            description: 'Cannot proceed until the quota blocker is claimed.',
+            file_scope: ['apps/api/blocked-next-wave.ts'],
+            depends_on: [0],
+            capability_hint: 'api_work',
+          },
+        ],
+        { slug: 'quota-ranked-plan', session_id: 'queen', agent: 'queen' },
+      ),
+    });
+    await stopSubtaskWithQuotaHandoff({
+      plan_slug: 'quota-ranked-plan',
+      subtask_index: 0,
+    });
+    await call('task_plan_publish', {
+      ...publishArgs(
+        [
+          {
+            title: 'Ordinary ready API',
+            description: 'Available but not replacing quota-stopped work.',
+            file_scope: ['apps/api/ordinary-ready.ts'],
+            capability_hint: 'api_work',
+          },
+          {
+            title: 'Ordinary follow-up docs',
+            description: 'Keeps the test plan shape valid.',
+            file_scope: ['docs/ordinary-ready.md'],
+            depends_on: [0],
+            capability_hint: 'doc_work',
+          },
+        ],
+        { slug: 'ordinary-ready-plan' },
+      ),
+    });
+
+    const result = await call<ReadyResult>('task_ready_for_agent', {
+      session_id: 'agent-session',
+      agent: 'codex',
+      repo_root: repoRoot,
+      limit: 10,
+    });
+
+    expect(result.total_available).toBe(2);
+    expect((result.ready[0] as unknown as QuotaRelayReadyEntry).kind).toBe('quota_relay_ready');
+    expect((result.ready[0] as unknown as QuotaRelayReadyEntry).blocks_downstream).toBe(true);
+    expect(result.ready[1]).toMatchObject({
+      plan_slug: 'ordinary-ready-plan',
+      subtask_index: 0,
+      title: 'Ordinary ready API',
+    });
+    expect(result.next_tool).toBe('task_claim_quota_accept');
+  });
+
+  it('lets agents claim expired quota relays instead of losing replacement work', async () => {
+    const t0 = Date.parse('2026-05-01T11:00:00.000Z');
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(t0);
+    const { taskId, relayId, filePath, branch } = openQuotaRelayTask({
+      expires_in_ms: 60_000,
+    });
+
+    vi.setSystemTime(t0 + 2 * 60_000);
+    const result = await call<ReadyResult>('task_ready_for_agent', {
+      session_id: 'agent-session',
+      agent: 'codex',
+      repo_root: repoRoot,
+    });
+
+    const quota = result.ready[0] as unknown as QuotaRelayReadyEntry;
+    expect(quota).toMatchObject({
+      kind: 'quota_relay_ready',
+      task_id: taskId,
+      files: [filePath],
+      branch,
+      expires_at: t0 + 60_000,
+      blocks_downstream: false,
+      quota_observation_id: relayId,
+      quota_observation_kind: 'relay',
+      claim_args: {
+        repo_root: repoRoot,
+        branch,
+        task_id: taskId,
+        quota_observation_id: relayId,
+        session_id: 'agent-session',
+        agent: 'codex',
+        files: [filePath],
+      },
+    });
+    expect(result.next_tool).toBe('task_claim_quota_accept');
+
+    const accepted = await call<QuotaAcceptResult>(quota.next_tool, quota.claim_args);
+    expect(accepted).toEqual({
+      status: 'claimed_expired_quota',
+      task_id: taskId,
+      quota_observation_id: relayId,
+      files: [filePath],
+    });
+    expect(store.storage.listClaims(taskId)).toEqual([
+      expect.objectContaining({
+        file_path: filePath,
+        session_id: 'agent-session',
+        state: 'active',
+      }),
+    ]);
+    expect(store.storage.taskObservationsByKind(taskId, 'quota-relay-claim', 1)[0]).toMatchObject({
+      reply_to: relayId,
+      metadata: expect.stringContaining('"quota_observation_kind":"relay"'),
     });
   });
 

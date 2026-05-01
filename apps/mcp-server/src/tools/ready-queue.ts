@@ -5,6 +5,7 @@ import {
   type MemoryStore,
   type PlanInfo,
   type SubtaskInfo,
+  TaskThread,
   claimsForPaths,
   discoverMcpCapabilities,
   listMessagesForAgent,
@@ -12,11 +13,11 @@ import {
   loadProfile,
   rankCandidates,
 } from '@colony/core';
-import type { ObservationRow } from '@colony/storage';
+import type { ObservationRow, TaskClaimRow, TaskRow } from '@colony/storage';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { type ToolContext, defaultWrapHandler } from './context.js';
-import { type CompactNegativeWarning, searchNegativeWarnings } from './shared.js';
+import { type CompactNegativeWarning, mcpError, searchNegativeWarnings } from './shared.js';
 
 const DEFAULT_LIMIT = 5;
 const RELEASE_DENSITY_WINDOW_MS = 60 * 60 * 1000;
@@ -30,6 +31,8 @@ const MISSING_CAPABILITY_SCORE = 0.2;
 const CAPABLE_AGENT_SCORE = 0.5;
 const PLAN_SUBTASK_KIND = 'plan-subtask';
 const PLAN_SUBTASK_CLAIM_KIND = 'plan-subtask-claim';
+const QUOTA_RELAY_READY_KIND = 'quota_relay_ready';
+const QUOTA_RELAY_CLAIM_KIND = 'quota-relay-claim';
 export const NO_CLAIMABLE_PLAN_SUBTASKS_EMPTY_STATE =
   'No claimable plan subtasks. Publish a Queen/task plan for multi-agent work, or use task_list only for browsing.';
 export const NO_PLAN_NEXT_ACTION = 'Publish a Queen/task plan for multi-agent work.';
@@ -77,6 +80,44 @@ export interface ReadySubtaskWithWarnings extends ReadySubtask {
   negative_warnings: CompactNegativeWarning[];
 }
 
+export interface TaskClaimQuotaAcceptArgs {
+  repo_root: string;
+  branch: string;
+  task_id: number;
+  quota_observation_id: number;
+  session_id: string;
+  agent: string;
+  files: string[];
+}
+
+export interface QuotaRelayReady {
+  kind: typeof QUOTA_RELAY_READY_KIND;
+  next_tool: 'task_claim_quota_accept';
+  next_action_reason: string;
+  task_id: number;
+  old_owner: {
+    session_id: string;
+    agent: string | null;
+  };
+  files: string[];
+  age: {
+    milliseconds: number;
+    minutes: number;
+  };
+  repo_root: string;
+  branch: string;
+  expires_at: number | null;
+  blocks_downstream: boolean;
+  quota_observation_id: number;
+  quota_observation_kind: 'handoff' | 'relay';
+  task_active: boolean;
+  claim_args: TaskClaimQuotaAcceptArgs;
+  negative_warnings: CompactNegativeWarning[];
+}
+
+export type ReadyQueueEntry = ReadySubtaskWithWarnings | QuotaRelayReady;
+type ClaimableReadyEntry = RankedSubtask | QuotaRelayReady;
+
 export interface ReadyScopeOverlapWarning {
   code: 'ready_scope_overlap';
   severity: 'warning';
@@ -91,18 +132,18 @@ export interface ReadyScopeOverlapWarning {
 }
 
 export interface ReadyForAgentResult {
-  ready: ReadySubtaskWithWarnings[];
+  ready: ReadyQueueEntry[];
   total_available: number;
   mcp_capability_map: McpCapabilityMap;
   ready_scope_overlap_warnings: ReadyScopeOverlapWarning[];
   next_action: string;
-  next_tool?: 'task_plan_claim_subtask' | 'rescue_stranded_scan';
+  next_tool?: 'task_plan_claim_subtask' | 'task_claim_quota_accept' | 'rescue_stranded_scan';
   plan_slug?: string;
   subtask_index?: number;
   reason?: ReadyReason;
   assigned_agent?: string;
   routing_reason?: string;
-  claim_args?: TaskPlanClaimArgs;
+  claim_args?: TaskPlanClaimArgs | TaskClaimQuotaAcceptArgs;
   rescue_candidate?: StaleBlockerRescueCandidate;
   rescue_args?: { stranded_after_minutes: number };
   codex_mcp_call?: string;
@@ -163,22 +204,43 @@ export function register(server: McpServer, ctx: ToolContext): void {
       );
     }),
   );
+
+  server.tool(
+    'task_claim_quota_accept',
+    'Claim quota-stopped work surfaced by task_ready_for_agent. Accepts the underlying quota handoff/relay when still live, or directly re-claims expired handoff_pending files with audit metadata.',
+    {
+      repo_root: z.string().min(1),
+      branch: z.string().min(1),
+      task_id: z.number().int().positive(),
+      quota_observation_id: z.number().int().positive(),
+      session_id: z.string().min(1),
+      agent: z.string().min(1),
+      files: z.array(z.string().min(1)).min(1),
+    },
+    wrapHandler('task_claim_quota_accept', async (args: TaskClaimQuotaAcceptArgs) => {
+      try {
+        return jsonReply(claimQuotaAccept(store, args));
+      } catch (err) {
+        return mcpError(err);
+      }
+    }),
+  );
 }
 
 export async function buildReadyForAgent(
   store: MemoryStore,
   args: { session_id: string; agent: string; repo_root?: string; limit?: number },
 ): Promise<ReadyForAgentResult> {
+  const allTasks = store.storage.listTasks(2000);
   const plans = listPlans(store, {
     ...(args.repo_root !== undefined ? { repo_root: args.repo_root } : {}),
     limit: 2000,
   });
   const profile = loadProfile(store.storage, args.agent);
   const tasksById = new Map(
-    store.storage
-      .listTasks(2000)
-      .map((t) => [t.id, { created_at: t.created_at, created_by: t.created_by }]),
+    allTasks.map((t) => [t.id, { created_at: t.created_at, created_by: t.created_by }]),
   );
+  const quotaRelays = quotaRelayReadyItems(store, args, plans, allTasks);
   const available = plans.flatMap((plan) =>
     plan.next_available.map((subtask) =>
       rankSubtask(store, {
@@ -221,50 +283,50 @@ export async function buildReadyForAgent(
     agent: args.agent,
     task_ids: [...new Set([...available, ...currentClaims].map((task) => task.task_id))],
   });
-  const ranked = rankForSelection(
+  const planRanked = rankForSelection(
     available.map((task) =>
       urgentTaskIds.has(task.task_id) ? { ...task, reason: 'urgent_override' } : task,
     ),
     currentClaims,
   ).map((task) => applyRuntimeRouting(store, task, args.agent, args.repo_root));
-
+  const ranked = rankReadyEntries(quotaRelays, planRanked);
   const selected = ranked.slice(0, args.limit ?? DEFAULT_LIMIT);
-  const claimable = ranked.find((task) => !task.current_claim) ?? null;
+  const claimable = ranked.find(isClaimableEntry) ?? null;
   const ready = await Promise.all(
-    selected.map(
-      async ({
+    selected.map(async (entry) => {
+      if (isQuotaRelayReady(entry)) return entry;
+      const {
         created_at: _createdAt,
         task_id: _taskId,
         claim_ts: _claimTs,
         current_claim: _currentClaim,
-        ...entry
-      }) => {
-        const claimMetadata = _currentClaim
-          ? {}
-          : {
-              next_tool: 'task_plan_claim_subtask' as const,
-              next_action_reason: claimReason(entry),
-            };
-        return {
-          ...entry,
-          ...claimMetadata,
-          negative_warnings: await readyNegativeWarnings(store, entry),
-        };
-      },
-    ),
+        ...subtaskEntry
+      } = entry;
+      const claimMetadata = _currentClaim
+        ? {}
+        : {
+            next_tool: 'task_plan_claim_subtask' as const,
+            next_action_reason: claimReason(subtaskEntry),
+          };
+      return {
+        ...subtaskEntry,
+        ...claimMetadata,
+        negative_warnings: await readyNegativeWarnings(store, subtaskEntry),
+      };
+    }),
   );
 
   return buildReadyResult(
     {
       ready,
-      total_available: available.length,
+      total_available: available.length + quotaRelays.length,
       mcp_capability_map: discoverMcpCapabilities(),
       ready_scope_overlap_warnings: readyScopeOverlapWarnings(store, plans),
     },
     claimable,
     args,
     plans.length > 0,
-    available.length === 0 ? staleBlockerRescueCandidate(plans) : null,
+    available.length === 0 && quotaRelays.length === 0 ? staleBlockerRescueCandidate(plans) : null,
   );
 }
 
@@ -273,7 +335,7 @@ function buildReadyResult(
     ReadyForAgentResult,
     'ready' | 'total_available' | 'mcp_capability_map' | 'ready_scope_overlap_warnings'
   >,
-  claimable: RankedSubtask | null,
+  claimable: ClaimableReadyEntry | null,
   args: { session_id: string; agent: string },
   hasPlans: boolean,
   rescueCandidate: StaleBlockerRescueCandidate | null,
@@ -300,6 +362,17 @@ function buildReadyResult(
       ...base,
       next_action: hasPlans ? NO_READY_SUBTASKS_NEXT_ACTION : NO_PLAN_NEXT_ACTION,
       empty_state: NO_CLAIMABLE_PLAN_SUBTASKS_EMPTY_STATE,
+    };
+  }
+
+  if (isQuotaRelayReady(claimable)) {
+    return {
+      ...base,
+      next_action: readyNextAction(base.ready, args),
+      next_tool: 'task_claim_quota_accept',
+      claim_args: claimable.claim_args,
+      codex_mcp_call: quotaMcpCall(claimable.claim_args),
+      next_action_reason: claimable.next_action_reason,
     };
   }
 
@@ -334,13 +407,20 @@ function codexMcpCall(args: TaskPlanClaimArgs): string {
   return `mcp__colony__task_plan_claim_subtask({ agent: ${JSON.stringify(args.agent)}, session_id: ${JSON.stringify(args.session_id)}, repo_root: ${JSON.stringify(args.repo_root)}, plan_slug: ${JSON.stringify(args.plan_slug)}, subtask_index: ${args.subtask_index}, file_scope: ${JSON.stringify(args.file_scope)} })`;
 }
 
+function quotaMcpCall(args: TaskClaimQuotaAcceptArgs): string {
+  return `mcp__colony__task_claim_quota_accept({ agent: ${JSON.stringify(args.agent)}, session_id: ${JSON.stringify(args.session_id)}, repo_root: ${JSON.stringify(args.repo_root)}, branch: ${JSON.stringify(args.branch)}, task_id: ${args.task_id}, quota_observation_id: ${args.quota_observation_id}, files: ${JSON.stringify(args.files)} })`;
+}
+
 function readyNextAction(
-  ready: ReadySubtaskWithWarnings[],
+  ready: ReadyQueueEntry[],
   args: { session_id: string; agent: string },
 ): string {
   const top = ready[0];
   if (!top) {
     return 'No ready plan sub-tasks; publish claimable work with queen_plan_goal or task_plan_publish, or complete upstream dependencies.';
+  }
+  if (isQuotaRelayReady(top)) {
+    return `Call task_claim_quota_accept for quota-stopped task ${top.task_id}, branch="${top.branch}", session_id="${args.session_id}", agent="${args.agent}".`;
   }
   if (top.reason === 'continue_current_task') {
     return `Continue claimed sub-task ${top.plan_slug}/sub-${top.subtask_index}; call task_plan_complete_subtask when done. Claim different ready work only when it should override the current task.`;
@@ -555,6 +635,56 @@ function rankForSelection(
   });
 }
 
+function rankReadyEntries(
+  quotaRelays: QuotaRelayReady[],
+  planRanked: RankedSubtask[],
+): Array<QuotaRelayReady | RankedSubtask> {
+  return [...quotaRelays, ...planRanked].sort((a, b) => {
+    const priorityDelta = readyEntryPriority(a) - readyEntryPriority(b);
+    if (priorityDelta !== 0) return priorityDelta;
+    if (isQuotaRelayReady(a) && isQuotaRelayReady(b)) return compareQuotaRelays(a, b);
+    if (isQuotaRelayReady(a)) return -1;
+    if (isQuotaRelayReady(b)) return 1;
+    if (a.current_claim || b.current_claim) return compareCurrentClaims(a, b);
+    return compareReady(a, b);
+  });
+}
+
+function readyEntryPriority(entry: QuotaRelayReady | RankedSubtask): number {
+  if (isQuotaRelayReady(entry)) {
+    if (entry.blocks_downstream) return 0;
+    if (entry.task_active) return 3;
+    return 5;
+  }
+  if (entry.reason === 'urgent_override') return 1;
+  if (entry.current_claim) return 2;
+  return 4;
+}
+
+function compareQuotaRelays(a: QuotaRelayReady, b: QuotaRelayReady): number {
+  return (
+    Number(b.blocks_downstream) - Number(a.blocks_downstream) ||
+    Number(b.task_active) - Number(a.task_active) ||
+    b.age.milliseconds - a.age.milliseconds ||
+    a.repo_root.localeCompare(b.repo_root) ||
+    a.branch.localeCompare(b.branch) ||
+    a.task_id - b.task_id ||
+    a.quota_observation_id - b.quota_observation_id
+  );
+}
+
+function isClaimableEntry(entry: QuotaRelayReady | RankedSubtask): entry is ClaimableReadyEntry {
+  return isQuotaRelayReady(entry) || !entry.current_claim;
+}
+
+function isQuotaRelayReady(entry: unknown): entry is QuotaRelayReady {
+  return (
+    typeof entry === 'object' &&
+    entry !== null &&
+    (entry as { kind?: unknown }).kind === QUOTA_RELAY_READY_KIND
+  );
+}
+
 function selectionPriority(task: RankedSubtask, highScoreThreshold: number): number {
   if (task.reason === 'urgent_override') return 0;
   if (!task.current_claim && task.fit_score >= highScoreThreshold) return 1;
@@ -682,6 +812,257 @@ function unlockCandidateFor(blocker: SubtaskInfo, subtasks: SubtaskInfo[]): Subt
       )
       .sort((a, b) => a.wave_index - b.wave_index || a.subtask_index - b.subtask_index)[0] ?? null
   );
+}
+
+function quotaRelayReadyItems(
+  store: MemoryStore,
+  args: { session_id: string; agent: string; repo_root?: string },
+  plans: PlanInfo[],
+  tasks: TaskRow[],
+): QuotaRelayReady[] {
+  const now = Date.now();
+  const subtasksByTaskId = new Map<number, { plan: PlanInfo; subtask: SubtaskInfo }>();
+  for (const plan of plans) {
+    for (const subtask of plan.subtasks) {
+      subtasksByTaskId.set(subtask.task_id, { plan, subtask });
+    }
+  }
+
+  const groups = new Map<
+    string,
+    {
+      task: TaskRow;
+      old_owner_session_id: string;
+      quota_observation_id: number;
+      claims: TaskClaimRow[];
+    }
+  >();
+  for (const task of tasks) {
+    if (args.repo_root !== undefined && task.repo_root !== args.repo_root) continue;
+    for (const claim of store.storage.listClaims(task.id)) {
+      if (claim.state !== 'handoff_pending' || claim.handoff_observation_id === null) continue;
+      const key = `${task.id}:${claim.session_id}:${claim.handoff_observation_id}`;
+      const existing = groups.get(key);
+      if (existing) {
+        existing.claims.push(claim);
+      } else {
+        groups.set(key, {
+          task,
+          old_owner_session_id: claim.session_id,
+          quota_observation_id: claim.handoff_observation_id,
+          claims: [claim],
+        });
+      }
+    }
+  }
+
+  const ready: QuotaRelayReady[] = [];
+  for (const group of groups.values()) {
+    const obs = store.storage.getObservation(group.quota_observation_id);
+    if (!obs || obs.task_id !== group.task.id || !isQuotaRelayKind(obs.kind)) continue;
+    const meta = parseMeta(obs.metadata);
+    if (!isQuotaReadyObservation(obs, meta)) continue;
+    if (!quotaObservationVisible(meta, args.session_id, args.agent)) continue;
+    if (!quotaObservationClaimableStatus(meta)) continue;
+
+    const files = [...new Set(group.claims.map((claim) => claim.file_path))].sort();
+    if (files.length === 0) continue;
+    const planSubtask = subtasksByTaskId.get(group.task.id);
+    const blocksDownstream =
+      planSubtask !== undefined &&
+      unlockCandidateFor(planSubtask.subtask, planSubtask.plan.subtasks) !== null;
+    const expiresAt = readNumber(meta.expires_at) ?? latestClaimExpiresAt(group.claims);
+    const oldOwnerAgent =
+      readString(meta.from_agent) ??
+      store.storage.getParticipantAgent(group.task.id, group.old_owner_session_id) ??
+      store.storage.getSession(group.old_owner_session_id)?.ide ??
+      null;
+    const ageMs = Math.max(0, now - obs.ts);
+
+    ready.push({
+      kind: QUOTA_RELAY_READY_KIND,
+      next_tool: 'task_claim_quota_accept',
+      next_action_reason: quotaRelayClaimReason(group.task, blocksDownstream),
+      task_id: group.task.id,
+      old_owner: {
+        session_id: group.old_owner_session_id,
+        agent: oldOwnerAgent,
+      },
+      files,
+      age: {
+        milliseconds: ageMs,
+        minutes: Math.floor(ageMs / 60_000),
+      },
+      repo_root: group.task.repo_root,
+      branch: group.task.branch,
+      expires_at: expiresAt,
+      blocks_downstream: blocksDownstream,
+      quota_observation_id: group.quota_observation_id,
+      quota_observation_kind: obs.kind,
+      task_active: group.task.status === 'open',
+      claim_args: {
+        repo_root: group.task.repo_root,
+        branch: group.task.branch,
+        task_id: group.task.id,
+        quota_observation_id: group.quota_observation_id,
+        session_id: args.session_id,
+        agent: args.agent,
+        files,
+      },
+      negative_warnings: [],
+    });
+  }
+
+  return ready;
+}
+
+function claimQuotaAccept(
+  store: MemoryStore,
+  args: TaskClaimQuotaAcceptArgs,
+): {
+  status: 'accepted' | 'claimed_expired_quota';
+  task_id: number;
+  quota_observation_id: number;
+  files: string[];
+} {
+  const task = store.storage.getTask(args.task_id);
+  if (!task) throw new Error(`task ${args.task_id} not found`);
+  if (task.repo_root !== args.repo_root) {
+    throw new Error(`task ${args.task_id} repo_root is ${task.repo_root}, not ${args.repo_root}`);
+  }
+  if (task.branch !== args.branch) {
+    throw new Error(`task ${args.task_id} branch is ${task.branch}, not ${args.branch}`);
+  }
+  const obs = store.storage.getObservation(args.quota_observation_id);
+  if (!obs || obs.task_id !== args.task_id || !isQuotaRelayKind(obs.kind)) {
+    throw new Error(`observation ${args.quota_observation_id} is not a quota handoff/relay`);
+  }
+  const meta = parseMeta(obs.metadata);
+  if (!isQuotaReadyObservation(obs, meta)) {
+    throw new Error(`observation ${args.quota_observation_id} is not quota-stopped work`);
+  }
+  if (!quotaObservationVisible(meta, args.session_id, args.agent)) {
+    throw new Error(`observation ${args.quota_observation_id} is not addressed to ${args.agent}`);
+  }
+  const pendingClaims = matchingQuotaPendingClaims(store, args);
+  if (pendingClaims.length === 0) {
+    throw new Error(
+      `no handoff_pending quota claims match observation ${args.quota_observation_id}`,
+    );
+  }
+
+  const thread = new TaskThread(store, args.task_id);
+  thread.join(args.session_id, args.agent);
+  const expiresAt = readNumber(meta.expires_at) ?? latestClaimExpiresAt(pendingClaims);
+  const status = readString(meta.status);
+  if (status === 'pending' && (expiresAt === null || Date.now() <= expiresAt)) {
+    if (obs.kind === 'handoff') {
+      thread.acceptHandoff(args.quota_observation_id, args.session_id);
+    } else {
+      thread.acceptRelay(args.quota_observation_id, args.session_id);
+    }
+    return {
+      status: 'accepted',
+      task_id: args.task_id,
+      quota_observation_id: args.quota_observation_id,
+      files: args.files,
+    };
+  }
+
+  store.storage.transaction(() => {
+    for (const claim of pendingClaims) {
+      store.storage.claimFile({
+        task_id: args.task_id,
+        file_path: claim.file_path,
+        session_id: args.session_id,
+      });
+    }
+    store.addObservation({
+      session_id: args.session_id,
+      task_id: args.task_id,
+      kind: QUOTA_RELAY_CLAIM_KIND,
+      reply_to: args.quota_observation_id,
+      content: `claimed expired quota-pending files from ${obs.kind} #${args.quota_observation_id}: ${args.files.join(', ')}`,
+      metadata: {
+        kind: QUOTA_RELAY_CLAIM_KIND,
+        quota_observation_id: args.quota_observation_id,
+        quota_observation_kind: obs.kind,
+        files: args.files,
+        accepted_by_session_id: args.session_id,
+        accepted_by_agent: args.agent,
+        expired_at: expiresAt,
+      },
+    });
+    store.storage.touchTask(args.task_id);
+  });
+
+  return {
+    status: 'claimed_expired_quota',
+    task_id: args.task_id,
+    quota_observation_id: args.quota_observation_id,
+    files: args.files,
+  };
+}
+
+function matchingQuotaPendingClaims(
+  store: MemoryStore,
+  args: TaskClaimQuotaAcceptArgs,
+): TaskClaimRow[] {
+  const requested = new Set(args.files);
+  return store.storage
+    .listClaims(args.task_id)
+    .filter((claim) => requested.has(claim.file_path))
+    .filter((claim) => claim.state === 'handoff_pending')
+    .filter((claim) => claim.handoff_observation_id === args.quota_observation_id);
+}
+
+function quotaRelayClaimReason(task: TaskRow, blocksDownstream: boolean): string {
+  return blocksDownstream
+    ? `Claim quota-stopped task ${task.id}: old owner stopped on quota and downstream plan work is blocked.`
+    : `Claim quota-stopped task ${task.id}: old owner stopped on quota and the task is ready for replacement ownership.`;
+}
+
+function isQuotaRelayKind(kind: string): kind is 'handoff' | 'relay' {
+  return kind === 'handoff' || kind === 'relay';
+}
+
+function isQuotaReadyObservation(row: ObservationRow, meta: Record<string, unknown>): boolean {
+  if (row.kind === 'relay')
+    return readString(meta.reason) === 'quota' || isQuotaObservation(row, meta);
+  return readString(meta.reason) === 'quota_exhausted' || isQuotaObservation(row, meta);
+}
+
+function quotaObservationVisible(
+  meta: Record<string, unknown>,
+  sessionId: string,
+  agent: string,
+): boolean {
+  const toSession = readString(meta.to_session_id);
+  const toAgent = readString(meta.to_agent);
+  return (
+    (toSession === null || toSession === sessionId) &&
+    (toAgent === null || toAgent === 'any' || toAgent === agent)
+  );
+}
+
+function quotaObservationClaimableStatus(meta: Record<string, unknown>): boolean {
+  const status = readString(meta.status);
+  return status === null || status === 'pending' || status === 'expired';
+}
+
+function latestClaimExpiresAt(claims: TaskClaimRow[]): number | null {
+  const values = claims
+    .map((claim) => claim.expires_at)
+    .filter((value): value is number => typeof value === 'number');
+  return values.length > 0 ? Math.max(...values) : null;
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+function readNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function applyRuntimeRouting(
