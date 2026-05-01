@@ -14,4 +14,9 @@
 
 ## Cleanup
 
-- [ ] Finish PR, merge, and sandbox cleanup; record PR URL and `MERGED` evidence.
+- [x] Finish PR, merge, and sandbox cleanup; record PR URL and `MERGED` evidence.
+  - PR: https://github.com/recodeee/colony/pull/331
+  - State: `MERGED`
+  - Merge commit: `75439a5f6309f227bc009db2bf5c47f8cbc1175f`
+  - Merged at: `2026-05-01T13:17:37Z`
+  - Source worktree: pruned by `gx branch finish --branch agent/codex/quota-pending-claim-tools-2026-05-01-14-57 --base main --via-pr --wait-for-merge --cleanup`
