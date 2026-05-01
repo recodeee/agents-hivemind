@@ -32,8 +32,9 @@ const PLAN_SUBTASK_KIND = 'plan-subtask';
 const PLAN_SUBTASK_CLAIM_KIND = 'plan-subtask-claim';
 const QUOTA_RELAY_READY_KIND = 'quota_relay_ready';
 export const NO_CLAIMABLE_PLAN_SUBTASKS_EMPTY_STATE =
-  'No claimable plan subtasks. Publish a Queen/task plan for multi-agent work, or use task_list only for browsing.';
-export const NO_PLAN_NEXT_ACTION = 'Publish a Queen/task plan for multi-agent work.';
+  'No claimable plan subtasks. Publish a Queen/task plan for multi-agent work, reinforce a proposal with task_propose/task_reinforce, or use task_list only for browsing.';
+export const NO_PLAN_NEXT_ACTION =
+  'Publish a Queen/task plan or promote a proposal into claimable work.';
 export const NO_READY_SUBTASKS_NEXT_ACTION =
   'Complete upstream dependencies or unblock current plan waves before claiming more work.';
 const CAPABILITY_HINT_TEXT: Record<string, string> = {
@@ -56,8 +57,10 @@ export interface TaskPlanClaimArgs {
 }
 
 export interface ReadySubtask {
+  priority?: number;
   next_tool?: 'task_plan_claim_subtask';
   next_action_reason?: string;
+  codex_mcp_call?: string;
   plan_slug: string;
   subtask_index: number;
   wave_index: number;
@@ -87,8 +90,10 @@ export interface TaskClaimQuotaAcceptArgs {
 
 export interface QuotaRelayReady {
   kind: typeof QUOTA_RELAY_READY_KIND;
+  priority?: number;
   next_tool: 'task_claim_quota_accept';
   next_action_reason: string;
+  codex_mcp_call?: string;
   task_id: number;
   old_owner: {
     session_id: string;
@@ -267,8 +272,15 @@ export async function buildReadyForAgent(
   const selected = ranked.slice(0, args.limit ?? DEFAULT_LIMIT);
   const claimable = ranked.find(isClaimableEntry) ?? null;
   const ready = await Promise.all(
-    selected.map(async (entry) => {
-      if (isQuotaRelayReady(entry)) return entry;
+    selected.map(async (entry, index) => {
+      const priority = index + 1;
+      if (isQuotaRelayReady(entry)) {
+        return {
+          ...entry,
+          priority,
+          codex_mcp_call: quotaMcpCall(entry.claim_args),
+        };
+      }
       const {
         created_at: _createdAt,
         task_id: _taskId,
@@ -281,9 +293,11 @@ export async function buildReadyForAgent(
         : {
             next_tool: 'task_plan_claim_subtask' as const,
             next_action_reason: claimReason(subtaskEntry),
+            codex_mcp_call: codexMcpCall(subtaskEntry.claim_args),
           };
       return {
         ...subtaskEntry,
+        priority,
         ...claimMetadata,
         negative_warnings: await readyNegativeWarnings(store, subtaskEntry),
       };

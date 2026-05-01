@@ -936,7 +936,7 @@ describe('task threads — handoff lifecycle', () => {
       'Use task_ready_for_agent to choose claimable work; task_list is for browsing.',
     );
     expect(first.coordination_warning).toBe(
-      'task_list is inventory. Use task_ready_for_agent to choose claimable work.',
+      'task_list is inventory; use task_ready_for_agent to choose work.',
     );
     expect(first.next_tool).toBe('task_ready_for_agent');
   });
@@ -956,9 +956,7 @@ describe('task threads — handoff lifecycle', () => {
       coordination_warning: string;
       next_tool: string;
     }>('task_list', { session_id: sessionA });
-    expect(repeated.hint).toBe(
-      'task_list is inventory. Use task_ready_for_agent to choose claimable work.',
-    );
+    expect(repeated.hint).toBe('task_list is inventory; use task_ready_for_agent to choose work.');
     expect(repeated.coordination_warning).toBe(
       'Stop browsing. Call task_ready_for_agent before selecting work.',
     );
@@ -971,15 +969,13 @@ describe('task threads — handoff lifecycle', () => {
       metadata: { tool: 'mcp__colony__task_ready_for_agent' },
     });
 
-    const afterReady = await call<{ hint: string; coordination_warning: string }>('task_list', {
+    const afterReady = await call<{ hint: string; coordination_warning?: string }>('task_list', {
       session_id: sessionA,
     });
     expect(afterReady.hint).toBe(
       'Use task_ready_for_agent to choose claimable work; task_list is for browsing.',
     );
-    expect(afterReady.coordination_warning).toBe(
-      'task_list is inventory. Use task_ready_for_agent to choose claimable work.',
-    );
+    expect(afterReady.coordination_warning).toBeUndefined();
   });
 
   it('task_post stores negative warning kinds and search returns them compactly', async () => {

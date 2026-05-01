@@ -15,8 +15,10 @@ let store: MemoryStore;
 let client: Client;
 
 interface ReadyEntry {
+  priority?: number;
   next_tool?: 'task_plan_claim_subtask';
   next_action_reason?: string;
+  codex_mcp_call?: string;
   plan_slug: string;
   subtask_index: number;
   wave_index: number;
@@ -42,8 +44,10 @@ interface ReadyEntry {
 
 interface QuotaRelayReadyEntry {
   kind: 'quota_relay_ready';
+  priority?: number;
   next_tool: 'task_claim_quota_accept';
   next_action_reason: string;
+  codex_mcp_call?: string;
   task_id: number;
   old_owner: {
     session_id: string;
@@ -166,7 +170,7 @@ interface ReadyResult {
 }
 
 const EMPTY_READY_STATE =
-  'No claimable plan subtasks. Publish a Queen/task plan for multi-agent work, or use task_list only for browsing.';
+  'No claimable plan subtasks. Publish a Queen/task plan for multi-agent work, reinforce a proposal with task_propose/task_reinforce, or use task_list only for browsing.';
 
 async function call<T>(name: string, args: Record<string, unknown>): Promise<T> {
   const res = await client.callTool({ name, arguments: args });
@@ -415,7 +419,9 @@ describe('task_ready_for_agent', () => {
     expect(result.mcp_capability_map.summary).toEqual(expect.any(Array));
     expect(result.empty_state).toBe(EMPTY_READY_STATE);
     expect(result.next_tool).toBeUndefined();
-    expect(result.next_action).toBe('Publish a Queen/task plan for multi-agent work.');
+    expect(result.next_action).toBe(
+      'Publish a Queen/task plan or promote a proposal into claimable work.',
+    );
   });
 
   it('returns exact claim args for a ready sub-task', async () => {
@@ -458,9 +464,11 @@ describe('task_ready_for_agent', () => {
     expect(result.next_action).toContain('task_plan_claim_subtask');
     expect(result.next_action).toContain('plan_slug="claimable-plan"');
     expect(result.ready[0]).toMatchObject({
+      priority: 1,
       next_tool: 'task_plan_claim_subtask',
       next_action_reason:
         'Claim claimable-plan/sub-0: it is unclaimed, dependencies are met, and it is the highest-ranked claimable ready item.',
+      codex_mcp_call: `mcp__colony__task_plan_claim_subtask({ agent: "codex", session_id: "agent-session", repo_root: ${JSON.stringify(repoRoot)}, plan_slug: "claimable-plan", subtask_index: 0, file_scope: ["apps/api/claimable.ts"] })`,
     });
     expect(result.claim_args).toEqual({
       repo_root: repoRoot,
@@ -506,6 +514,7 @@ describe('task_ready_for_agent', () => {
 
     expect(result.ready).toHaveLength(1);
     expect(result.ready[0]).toMatchObject({
+      priority: 1,
       next_tool: 'task_plan_claim_subtask',
       next_action_reason:
         'Claim direct-ready-claim/sub-0: it is unclaimed, dependencies are met, and it is the highest-ranked claimable ready item.',
@@ -517,6 +526,7 @@ describe('task_ready_for_agent', () => {
         agent: 'codex',
         file_scope: ['apps/api/direct-claim.ts'],
       },
+      codex_mcp_call: `mcp__colony__task_plan_claim_subtask({ agent: "codex", session_id: "agent-session", repo_root: ${JSON.stringify(repoRoot)}, plan_slug: "direct-ready-claim", subtask_index: 0, file_scope: ["apps/api/direct-claim.ts"] })`,
     });
 
     const claimed = await call<ClaimResult>(
@@ -741,6 +751,7 @@ describe('task_ready_for_agent', () => {
     expect(result.next_action).toContain('task_claim_quota_accept');
     expect(quota).toMatchObject({
       kind: 'quota_relay_ready',
+      priority: 1,
       next_tool: 'task_claim_quota_accept',
       task_id: claim.task_id,
       old_owner: { session_id: 'quota-session', agent: 'codex' },
@@ -753,6 +764,7 @@ describe('task_ready_for_agent', () => {
       quota_observation_id: handoffId,
       quota_observation_kind: 'handoff',
       task_active: true,
+      codex_mcp_call: `mcp__colony__task_claim_quota_accept({ session_id: "agent-session", agent: "codex", task_id: ${claim.task_id}, handoff_observation_id: ${handoffId} })`,
       claim_args: {
         task_id: claim.task_id,
         session_id: 'agent-session',

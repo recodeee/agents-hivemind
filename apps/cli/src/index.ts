@@ -32,6 +32,7 @@ import { registerResumeCommand } from './commands/resume.js';
 import { registerSearchCommand } from './commands/search.js';
 import { registerStatusCommand } from './commands/status.js';
 import { registerSuggestCommand } from './commands/suggest.js';
+import { registerTaskCommand } from './commands/task.js';
 import { registerUninstallCommand } from './commands/uninstall.js';
 import { registerWorkerCommand } from './commands/worker.js';
 import { registerWorktreeCommand } from './commands/worktree.js';
@@ -60,6 +61,7 @@ export function createProgram(): Command {
   registerBridgeCommand(program);
   registerSearchCommand(program);
   registerSuggestCommand(program);
+  registerTaskCommand(program);
   registerCompressCommands(program);
   registerCoordinationCommand(program);
   registerExportCommand(program);

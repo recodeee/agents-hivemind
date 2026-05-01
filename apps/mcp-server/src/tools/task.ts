@@ -17,7 +17,7 @@ const SUBTASK_BRANCH_RE = /^spec\/([a-z0-9-]+)\/sub-(\d+)$/;
 const TASK_LIST_HINT =
   'Use task_ready_for_agent to choose claimable work; task_list is for browsing.';
 const TASK_LIST_COORDINATION_WARNING =
-  'task_list is inventory. Use task_ready_for_agent to choose claimable work.';
+  'task_list is inventory; use task_ready_for_agent to choose work.';
 const TASK_LIST_REPEAT_WARNING = 'Stop browsing. Call task_ready_for_agent before selecting work.';
 const TASK_LIST_LOOKBACK_MS = 24 * 60 * 60_000;
 const OMX_POINTER_VALUE_LIMIT = 180;
@@ -635,11 +635,14 @@ function compactPreviousClaim(
 function taskListRoutingForSession(
   store: ToolContext['store'],
   sessionId: string,
-): { hint: string; coordination_warning: string } {
+): { hint: string; coordination_warning?: string } {
   const calls = store.storage.toolCallsSince(Date.now() - TASK_LIST_LOOKBACK_MS);
   const sessionCalls = calls.filter((call) => call.session_id === sessionId);
   const hasReadyCall = sessionCalls.some((call) => isTool(call.tool, 'task_ready_for_agent'));
   const priorTaskListCalls = sessionCalls.filter((call) => isTool(call.tool, 'task_list')).length;
+  if (hasReadyCall) {
+    return { hint: TASK_LIST_HINT };
+  }
   const repeatedInventoryBrowsing = !hasReadyCall && priorTaskListCalls >= 1;
   return {
     hint: repeatedInventoryBrowsing ? TASK_LIST_COORDINATION_WARNING : TASK_LIST_HINT,

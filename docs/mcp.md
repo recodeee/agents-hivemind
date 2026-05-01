@@ -550,7 +550,7 @@ Use `task_list` when you need to inspect existing task threads by repo or branch
 { "name": "task_list", "input": { "limit": 50, "session_id": "sess_abc" } }
 ```
 
-Returns: `{ tasks, hint, coordination_warning, next_tool }`. `coordination_warning` is `task_list is inventory. Use task_ready_for_agent to choose claimable work.` and `next_tool` is `task_ready_for_agent`. Repeated `task_list` calls without `task_ready_for_agent` return `Stop browsing. Call task_ready_for_agent before selecting work.` as the stronger warning. The legacy `hint` field remains for backward compatibility.
+Returns: `{ tasks, hint, coordination_warning, next_tool }`. Before a session calls `task_ready_for_agent`, `coordination_warning` is `task_list is inventory; use task_ready_for_agent to choose work.` and `next_tool` is `task_ready_for_agent`. Repeated `task_list` calls without `task_ready_for_agent` return `Stop browsing. Call task_ready_for_agent before selecting work.` as the stronger warning. After `task_ready_for_agent`, `coordination_warning` is omitted and `task_list` stays a browsing/debugging surface. The legacy `hint` field remains for backward compatibility.
 
 ## `task_timeline`
 
@@ -1274,7 +1274,7 @@ Find the next task to claim for this agent. Use this when deciding what to work 
 }
 ```
 
-Returns `{ ready, total_available, next_action }`. Each `ready` entry includes `plan_slug`, `subtask_index`, `wave_index`, `wave_name`, `blocked_by_count`, `title`, `capability_hint`, `file_scope`, `fit_score`, compact `reason`, and `reasoning`. Claimable `ready` entries also include `next_tool: "task_plan_claim_subtask"`, exact copy-paste `claim_args`, and `next_action_reason` so agents can claim instead of stopping at discovery. `reason` is one of `continue_current_task`, `urgent_override`, or `ready_high_score`. Blocked work is filtered out, and conflicting active file claims lower the score. When ready work exists, `next_action` points at `task_plan_claim_subtask` with the top ready entry's `plan_slug` and `subtask_index`; if the top reason is `continue_current_task`, keep working the already-claimed sub-task.
+Returns `{ ready, total_available, next_action }`. Each `ready` entry includes `priority`, `plan_slug`, `subtask_index`, `wave_index`, `wave_name`, `blocked_by_count`, `title`, `capability_hint`, `file_scope`, `fit_score`, compact `reason`, and `reasoning`. Claimable `ready` entries also include `next_tool: "task_plan_claim_subtask"`, exact copy-paste `claim_args`, `codex_mcp_call`, and `next_action_reason` so agents can claim instead of stopping at discovery. `reason` is one of `continue_current_task`, `urgent_override`, or `ready_high_score`. Blocked work is filtered out, and conflicting active file claims lower the score. When ready work exists, `next_action` points at `task_plan_claim_subtask` with the top ready entry's `plan_slug` and `subtask_index`; if the top reason is `continue_current_task`, keep working the already-claimed sub-task.
 
 When claimable work exists, the response also includes exact routing fields:
 
@@ -1297,7 +1297,15 @@ When claimable work exists, the response also includes exact routing fields:
 }
 ```
 
-When no plan exists, the response includes `empty_state: "No claimable plan subtasks. Publish a Queen/task plan for multi-agent work, or use task_list only for browsing."` and `next_action: "Publish a Queen/task plan for multi-agent work."` When a plan exists but later waves are blocked, it keeps the same `empty_state` and points `next_action` at completing dependencies instead of fabricating a claim.
+When no plan exists, the response includes `empty_state: "No claimable plan subtasks. Publish a Queen/task plan for multi-agent work, reinforce a proposal with task_propose/task_reinforce, or use task_list only for browsing."` and `next_action: "Publish a Queen/task plan or promote a proposal into claimable work."` When a plan exists but later waves are blocked, it keeps the same `empty_state` and points `next_action` at completing dependencies instead of fabricating a claim.
+
+The same picker is available in the CLI:
+
+```bash
+colony task ready --session sess_def --agent codex --repo-root /abs/repo
+```
+
+Use `--json` for the raw `task_ready_for_agent` payload.
 
 ## `rescue_stranded_scan`
 

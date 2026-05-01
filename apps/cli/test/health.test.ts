@@ -204,6 +204,7 @@ describe('colony health payload', () => {
     expect(payload.task_list_vs_task_ready_for_agent).toMatchObject({
       task_list_calls: 2,
       task_ready_for_agent_calls: 1,
+      task_list_first_sessions: 2,
       task_ready_share: 1 / 3,
     });
     expect(payload.task_post_vs_task_message).toMatchObject({
@@ -382,6 +383,7 @@ describe('colony health payload', () => {
     expect(text).toContain('Next fixes');
     expect(text).toContain('Adoption thresholds');
     expect(text).toContain('task_list > task_ready_for_agent');
+    expect(text).toContain('task_list-first sessions: 2');
     expect(text).not.toContain('\n  Good\n');
     expect(text).not.toContain('\n  Bad\n');
   });

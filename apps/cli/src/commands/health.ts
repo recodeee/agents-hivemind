@@ -118,6 +118,7 @@ interface TaskPostMessagePayload {
 interface TaskSelectionPayload {
   task_list_calls: number;
   task_ready_for_agent_calls: number;
+  task_list_first_sessions: number;
   task_ready_share: number | null;
   task_ready_per_task_list: number | null;
 }
@@ -760,6 +761,7 @@ export function formatColonyHealthOutput(
     kleur.bold('task_list vs task_ready_for_agent'),
     `  task_list:            ${payload.task_list_vs_task_ready_for_agent.task_list_calls}`,
     `  task_ready_for_agent: ${payload.task_list_vs_task_ready_for_agent.task_ready_for_agent_calls}`,
+    `  task_list-first sessions: ${payload.task_list_vs_task_ready_for_agent.task_list_first_sessions}`,
     `  ready share:          ${formatPercent(payload.task_list_vs_task_ready_for_agent.task_ready_share)}`,
     '',
     kleur.bold('task_post vs task_message'),
@@ -1462,9 +1464,29 @@ function taskSelectionPayload(calls: ToolCallRow[]): TaskSelectionPayload {
   return {
     task_list_calls: taskListCalls,
     task_ready_for_agent_calls: taskReadyCalls,
+    task_list_first_sessions: taskListFirstSessions(calls),
     task_ready_share: ratio(taskReadyCalls, taskListCalls + taskReadyCalls),
     task_ready_per_task_list: ratio(taskReadyCalls, taskListCalls),
   };
+}
+
+function taskListFirstSessions(calls: ToolCallRow[]): number {
+  const bySession = new Map<string, ToolCallRow[]>();
+  for (const call of calls) {
+    if (!isColonyTool(call.tool, 'task_list') && !isColonyTool(call.tool, 'task_ready_for_agent')) {
+      continue;
+    }
+    const sessionCalls = bySession.get(call.session_id) ?? [];
+    sessionCalls.push(call);
+    bySession.set(call.session_id, sessionCalls);
+  }
+
+  let sessions = 0;
+  for (const sessionCalls of bySession.values()) {
+    const first = sessionCalls.sort((left, right) => left.ts - right.ts)[0];
+    if (first && isColonyTool(first.tool, 'task_list')) sessions++;
+  }
+  return sessions;
 }
 
 function taskPostVsNotepadPayload(
