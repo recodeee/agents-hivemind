@@ -117,6 +117,10 @@ function taskError(code: TaskThreadErrorCode, message: string): TaskThreadError 
   return new TaskThreadError(code, message);
 }
 
+function isQuotaClaimResolvableState(state: TaskClaimRow['state']): boolean {
+  return state === 'handoff_pending' || state === 'weak_expired';
+}
+
 function statusErrorCode(
   status: HandoffStatus | WakeStatus | RelayStatus,
   kind: 'handoff' | 'wake' | 'relay',
@@ -1612,7 +1616,7 @@ export class TaskThread {
   acceptQuotaClaim(args: QuotaClaimResolveArgs): QuotaClaimAcceptResult {
     const now = args.now ?? Date.now();
     const resolved = this.resolveQuotaClaimBaton(args);
-    this.assertQuotaBatonPending(resolved, now);
+    this.assertQuotaBatonAcceptable(resolved, now);
     this.assertCanResolveQuotaBaton(resolved.meta, args.session_id);
     const acceptedFiles = resolved.claims.map((claim) => claim.file_path);
     const previousSessionIds = Array.from(
@@ -1847,11 +1851,11 @@ export class TaskThread {
       this.throwTerminalBatonStatus(args.handoff_observation_id);
       throw taskError(TASK_THREAD_ERROR_CODES.CLAIM_NOT_FOUND, 'quota claim not found');
     }
-    if (claim && claim.state !== 'handoff_pending') {
+    if (claim && !isQuotaClaimResolvableState(claim.state)) {
       this.throwTerminalBatonStatus(args.handoff_observation_id);
       throw taskError(
         TASK_THREAD_ERROR_CODES.CLAIM_NOT_QUOTA_PENDING,
-        `claim is ${claim.state}, not handoff_pending`,
+        `claim is ${claim.state}, not handoff_pending or weak_expired`,
       );
     }
     if (
@@ -1898,7 +1902,8 @@ export class TaskThread {
     }
     const claims = this.claims().filter(
       (candidate) =>
-        candidate.state === 'handoff_pending' && candidate.handoff_observation_id === batonId,
+        isQuotaClaimResolvableState(candidate.state) &&
+        candidate.handoff_observation_id === batonId,
     );
     if (
       normalizedFilePath !== null &&
@@ -1934,6 +1939,26 @@ export class TaskThread {
           : TASK_THREAD_ERROR_CODES.RELAY_EXPIRED,
         `${resolved.kind} expired`,
       );
+    }
+  }
+
+  private assertQuotaBatonAcceptable(
+    resolved: {
+      obs: ObservationRow;
+      kind: 'handoff' | 'relay';
+      meta: HandoffMetadata | RelayMetadata;
+    },
+    now: number,
+  ): void {
+    if (resolved.meta.status === 'accepted' || resolved.meta.status === 'cancelled') {
+      this.throwBatonStatus(resolved.meta, resolved.kind);
+    }
+    if (resolved.meta.status !== 'pending' && resolved.meta.status !== 'expired') {
+      this.throwBatonStatus(resolved.meta, resolved.kind);
+    }
+    if (resolved.meta.status === 'pending' && now >= resolved.meta.expires_at) {
+      resolved.meta.status = 'expired';
+      this.store.storage.updateObservationMetadata(resolved.obs.id, JSON.stringify(resolved.meta));
     }
   }
 

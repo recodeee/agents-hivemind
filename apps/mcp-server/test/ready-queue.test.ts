@@ -49,11 +49,15 @@ interface QuotaRelayReadyEntry {
   next_action_reason: string;
   codex_mcp_call?: string;
   task_id: number;
+  old_session_id: string;
   old_owner: {
     session_id: string;
     agent: string | null;
   };
   files: string[];
+  active_files: string[];
+  evidence: string;
+  next: string;
   age: {
     milliseconds: number;
     minutes: number;
@@ -61,6 +65,7 @@ interface QuotaRelayReadyEntry {
   repo_root: string;
   branch: string;
   expires_at: number | null;
+  has_active_files: boolean;
   blocks_downstream: boolean;
   quota_observation_id: number;
   quota_observation_kind: 'handoff' | 'relay';
@@ -754,12 +759,17 @@ describe('task_ready_for_agent', () => {
       priority: 1,
       next_tool: 'task_claim_quota_accept',
       task_id: claim.task_id,
+      old_session_id: 'quota-session',
       old_owner: { session_id: 'quota-session', agent: 'codex' },
       files: ['apps/api/quota-stopped.ts'],
+      active_files: ['apps/api/quota-stopped.ts'],
+      evidence: `observation ${handoffId} handoff: HANDOFF from codex -> any`,
+      next: 'Continue the quota-stopped subtask.',
       age: { minutes: 5 },
       repo_root: repoRoot,
       branch: 'spec/quota-ready-plan/sub-0',
       expires_at: t0 + 60 * 60_000,
+      has_active_files: true,
       blocks_downstream: true,
       quota_observation_id: handoffId,
       quota_observation_kind: 'handoff',
@@ -859,7 +869,7 @@ describe('task_ready_for_agent', () => {
     expect(result.next_tool).toBe('task_claim_quota_accept');
   });
 
-  it('does not surface expired quota relays as accept-ready replacement work', async () => {
+  it('surfaces expired quota relays with active files ahead of ordinary new work', async () => {
     const t0 = Date.parse('2026-05-01T11:00:00.000Z');
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(t0);
@@ -868,43 +878,122 @@ describe('task_ready_for_agent', () => {
     });
 
     vi.setSystemTime(t0 + 2 * 60_000);
+    await call('task_plan_publish', {
+      ...publishArgs(
+        [
+          {
+            title: 'Ordinary after expired relay',
+            description: 'Ready but lower priority than active expired quota files.',
+            file_scope: ['apps/api/ordinary-after-expired-relay.ts'],
+            capability_hint: 'api_work',
+          },
+          {
+            title: 'Ordinary expired relay docs',
+            description: 'Dependent docs task keeps the test plan shape valid.',
+            file_scope: ['docs/ordinary-after-expired-relay.md'],
+            depends_on: [0],
+            capability_hint: 'doc_work',
+          },
+        ],
+        { slug: 'ordinary-after-expired-relay-plan' },
+      ),
+    });
+
     const result = await call<ReadyResult>('task_ready_for_agent', {
       session_id: 'agent-session',
       agent: 'codex',
       repo_root: repoRoot,
+      limit: 10,
     });
 
-    expect(result.ready).toEqual([]);
-    expect(result.next_tool).toBeUndefined();
-    expect(result.claim_args).toBeUndefined();
+    const quota = result.ready[0] as unknown as QuotaRelayReadyEntry;
+    expect(result.total_available).toBe(2);
+    expect(result.next_tool).toBe('task_claim_quota_accept');
+    expect(quota).toMatchObject({
+      kind: 'quota_relay_ready',
+      priority: 1,
+      task_id: taskId,
+      old_session_id: 'quota-session',
+      files: [filePath],
+      active_files: [filePath],
+      evidence: `observation ${relayId} relay: RELAY from codex (quota) -> any`,
+      next: 'quota stopped this task',
+      expires_at: t0 + 60_000,
+      has_active_files: true,
+      blocks_downstream: false,
+      quota_observation_id: relayId,
+      quota_observation_kind: 'relay',
+      claim_args: {
+        task_id: taskId,
+        session_id: 'agent-session',
+        agent: 'codex',
+        handoff_observation_id: relayId,
+      },
+    });
+    expect(result.ready[1]).toMatchObject({
+      plan_slug: 'ordinary-after-expired-relay-plan',
+      subtask_index: 0,
+    });
+
+    const accepted = await call<QuotaAcceptResult>(quota.next_tool, quota.claim_args);
+    expect(accepted).toMatchObject({
+      status: 'accepted',
+      accepted_files: [filePath],
+      previous_session_ids: ['quota-session'],
+    });
     expect(store.storage.listClaims(taskId)).toEqual([
       expect.objectContaining({
         file_path: filePath,
-        session_id: 'quota-session',
-        state: 'handoff_pending',
-        handoff_observation_id: relayId,
+        session_id: 'agent-session',
+        state: 'active',
+        handoff_observation_id: null,
       }),
     ]);
   });
 
-  it('does not surface released weak-expired quota relays as accept-ready replacement work', async () => {
+  it('surfaces released weak-expired quota relays when they block downstream plans', async () => {
     const t0 = Date.parse('2026-05-01T12:00:00.000Z');
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(t0);
-    const { taskId, relayId, filePath } = openQuotaRelayTask({
+
+    await call('task_plan_publish', {
+      ...publishArgs(
+        [
+          {
+            title: 'Expired quota blocker',
+            description: 'This expired quota claim blocks later waves.',
+            file_scope: ['apps/api/expired-quota-blocker.ts'],
+            capability_hint: 'api_work',
+          },
+          {
+            title: 'Expired quota follow-up',
+            description: 'Blocked until the expired quota blocker is claimed.',
+            file_scope: ['apps/api/expired-quota-follow-up.ts'],
+            depends_on: [0],
+            capability_hint: 'api_work',
+          },
+        ],
+        { slug: 'expired-quota-blocked-plan', session_id: 'queen', agent: 'queen' },
+      ),
+    });
+    const { claim, handoffId } = await stopSubtaskWithQuotaHandoff({
+      plan_slug: 'expired-quota-blocked-plan',
+      subtask_index: 0,
       expires_in_ms: 60_000,
     });
-    new TaskThread(store, taskId).join('agent-session', 'codex');
+    new TaskThread(store, claim.task_id).join('agent-session', 'codex');
 
     vi.setSystemTime(t0 + 2 * 60_000);
     await call('task_claim_quota_release_expired', {
-      task_id: taskId,
+      task_id: claim.task_id,
       session_id: 'agent-session',
     });
-    expect(store.storage.getClaim(taskId, filePath)).toMatchObject({
+    expect(
+      store.storage.getClaim(claim.task_id, 'apps/api/expired-quota-blocker.ts'),
+    ).toMatchObject({
       session_id: 'quota-session',
       state: 'weak_expired',
-      handoff_observation_id: relayId,
+      handoff_observation_id: handoffId,
     });
 
     await call('task_plan_publish', {
@@ -935,17 +1024,46 @@ describe('task_ready_for_agent', () => {
       limit: 10,
     });
 
-    expect(result.ready).toHaveLength(1);
-    expect(result.total_available).toBe(1);
-    expect(result.ready[0]).toMatchObject({
+    const quota = result.ready[0] as unknown as QuotaRelayReadyEntry;
+    expect(result.total_available).toBe(2);
+    expect(result.next_tool).toBe('task_claim_quota_accept');
+    expect(quota).toMatchObject({
+      kind: 'quota_relay_ready',
+      priority: 1,
+      task_id: claim.task_id,
+      old_session_id: 'quota-session',
+      files: ['apps/api/expired-quota-blocker.ts'],
+      active_files: [],
+      evidence: `observation ${handoffId} handoff: HANDOFF from codex -> any`,
+      next: 'Continue the quota-stopped subtask.',
+      has_active_files: false,
+      blocks_downstream: true,
+      quota_observation_id: handoffId,
+      quota_observation_kind: 'handoff',
+      claim_args: {
+        task_id: claim.task_id,
+        session_id: 'agent-session',
+        agent: 'codex',
+        handoff_observation_id: handoffId,
+      },
+    });
+    expect(result.ready[1]).toMatchObject({
       plan_slug: 'ordinary-after-expired-plan',
       subtask_index: 0,
     });
-    expect(result.next_tool).toBe('task_plan_claim_subtask');
-    expect(store.storage.getClaim(taskId, filePath)).toMatchObject({
-      session_id: 'quota-session',
-      state: 'weak_expired',
-      handoff_observation_id: relayId,
+
+    const accepted = await call<QuotaAcceptResult>(quota.next_tool, quota.claim_args);
+    expect(accepted).toMatchObject({
+      status: 'accepted',
+      accepted_files: ['apps/api/expired-quota-blocker.ts'],
+      previous_session_ids: ['quota-session'],
+    });
+    expect(
+      store.storage.getClaim(claim.task_id, 'apps/api/expired-quota-blocker.ts'),
+    ).toMatchObject({
+      session_id: 'agent-session',
+      state: 'active',
+      handoff_observation_id: null,
     });
   });
 

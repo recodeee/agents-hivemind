@@ -95,11 +95,15 @@ export interface QuotaRelayReady {
   next_action_reason: string;
   codex_mcp_call?: string;
   task_id: number;
+  old_session_id: string;
   old_owner: {
     session_id: string;
     agent: string | null;
   };
   files: string[];
+  active_files: string[];
+  evidence: string;
+  next: string;
   age: {
     milliseconds: number;
     minutes: number;
@@ -107,6 +111,7 @@ export interface QuotaRelayReady {
   repo_root: string;
   branch: string;
   expires_at: number | null;
+  has_active_files: boolean;
   blocks_downstream: boolean;
   quota_observation_id: number;
   quota_observation_kind: 'handoff' | 'relay';
@@ -641,7 +646,7 @@ function rankReadyEntries(
 function readyEntryPriority(entry: QuotaRelayReady | RankedSubtask): number {
   if (isQuotaRelayReady(entry)) {
     if (entry.blocks_downstream) return 0;
-    if (entry.task_active) return 3;
+    if (entry.has_active_files) return 3;
     return 5;
   }
   if (entry.reason === 'urgent_override') return 1;
@@ -652,7 +657,7 @@ function readyEntryPriority(entry: QuotaRelayReady | RankedSubtask): number {
 function compareQuotaRelays(a: QuotaRelayReady, b: QuotaRelayReady): number {
   return (
     Number(b.blocks_downstream) - Number(a.blocks_downstream) ||
-    Number(b.task_active) - Number(a.task_active) ||
+    Number(b.has_active_files) - Number(a.has_active_files) ||
     b.age.milliseconds - a.age.milliseconds ||
     a.repo_root.localeCompare(b.repo_root) ||
     a.branch.localeCompare(b.branch) ||
@@ -855,6 +860,13 @@ function quotaRelayReadyItems(
 
     const files = [...new Set(group.claims.map((claim) => claim.file_path))].sort();
     if (files.length === 0) continue;
+    const activeFiles = [
+      ...new Set(
+        group.claims
+          .filter((claim) => claim.state === 'handoff_pending')
+          .map((claim) => claim.file_path),
+      ),
+    ].sort();
     const planSubtask = subtasksByTaskId.get(group.task.id);
     const blocksDownstream =
       planSubtask !== undefined &&
@@ -872,11 +884,15 @@ function quotaRelayReadyItems(
       next_tool: 'task_claim_quota_accept',
       next_action_reason: quotaRelayClaimReason(group.task, blocksDownstream),
       task_id: group.task.id,
+      old_session_id: group.old_owner_session_id,
       old_owner: {
         session_id: group.old_owner_session_id,
         agent: oldOwnerAgent,
       },
       files,
+      active_files: activeFiles,
+      evidence: quotaRelayEvidence(obs, meta),
+      next: quotaRelayNext(obs, meta),
       age: {
         milliseconds: ageMs,
         minutes: Math.floor(ageMs / 60_000),
@@ -884,6 +900,7 @@ function quotaRelayReadyItems(
       repo_root: group.task.repo_root,
       branch: group.task.branch,
       expires_at: expiresAt,
+      has_active_files: activeFiles.length > 0,
       blocks_downstream: blocksDownstream,
       quota_observation_id: group.quota_observation_id,
       quota_observation_kind: obs.kind,
@@ -905,6 +922,46 @@ function quotaRelayClaimReason(task: TaskRow, blocksDownstream: boolean): string
   return blocksDownstream
     ? `Claim quota-stopped task ${task.id}: old owner stopped on quota and downstream plan work is blocked.`
     : `Claim quota-stopped task ${task.id}: old owner stopped on quota and the task is ready for replacement ownership.`;
+}
+
+function quotaRelayEvidence(obs: ObservationRow, meta: Record<string, unknown>): string {
+  const quotaContext = readRecord(meta.quota_context);
+  const lastVerification = readRecord(quotaContext?.last_verification);
+  const command = readString(lastVerification?.command);
+  const result = readString(lastVerification?.result);
+  if (command !== null || result !== null) {
+    return `last_verification=${command ?? 'unknown'} -> ${result ?? 'unknown'}`;
+  }
+
+  const worktreeRecipe = readRecord(meta.worktree_recipe);
+  const fetchFilesAt = readString(worktreeRecipe?.fetch_files_at);
+  if (fetchFilesAt !== null) return `fetch_files_at=${fetchFilesAt}`;
+
+  const line = firstContentLine(obs.content);
+  return line !== null
+    ? `observation ${obs.id} ${obs.kind}: ${line}`
+    : `observation ${obs.id} ${obs.kind}`;
+}
+
+function quotaRelayNext(obs: ObservationRow, meta: Record<string, unknown>): string {
+  const nextStep = readStringArray(meta.next_steps)[0] ?? null;
+  if (nextStep !== null) return nextStep;
+
+  const quotaContext = readRecord(meta.quota_context);
+  const suggestedNext = readString(quotaContext?.suggested_next_step);
+  if (suggestedNext !== null) return suggestedNext;
+
+  const oneLine = readString(meta.one_line);
+  if (oneLine !== null) return oneLine;
+
+  const resumableState = readRecord(meta.resumable_state);
+  const lastHandoffSummary = readString(resumableState?.last_handoff_summary);
+  if (lastHandoffSummary !== null) return lastHandoffSummary;
+
+  const summary = readString(meta.summary);
+  if (summary !== null) return summary;
+
+  return firstContentLine(obs.content) ?? `Inspect ${obs.kind} #${obs.id}`;
 }
 
 function isQuotaClaimReadyState(claim: TaskClaimRow): boolean {
@@ -936,9 +993,7 @@ function quotaObservationVisible(
 
 function quotaObservationClaimableStatus(meta: Record<string, unknown>): boolean {
   const status = readString(meta.status);
-  if (status !== null && status !== 'pending') return false;
-  const expiresAt = readNumber(meta.expires_at);
-  return expiresAt === null || Date.now() < expiresAt;
+  return status === null || status === 'pending' || status === 'expired';
 }
 
 function latestClaimExpiresAt(claims: TaskClaimRow[]): number | null {
@@ -954,6 +1009,18 @@ function readString(value: unknown): string | null {
 
 function readNumber(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
+}
+
+function firstContentLine(content: string | null): string | null {
+  const line = content
+    ?.split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .find((entry) => entry.length > 0);
+  return line ?? null;
 }
 
 function applyRuntimeRouting(
@@ -1269,7 +1336,7 @@ function countReleasedFiles(meta: Record<string, unknown>, scope: Set<string>): 
 
 function readStringArray(value: unknown): string[] {
   return Array.isArray(value)
-    ? value.filter((entry): entry is string => typeof entry === 'string')
+    ? value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
     : [];
 }
 
