@@ -402,11 +402,13 @@ interface HealthFixPlanStep {
 interface HealthFixPlanPayload {
   generated_at: string;
   mode: 'dry-run' | 'apply';
+  readiness_summary: ReadinessSummaryPayload;
   safety: {
     mutates_claims: boolean;
     installs_hooks: false;
     ran_coordination_sweep: boolean;
     ran_queen_sweep: boolean;
+    release_safe_stale_claims: boolean;
   };
   current: {
     pre_tool_use_missing: number;
@@ -1293,11 +1295,13 @@ export function buildHealthFixPlan(
   return {
     generated_at: payload.generated_at,
     mode: options.apply ? 'apply' : 'dry-run',
+    readiness_summary: payload.readiness_summary,
     safety: {
       mutates_claims: mutatesClaims,
       installs_hooks: false,
       ran_coordination_sweep: options.apply,
       ran_queen_sweep: options.apply,
+      release_safe_stale_claims: options.release_safe_stale_claims === true,
     },
     current: {
       pre_tool_use_missing: preToolUseMissing,
