@@ -8,7 +8,12 @@ import type { TaskClaimRow, TaskRow } from '@colony/storage';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { type ToolContext, defaultWrapHandler } from './context.js';
-import { type ReadySubtaskWithWarnings, buildReadyForAgent } from './ready-queue.js';
+import {
+  type QuotaRelayReady,
+  type ReadyQueueEntry,
+  type ReadySubtaskWithWarnings,
+  buildReadyForAgent,
+} from './ready-queue.js';
 import {
   type HivemindContext,
   type HivemindContextLane,
@@ -209,7 +214,7 @@ function buildBridgeStatus(input: {
   sessionId: string;
   repoRoot: string;
   blockingCount: number;
-  ready: ReadySubtaskWithWarnings[];
+  ready: ReadyQueueEntry[];
   readyCount: number;
 }): BridgeStatus {
   const activeLane = selectActiveLane(input.context.lanes, input.branch);
@@ -290,7 +295,19 @@ function selectActiveLane(
   );
 }
 
-function compactReadyItem(item: ReadySubtaskWithWarnings): BridgeStatus['ready_work_preview'][0] {
+function compactReadyItem(item: ReadyQueueEntry): BridgeStatus['ready_work_preview'][0] {
+  if (isBridgeQuotaReady(item)) {
+    return {
+      title: `Quota relay ${item.branch}`,
+      plan_slug: 'quota_relay_ready',
+      subtask_index: item.task_id,
+      reason: 'ready_high_score',
+      fit_score: item.blocks_downstream ? 1 : 0.9,
+      capability_hint: null,
+      file_count: item.files.length,
+      file_scope_preview: item.files.slice(0, BRIDGE_PREVIEW_LIMIT),
+    };
+  }
   return {
     title: item.title,
     plan_slug: item.plan_slug,
@@ -301,6 +318,10 @@ function compactReadyItem(item: ReadySubtaskWithWarnings): BridgeStatus['ready_w
     file_count: item.file_scope.length,
     file_scope_preview: item.file_scope.slice(0, BRIDGE_PREVIEW_LIMIT),
   };
+}
+
+function isBridgeQuotaReady(item: ReadyQueueEntry): item is QuotaRelayReady {
+  return 'kind' in item && item.kind === 'quota_relay_ready';
 }
 
 function resolveBridgeTask(input: {
@@ -374,7 +395,7 @@ function bridgeBlocker(
 
 function nextBridgeAction(
   context: HivemindContext,
-  ready: ReadySubtaskWithWarnings[],
+  ready: ReadyQueueEntry[],
   activeLane: HivemindContextLane | null,
 ): string {
   if (
@@ -387,6 +408,9 @@ function nextBridgeAction(
     return context.attention.next_action;
   }
   const nextReady = ready[0];
+  if (nextReady && isBridgeQuotaReady(nextReady)) {
+    return `Claim quota-stopped work via task_claim_quota_accept: ${nextReady.branch}`;
+  }
   if (nextReady) {
     return `Claim ready work via task_plan_claim_subtask: ${nextReady.title}`;
   }

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultSettings } from '@colony/config';
 import { MemoryStore, PheromoneSystem, TaskThread } from '@colony/core';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Client } from '@modelcontextprotocol/sdk/client';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildServer } from '../src/server.js';
@@ -73,6 +73,7 @@ describe('MCP server', () => {
       'task_accept_handoff',
       'task_accept_relay',
       'task_claim_file',
+      'task_claim_quota_accept',
       'task_decline_handoff',
       'task_decline_relay',
       'task_foraging_report',
