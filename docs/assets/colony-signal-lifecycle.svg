@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="360" viewBox="0 0 900 360" role="img" aria-labelledby="title desc">
+  <title id="title">Colony signal lifecycle</title>
+  <desc id="desc">A lifecycle diagram showing claims, handoffs, and proposals moving from fresh traces through reinforcement, decay, expiry, sweep, and archive.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#08111c"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0L10 5L0 10Z" fill="#64748b"/>
+    </marker>
+    <style>
+      text{fill:#e5e7eb;font-family:Arial,sans-serif;letter-spacing:0}
+      .panel{fill:#0b0f14;stroke:#253040;stroke-width:1.2}
+      .fresh{fill:#052e2b;stroke:#34d399;stroke-width:1.6}
+      .reinforced{fill:#211538;stroke:#a78bfa;stroke-width:1.5}
+      .weak{fill:#2a1f05;stroke:#f59e0b;stroke-width:1.5}
+      .expired{fill:#2b1118;stroke:#fb7185;stroke-width:1.5}
+      .archive{fill:#111827;stroke:#64748b;stroke-width:1.4}
+      .line{stroke:#64748b;stroke-width:1.5;fill:none;marker-end:url(#arrow)}
+      .dash{stroke:#f59e0b;stroke-width:1.4;fill:none;stroke-dasharray:6 7;marker-end:url(#arrow)}
+      .muted{fill:#94a3b8}
+      .mono{font-family:monospace;letter-spacing:0}
+      .tiny{font-size:12px}
+      .small{font-size:14px}
+    </style>
+  </defs>
+  <rect width="900" height="360" rx="22" fill="url(#bg)"/>
+  <rect x="1" y="1" width="898" height="358" rx="21" fill="none" stroke="#1f2937"/>
+  <text x="34" y="44" font-size="25" font-weight="720">Coordination signals have a lifecycle</text>
+  <text x="34" y="68" font-size="14" class="muted">Useful traces can be reinforced. Stale traces decay so they stop blocking current work.</text>
+
+  <g transform="translate(46 126)">
+    <rect class="fresh" width="146" height="86" rx="16"/>
+    <text x="20" y="32" font-size="15" font-weight="720">Fresh trace</text>
+    <text x="20" y="58" font-size="12" class="muted mono tiny">claim / handoff</text>
+    <text x="20" y="76" font-size="12" class="muted mono tiny">proposal / note</text>
+  </g>
+
+  <g transform="translate(244 126)">
+    <rect class="reinforced" width="146" height="86" rx="16"/>
+    <text x="20" y="32" font-size="15" font-weight="720">Reinforced</text>
+    <text x="20" y="58" font-size="12" class="muted mono tiny">message reply</text>
+    <text x="20" y="76" font-size="12" class="muted mono tiny">proposal support</text>
+  </g>
+
+  <g transform="translate(442 126)">
+    <rect class="weak" width="146" height="86" rx="16"/>
+    <text x="20" y="32" font-size="15" font-weight="720">Weak / stale</text>
+    <text x="20" y="58" font-size="12" class="muted mono tiny">TTL passed</text>
+    <text x="20" y="76" font-size="12" class="muted mono tiny">owner inactive</text>
+  </g>
+
+  <g transform="translate(640 126)">
+    <rect class="expired" width="146" height="86" rx="16"/>
+    <text x="20" y="32" font-size="15" font-weight="720">Expired</text>
+    <text x="20" y="58" font-size="12" class="muted mono tiny">visible to audit</text>
+    <text x="20" y="76" font-size="12" class="muted mono tiny">not active ownership</text>
+  </g>
+
+  <g transform="translate(361 260)">
+    <rect class="archive" width="178" height="56" rx="14"/>
+    <text x="30" y="25" font-size="15" font-weight="720">Sweep / archive</text>
+    <text x="30" y="43" font-size="12" class="muted mono tiny">keep proof, reduce noise</text>
+  </g>
+
+  <path class="line" d="M192 169H235"/>
+  <path class="line" d="M390 169H433"/>
+  <path class="line" d="M588 169H631"/>
+  <path class="line" d="M706 212C690 268 591 288 548 288"/>
+  <path class="line" d="M442 288H399"/>
+  <path class="dash" d="M317 126C330 88 517 88 517 126"/>
+
+  <g transform="translate(83 248)">
+    <rect class="panel" width="210" height="52" rx="12"/>
+    <text x="17" y="22" font-size="12" class="muted mono tiny">attention_inbox surfaces</text>
+    <text x="17" y="40" font-size="12" class="muted mono tiny">what still needs a reply</text>
+  </g>
+
+  <g transform="translate(607 248)">
+    <rect class="panel" width="210" height="52" rx="12"/>
+    <text x="17" y="22" font-size="12" class="muted mono tiny">coordination sweep reports</text>
+    <text x="17" y="40" font-size="12" class="muted mono tiny">safe cleanup candidates</text>
+  </g>
+</svg>

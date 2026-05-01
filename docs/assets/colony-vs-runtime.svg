@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="350" viewBox="0 0 900 350" role="img" aria-labelledby="title desc">
+  <title id="title">Colony versus agent runtimes</title>
+  <desc id="desc">A layered diagram showing agent runtimes executing work, Colony coordinating shared local state, and Queen publishing claimable plans.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07111f"/>
+      <stop offset="1" stop-color="#0d1117"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0 0L10 5L0 10Z" fill="#60a5fa"/>
+    </marker>
+    <style>
+      text{fill:#e5e7eb;font-family:Arial,sans-serif;letter-spacing:0}
+      .panel{fill:#0b0f14;stroke:#253040;stroke-width:1.2}
+      .runtime{fill:#101827;stroke:#60a5fa;stroke-width:1.4}
+      .colony{fill:#052e2b;stroke:#34d399;stroke-width:1.7}
+      .queen{fill:#2a1f05;stroke:#f59e0b;stroke-width:1.4}
+      .store{fill:#211538;stroke:#a78bfa;stroke-width:1.3}
+      .line{stroke:#60a5fa;stroke-width:1.7;fill:none;marker-end:url(#arrow)}
+      .soft{stroke:#334155;stroke-width:1.2;fill:none}
+      .muted{fill:#94a3b8}
+      .mono{font-family:monospace;letter-spacing:0}
+      .tiny{font-size:12px}
+      .small{font-size:14px}
+    </style>
+  </defs>
+  <rect width="900" height="350" rx="22" fill="url(#bg)"/>
+  <rect x="1" y="1" width="898" height="348" rx="21" fill="none" stroke="#1f2937"/>
+  <text x="34" y="44" font-size="25" font-weight="720">Execution stays in the runtime. Coordination lives in Colony.</text>
+  <text x="34" y="68" font-size="14" class="muted">This is why Colony can support multiple IDEs and CLIs without becoming the shell runner.</text>
+
+  <g transform="translate(34 107)">
+    <rect class="runtime" width="238" height="166" rx="16"/>
+    <text x="20" y="32" font-size="17" font-weight="720">Agent runtimes</text>
+    <text x="20" y="62" font-size="12" class="muted mono tiny">Codex / Claude Code</text>
+    <text x="20" y="88" font-size="12" class="muted mono tiny">Cursor / Gemini CLI / OpenCode</text>
+    <text x="20" y="114" font-size="12" class="muted mono tiny">tool calls, edits, tests</text>
+    <text x="20" y="140" font-size="12" class="muted mono tiny">user conversation</text>
+  </g>
+
+  <g transform="translate(332 92)">
+    <rect class="colony" width="238" height="196" rx="20"/>
+    <text x="70" y="37" font-size="24" font-weight="760">Colony</text>
+    <text x="29" y="72" font-size="12" class="muted mono tiny">hivemind_context</text>
+    <text x="29" y="98" font-size="12" class="muted mono tiny">attention_inbox</text>
+    <text x="29" y="124" font-size="12" class="muted mono tiny">task_ready_for_agent</text>
+    <text x="29" y="150" font-size="12" class="muted mono tiny">claims + handoffs + notes</text>
+    <text x="29" y="176" font-size="12" class="muted mono tiny">health + stale cleanup</text>
+  </g>
+
+  <g transform="translate(630 107)">
+    <rect class="queen" width="236" height="74" rx="16"/>
+    <text x="20" y="31" font-size="17" font-weight="720">Queen</text>
+    <text x="20" y="55" font-size="12" class="muted mono tiny">publishes claimable waves</text>
+    <rect class="store" y="92" width="236" height="74" rx="16"/>
+    <text x="20" y="123" font-size="17" font-weight="720">Local state</text>
+    <text x="20" y="147" font-size="12" class="muted mono tiny">SQLite, files, viewer, memory</text>
+  </g>
+
+  <path class="line" d="M272 190H323"/>
+  <path class="line" d="M570 135H621"/>
+  <path class="line" d="M570 231H621"/>
+  <path class="soft" d="M451 288C451 318 189 318 189 276"/>
+  <text x="333" y="323" font-size="12" class="muted mono tiny">feedback returns as context, not shell control</text>
+</svg>
