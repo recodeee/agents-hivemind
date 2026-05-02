@@ -151,6 +151,7 @@ colony coordination sweep --release-safe-stale-claims --json
 colony queen sweep
 colony viewer
 pnpm smoke:codex-omx-pretool
+pnpm smoke:health-repair-loop
 ```
 
 | Command | Use |
@@ -165,6 +166,7 @@ pnpm smoke:codex-omx-pretool
 | `colony queen sweep` | Find plans that are stalled, unclaimed, or ready to archive. |
 | `colony viewer` | Open the local read-only web viewer. |
 | `pnpm smoke:codex-omx-pretool` | Verify the Codex/OMX lifecycle bridge and claim-before-edit telemetry. |
+| `pnpm smoke:health-repair-loop` | Prove bridge, quota cleanup, Queen claim, and health recommendations compose. |
 
 Installed Codex and Claude hooks inject the quota-safe operating contract:
 start with `hivemind_context`, then `attention_inbox`, then
