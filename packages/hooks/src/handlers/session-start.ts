@@ -270,13 +270,18 @@ export function buildTaskPreface(
 
   const pending = thread.pendingHandoffsFor(input.session_id, agent);
   const pendingWakes = thread.pendingWakesFor(input.session_id, agent);
-  const unreadMessages = buildAttentionInbox(store, {
-    session_id: input.session_id,
-    agent,
-    task_ids: [thread.task_id],
-    repo_root: detected.repo_root,
-    include_stalled_lanes: false,
-  }).unread_messages;
+  let unreadMessages: InboxMessage[] = [];
+  try {
+    unreadMessages = buildAttentionInbox(store, {
+      session_id: input.session_id,
+      agent,
+      task_ids: [thread.task_id],
+      repo_root: detected.repo_root,
+      include_stalled_lanes: false,
+    }).unread_messages;
+  } catch {
+    unreadMessages = [];
+  }
   const others = thread.participants().filter((p) => p.session_id !== input.session_id);
 
   const lines: string[] = [];

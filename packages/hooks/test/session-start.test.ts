@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultSettings } from '@colony/config';
-import { type Embedder, MemoryStore } from '@colony/core';
+import { type Embedder, MemoryStore, TaskThread } from '@colony/core';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type SuggestionPrefaceDeps, sessionStart } from '../src/handlers/session-start.js';
 
@@ -63,6 +63,24 @@ function payloadFor(similar_tasks: ReturnType<typeof similarTasks>) {
     },
     insufficient_data_reason: null,
   };
+}
+
+function sectionStartingWith(preface: string, prefix: string): string {
+  const start = preface.indexOf(prefix);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const rest = preface.slice(start);
+  const end = rest.indexOf('\n\n');
+  return end === -1 ? rest : rest.slice(0, end);
+}
+
+function tokenishCount(value: string): number {
+  return Math.ceil(value.length / 4);
+}
+
+function longBody(label: string, index: number): string {
+  return `${label} ${index} compact preview ${'context '.repeat(
+    30,
+  )}FULL_BODY_SENTINEL_${label.toUpperCase()}_${index}`;
 }
 
 function depsFor(similar_tasks: ReturnType<typeof similarTasks>, embedder = new FakeEmbedder()) {
@@ -233,5 +251,58 @@ describe('SessionStart predictive suggestion preface', () => {
     expect(store.storage.taskObservationsByKind(task?.id ?? -1, 'suggestion-debrief')).toHaveLength(
       0,
     );
+  });
+
+  it('keeps the startup attention section compact until learned hints are available', async () => {
+    store.startSession({ id: 'A', ide: 'claude-code', cwd: repo });
+    const thread = TaskThread.open(store, {
+      repo_root: repo,
+      branch: 'agent/codex/sessionstart-suggest',
+      session_id: 'A',
+    });
+    thread.join('A', 'claude');
+
+    const handoffId = thread.handOff({
+      from_session_id: 'A',
+      from_agent: 'claude',
+      to_agent: 'codex',
+      summary: 'handoff summary stays compact',
+      next_steps: [longBody('handoff_next_step', 1)],
+      blockers: [longBody('handoff_blocker', 1)],
+      transferred_files: ['packages/hooks/src/handlers/session-start.ts'],
+    });
+    thread.requestWake({
+      from_session_id: 'A',
+      from_agent: 'claude',
+      to_agent: 'codex',
+      reason: 'wake reason should collapse behind the attention budget',
+      next_step: longBody('wake_next_step', 1),
+    });
+    for (let i = 0; i < 14; i += 1) {
+      thread.postMessage({
+        from_session_id: 'A',
+        from_agent: 'claude',
+        to_agent: 'codex',
+        content: longBody('message_body', i),
+        urgency: i < 10 ? 'needs_reply' : 'fyi',
+      });
+    }
+
+    const preface = await sessionStart(store, { session_id: 'B', ide: 'codex', cwd: repo });
+    const attention = sectionStartingWith(preface, 'Attention (');
+
+    expect(attention.split('\n')).toHaveLength(5);
+    expect(tokenishCount(attention)).toBeLessThanOrEqual(180);
+    expect(attention).toContain(`handoff #${handoffId}`);
+    expect(attention).toContain('Plus ');
+    expect(attention).toContain('collapsed. Run attention_inbox to see all.');
+
+    expect(preface).not.toContain('FULL_BODY_SENTINEL_MESSAGE_BODY_0');
+    expect(preface).not.toContain('FULL_BODY_SENTINEL_MESSAGE_BODY_13');
+    expect(preface).not.toContain('FULL_BODY_SENTINEL_HANDOFF_NEXT_STEP_1');
+    expect(preface).not.toContain('FULL_BODY_SENTINEL_HANDOFF_BLOCKER_1');
+    expect(preface).not.toContain('FULL_BODY_SENTINEL_WAKE_NEXT_STEP_1');
+    expect(preface).not.toContain('PENDING HANDOFF');
+    expect(preface).not.toContain('PENDING WAKE');
   });
 });
