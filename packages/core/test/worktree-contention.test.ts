@@ -36,6 +36,7 @@ describe('readWorktreeContentionReport', () => {
       fileName: 'right.json',
       sessionKey: 'claude-right',
       worktreePath: right,
+      agentName: 'claude',
     });
     writeFileSync(
       join(repoRoot, '.omx', 'state', 'agent-file-locks.json'),
@@ -83,21 +84,55 @@ describe('readWorktreeContentionReport', () => {
       active_session: expect.objectContaining({ session_key: 'codex-left' }),
     });
     expect(report.contentions).toEqual([
-      {
+      expect.objectContaining({
         file_path: 'src/shared.ts',
         worktrees: [
           expect.objectContaining({
             branch: 'agent/claude/right',
             dirty_status: ' M',
             active_session_key: 'claude-right',
+            active_agent: 'claude',
           }),
           expect.objectContaining({
             branch: 'agent/codex/left',
             dirty_status: ' M',
             active_session_key: 'codex-left',
+            active_agent: 'codex',
           }),
         ],
-      },
+        task_message_templates: [
+          expect.objectContaining({
+            tool: 'task_message',
+            urgency: 'needs_reply',
+            auto_send: false,
+            target_branch: 'agent/claude/right',
+            to_agent: 'claude',
+            to_session_id: 'claude-right',
+            file_path: 'src/shared.ts',
+            resolution_options: ['integrate', 'hand_off', 'confirm_discardable'],
+            content: expect.stringContaining('Dirty contention on src/shared.ts.'),
+            suggested_call: expect.stringContaining('mcp__colony__task_message'),
+          }),
+          expect.objectContaining({
+            tool: 'task_message',
+            urgency: 'needs_reply',
+            auto_send: false,
+            target_branch: 'agent/codex/left',
+            to_agent: 'codex',
+            to_session_id: 'codex-left',
+            file_path: 'src/shared.ts',
+            other_touched_by: [
+              expect.objectContaining({
+                branch: 'agent/claude/right',
+                session_id: 'claude-right',
+                agent: 'claude',
+              }),
+            ],
+            content: expect.stringContaining('integrate the other lane changes'),
+            suggested_call: expect.stringContaining('urgency: "needs_reply"'),
+          }),
+        ],
+      }),
     ]);
   });
 
@@ -138,7 +173,13 @@ function addWorktree(
 
 function writeActiveSession(
   repoRoot: string,
-  options: { branch: string; fileName: string; sessionKey: string; worktreePath: string },
+  options: {
+    branch: string;
+    fileName: string;
+    sessionKey: string;
+    worktreePath: string;
+    agentName?: string;
+  },
 ): void {
   const activeSessionDir = join(repoRoot, '.omx', 'state', 'active-sessions');
   mkdirSync(activeSessionDir, { recursive: true });
@@ -150,7 +191,7 @@ function writeActiveSession(
         repoRoot,
         branch: options.branch,
         taskName: 'worktree contention',
-        agentName: 'codex',
+        agentName: options.agentName ?? 'codex',
         cliName: 'codex',
         sessionKey: options.sessionKey,
         worktreePath: options.worktreePath,

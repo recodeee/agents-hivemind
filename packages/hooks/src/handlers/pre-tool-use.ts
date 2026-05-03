@@ -292,8 +292,7 @@ export function claimBeforeEditFromToolUse(
 
     if (
       conflict &&
-      (claim.code === 'CLAIM_HELD_BY_ACTIVE_OWNER' ||
-        claim.code === 'CLAIM_TAKEOVER_RECOMMENDED')
+      (claim.code === 'CLAIM_HELD_BY_ACTIVE_OWNER' || claim.code === 'CLAIM_TAKEOVER_RECOMMENDED')
     ) {
       result.edits_missing_claim.push(file_path);
       recordClaimBeforeEditFailure(store, input.session_id, {

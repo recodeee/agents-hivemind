@@ -139,7 +139,7 @@ describe('queen wave health', () => {
       claimed: 0,
     });
     expect(payload.readiness_summary.queen_plan_readiness).toMatchObject({
-      status: 'good',
+      status: 'bad',
       evidence: expect.stringContaining('1 active plan(s); 3 ready, 0 claimed'),
     });
     expect(payload.queen_wave_health.plans[0]).toMatchObject({
@@ -147,7 +147,23 @@ describe('queen wave health', () => {
       current_wave: 'Wave 1',
       ready_subtasks: 3,
       blocked_subtasks: 4,
+      next_ready_subtask_index: 0,
     });
+    expect(payload.action_hints).toContainEqual(
+      expect.objectContaining({
+        metric: 'Queen ready subtasks unclaimed',
+        current: 'colony-adoption-fixes / Wave 1: 3 ready, 0 claimed',
+        plan_slug: 'colony-adoption-fixes',
+        current_wave: 'Wave 1',
+        action: expect.stringContaining('task_ready_for_agent'),
+        tool_call: expect.stringContaining(
+          'mcp__colony__task_ready_for_agent({ agent: "<agent>", session_id: "<session_id>", repo_root: "<repo_root>" }) -> mcp__colony__task_plan_claim_subtask({ agent: "<agent>", session_id: "<session_id>", plan_slug: "colony-adoption-fixes", subtask_index: 0 })',
+        ),
+        prompt: expect.stringContaining(
+          'Current: plan_slug=colony-adoption-fixes; current_wave=Wave 1',
+        ),
+      }),
+    );
 
     const [plan] = listPlans(store, { repo_root: repoRoot });
     expect(plan?.next_available.map((subtask) => subtask.subtask_index)).toEqual([0, 1, 2]);

@@ -65,11 +65,34 @@ export interface WorktreeContentionParticipant {
   dirty_status: string;
   claimed: boolean;
   active_session_key: string | null;
+  active_agent: string | null;
 }
 
 export interface WorktreeDirtyContention {
   file_path: string;
   worktrees: WorktreeContentionParticipant[];
+  task_message_templates: WorktreeContentionMessageTemplate[];
+}
+
+export interface WorktreeContentionMessageTemplate {
+  tool: 'task_message';
+  urgency: 'needs_reply';
+  auto_send: false;
+  target_branch: string;
+  target_worktree_path: string;
+  to_agent: 'codex' | 'claude' | 'any';
+  to_session_id: string | null;
+  file_path: string;
+  other_touched_by: Array<{
+    branch: string;
+    worktree_path: string;
+    dirty_status: string;
+    session_id: string | null;
+    agent: string | null;
+  }>;
+  resolution_options: ['integrate', 'hand_off', 'confirm_discardable'];
+  content: string;
+  suggested_call: string;
 }
 
 export interface WorktreeContentionReport {
@@ -236,6 +259,7 @@ function detectDirtyContentions(worktrees: ManagedWorktreeInspection[]): Worktre
         dirty_status: dirtyFile.status,
         claimed: claimed.has(dirtyFile.path),
         active_session_key: worktree.active_session?.session_key ?? null,
+        active_agent: worktree.active_session?.agent || inferAgentFromBranch(worktree.branch),
       });
       byPath.set(dirtyFile.path, entries);
     }
@@ -243,11 +267,101 @@ function detectDirtyContentions(worktrees: ManagedWorktreeInspection[]): Worktre
 
   return [...byPath.entries()]
     .filter(([, entries]) => entries.length > 1)
-    .map(([filePath, entries]) => ({
-      file_path: filePath,
-      worktrees: entries.sort(compareContentionParticipants),
-    }))
+    .map(([filePath, entries]) => buildDirtyContention(filePath, entries))
     .sort((left, right) => left.file_path.localeCompare(right.file_path));
+}
+
+function buildDirtyContention(
+  filePath: string,
+  entries: WorktreeContentionParticipant[],
+): WorktreeDirtyContention {
+  const worktrees = entries.sort(compareContentionParticipants);
+  return {
+    file_path: filePath,
+    worktrees,
+    task_message_templates: worktrees.map((target) =>
+      buildContentionMessageTemplate(filePath, target, worktrees),
+    ),
+  };
+}
+
+function buildContentionMessageTemplate(
+  filePath: string,
+  target: WorktreeContentionParticipant,
+  participants: WorktreeContentionParticipant[],
+): WorktreeContentionMessageTemplate {
+  const others = participants.filter((participant) => participant !== target);
+  const otherTouchedBy = others.map((participant) => ({
+    branch: participant.branch,
+    worktree_path: participant.path,
+    dirty_status: participant.dirty_status,
+    session_id: participant.active_session_key,
+    agent: participant.active_agent,
+  }));
+  const otherSummary = otherTouchedBy
+    .map(
+      (participant) =>
+        `${participant.branch}${participant.session_id ? ` session=${participant.session_id}` : ''} status=${participant.dirty_status}`,
+    )
+    .join('; ');
+  const content = [
+    `Dirty contention on ${filePath}.`,
+    `Your lane ${target.branch} has status ${target.dirty_status}.`,
+    `Also touched by: ${otherSummary}.`,
+    'Reply with one resolution: integrate the other lane changes, hand off ownership, or confirm your local edit is discardable.',
+    'Do not overwrite the other lane without coordination.',
+  ].join(' ');
+  const toAgent = messageAgent(target.active_agent, target.branch);
+  const toSession = target.active_session_key;
+  return {
+    tool: 'task_message',
+    urgency: 'needs_reply',
+    auto_send: false,
+    target_branch: target.branch,
+    target_worktree_path: target.path,
+    to_agent: toAgent,
+    to_session_id: toSession,
+    file_path: filePath,
+    other_touched_by: otherTouchedBy,
+    resolution_options: ['integrate', 'hand_off', 'confirm_discardable'],
+    content,
+    suggested_call: taskMessageSuggestedCall({
+      to_agent: toAgent,
+      to_session_id: toSession,
+      content,
+    }),
+  };
+}
+
+function taskMessageSuggestedCall(args: {
+  to_agent: 'codex' | 'claude' | 'any';
+  to_session_id: string | null;
+  content: string;
+}): string {
+  const fields = [
+    'task_id: <task_id>',
+    'session_id: "<session_id>"',
+    'agent: "<agent>"',
+    `to_agent: ${JSON.stringify(args.to_agent)}`,
+    args.to_session_id ? `to_session_id: ${JSON.stringify(args.to_session_id)}` : '',
+    'urgency: "needs_reply"',
+    `content: ${JSON.stringify(args.content)}`,
+  ].filter(Boolean);
+  return `mcp__colony__task_message({ ${fields.join(', ')} })`;
+}
+
+function messageAgent(agent: string | null, branch: string): 'codex' | 'claude' | 'any' {
+  const normalized = `${agent ?? ''} ${branch}`.toLowerCase();
+  if (normalized.includes('codex')) return 'codex';
+  if (normalized.includes('claude')) return 'claude';
+  return 'any';
+}
+
+function inferAgentFromBranch(branch: string): string | null {
+  const normalized = branch.toLowerCase();
+  if (normalized.includes('/codex/')) return 'codex';
+  if (normalized.includes('/claude/')) return 'claude';
+  return null;
 }
 
 function readActiveSessions(repoRoot: string): WorktreeActiveSession[] {
