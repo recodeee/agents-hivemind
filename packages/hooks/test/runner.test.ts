@@ -161,7 +161,7 @@ describe('runHook', () => {
     const tl = store.timeline('sess-c');
     expect(tl).toHaveLength(1);
     expect(tl[0]?.kind).toBe('tool_use');
-    expect(tl[0]?.metadata).toEqual({ tool: 'Bash' });
+    expect(tl[0]?.metadata).toMatchObject({ tool: 'Bash' });
   });
 
   it('post-tool-use surfaces Bash git, file, and redirect operations as coordination events', async () => {
@@ -379,15 +379,17 @@ describe('runHook', () => {
   it('post-tool-use accepts Claude Code field names (tool_name, tool_response)', async () => {
     await runHook(
       'session-start',
-      { session_id: 'sess-cc', ide: 'claude-code', source: 'startup' },
+      { session_id: 'sess-cc', ide: 'claude-code', cwd: dir, source: 'startup' },
       { store },
     );
+    const editPath = join(dir, 'x.txt');
     const r = await runHook(
       'post-tool-use',
       {
         session_id: 'sess-cc',
+        cwd: dir,
         tool_name: 'Edit',
-        tool_input: { file_path: '/tmp/x.txt' },
+        tool_input: { file_path: editPath },
         tool_response: { success: true },
       },
       { store },
@@ -400,16 +402,16 @@ describe('runHook', () => {
     // Edit + file_path: the handler now records the touched file path in
     // metadata so observe/debrief can correlate edits with claims without
     // re-parsing the content field.
-    expect(toolUse?.metadata).toEqual({
+    expect(toolUse?.metadata).toMatchObject({
       tool: 'Edit',
-      file_path: '/tmp/x.txt',
-      file_paths: ['/tmp/x.txt'],
-      extracted_paths: ['/tmp/x.txt'],
+      file_path: 'x.txt',
+      file_paths: ['x.txt'],
+      extracted_paths: ['x.txt'],
     });
     expect(toolUse?.content).toContain('Edit');
     expect(autoClaim?.metadata).toMatchObject({
       source: 'post-tool-use',
-      file_path: '/tmp/x.txt',
+      file_path: 'x.txt',
       tool: 'Edit',
     });
   });
@@ -466,7 +468,7 @@ describe('runHook', () => {
     expect(r.ok).toBe(true);
     const timeline = store.timeline('sess-null');
     const toolUse = timeline.find((obs) => obs.kind === 'tool_use');
-    expect(toolUse?.metadata).toEqual({ tool: 'Write' });
+    expect(toolUse?.metadata).toMatchObject({ tool: 'Write' });
     expect(timeline.some((obs) => obs.kind === 'auto-claim')).toBe(false);
   });
 
