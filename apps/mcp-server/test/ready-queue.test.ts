@@ -122,7 +122,7 @@ async function claimAndComplete(planSlug: string, subtaskIndex: number): Promise
 interface ReadyResult {
   ready: ReadyEntry[];
   total_available: number;
-  mcp_capability_map: { summary: string[]; unknown_servers: string[] };
+  mcp_capability_map?: { summary: string[]; unknown_servers: string[] };
   ready_scope_overlap_warnings: Array<{
     code: 'ready_scope_overlap';
     severity: 'warning';
@@ -421,12 +421,27 @@ describe('task_ready_for_agent', () => {
 
     expect(result.ready).toEqual([]);
     expect(result.total_available).toBe(0);
-    expect(result.mcp_capability_map.summary).toEqual(expect.any(Array));
+    expect(result).not.toHaveProperty('mcp_capability_map');
+    expect(JSON.stringify(result).length).toBeLessThan(500);
     expect(result.empty_state).toBe(EMPTY_READY_STATE);
     expect(result.next_tool).toBeUndefined();
     expect(result.next_action).toBe(
       'Publish a Queen/task plan or promote a proposal into claimable work.',
     );
+  });
+
+  it('returns the MCP capability map only when explicitly requested', async () => {
+    const result = await call<ReadyResult>('task_ready_for_agent', {
+      session_id: 'agent-session',
+      agent: 'codex',
+      repo_root: repoRoot,
+      include_capability_map: true,
+    });
+
+    expect(result.ready).toEqual([]);
+    expect(result.total_available).toBe(0);
+    expect(result.mcp_capability_map?.summary).toEqual(expect.any(Array));
+    expect(result.mcp_capability_map?.summary.length).toBeGreaterThan(0);
   });
 
   it('returns exact claim args for a ready sub-task', async () => {
