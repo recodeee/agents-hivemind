@@ -481,6 +481,7 @@ async function expectReadyOnly(planSlug: string, indexes: number[]): Promise<voi
     session_id: 'ready-session',
     agent: 'codex',
     limit: 20,
+    auto_claim: false,
   });
   const readyForPlan = queue.ready.filter((item) => item.plan_slug === planSlug);
   expect(sortedIndexes(readyForPlan)).toEqual(indexes);
