@@ -749,6 +749,38 @@ describe('claimBeforeEditFromToolUse', () => {
     });
   });
 
+  it('materializes a task on the detected branch when no task exists for the session yet', () => {
+    const repo = join(dir, 'fresh-repo');
+    fakeGitCheckout(repo, 'agent/codex/ui-extra-check');
+    store.startSession({ id: 'codex@fresh', ide: 'codex', cwd: repo });
+
+    const result = claimBeforeEditFromToolUse(store, {
+      session_id: 'codex@fresh',
+      ide: 'codex',
+      cwd: repo,
+      tool_name: 'Edit',
+      tool_input: { file_path: 'src/types.ts' },
+    });
+
+    expect(result).toMatchObject({
+      edits_with_claim: [],
+      edits_missing_claim: [],
+      auto_claimed_before_edit: ['src/types.ts'],
+      warnings: [],
+    });
+
+    const task_id = store.storage.findActiveTaskForSession('codex@fresh');
+    expect(task_id).toBeDefined();
+    const task = store.storage.getTask(task_id ?? -1);
+    expect(task?.branch).toBe('agent/codex/ui-extra-check');
+    expect(task?.repo_root).toBe(repo);
+    expect(store.storage.getClaim(task_id ?? -1, 'src/types.ts')?.session_id).toBe('codex@fresh');
+    expect(store.storage.claimBeforeEditStats(0)).toMatchObject({
+      pre_tool_use_signals: 1,
+      auto_claimed_before_edit: 1,
+    });
+  });
+
   it('records already-claimed edits without duplicating the claim', () => {
     const task_id = seedTwoSessionTask();
     const thread = new TaskThread(store, task_id);

@@ -3028,6 +3028,44 @@ describe('colony health payload', () => {
       },
     );
   });
+
+  it('merges PreToolUse signals from a repo-local store so health reflects per-cwd hook writes', () => {
+    const taskClaimCalls = Array.from({ length: 12 }, (_, index) =>
+      call(index + 1, 'codex-merged-session', 'mcp__colony__task_claim_file', NOW - 60_000 + index),
+    );
+    const primary = fakeStorage({
+      calls: taskClaimCalls,
+      claimBeforeEdit: emptyClaimBeforeEditStats(),
+    });
+    const repoStore = fakeStorage({
+      calls: [],
+      claimBeforeEdit: cleanClaimBeforeEditStats(),
+    });
+    const repoStorePath = '/repo/.omx/colony-home/data.db';
+
+    const payload = buildColonyHealthPayload(primary, {
+      since: SINCE,
+      window_hours: 24,
+      now: NOW,
+      codex_sessions_root: NO_CODEX_ROOT,
+      merge_storages: [repoStore],
+      merged_repo_stores: [repoStorePath],
+    });
+
+    expect(payload.colony_mcp_share.source_breakdown).toMatchObject({
+      merged_repo_stores: [repoStorePath],
+    });
+    expect(payload.task_claim_file_before_edits).toMatchObject({
+      edit_tool_calls: 5,
+      edits_with_file_path: 5,
+      edits_claimed_before: 5,
+      pre_tool_use_signals: 5,
+      claim_before_edit_ratio: 1,
+    });
+    expect(payload.task_claim_file_before_edits.root_cause?.kind).not.toBe(
+      'lifecycle_bridge_unavailable',
+    );
+  });
 });
 
 function outputSection(output: string, heading: string): string {

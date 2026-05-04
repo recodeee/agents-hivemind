@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { defaultSettings, loadSettings } from '@colony/config';
 import {
   type CoordinationSweepResult,
@@ -112,6 +113,8 @@ interface SharePayload {
   source_breakdown: {
     colony_observations: number;
     codex_rollouts: number;
+    repo_store_observations?: number;
+    merged_repo_stores?: string[];
   };
 }
 
@@ -554,6 +557,8 @@ type ColonyHealthPayloadWithoutHints = Omit<
   'readiness_summary' | 'action_hints'
 >;
 
+type ClaimBeforeEditStorage = Pick<Storage, 'claimBeforeEditStats' | 'toolCallsSince'>;
+
 export function buildColonyHealthPayload(
   storage: Pick<
     Storage,
@@ -582,11 +587,22 @@ export function buildColonyHealthPayload(
     omx_runtime_summary_stale_ms?: number;
     omx_runtime_summary_global_dir?: string | null;
     omx_runtime_summary_paths?: string[];
+    /**
+     * Read-only storages whose claim-before-edit and tool-call rows are merged
+     * into the metric inputs. Lets `colony health` see PreToolUse signals that
+     * the codex hook recorded against per-repo `.omx/colony-home/data.db`
+     * stores when COLONY_HOME redirects writes off the global DB.
+     */
+    merge_storages?: ClaimBeforeEditStorage[];
+    /** Origin paths of `merge_storages`, surfaced in payload diagnostics. */
+    merged_repo_stores?: string[];
   },
 ): ColonyHealthPayload {
   const now = options.now ?? Date.now();
   const recentWindowHours = options.recent_window_hours ?? DEFAULT_RECENT_WINDOW_HOURS;
   const recentSince = Math.max(options.since, now - recentWindowHours * 3_600_000);
+  const mergeStorages = options.merge_storages ?? [];
+  const mergedRepoStores = options.merged_repo_stores ?? [];
   const colonyCalls = storage.toolCallsSince(options.since);
   // Codex CLI doesn't fire colony's PostToolUse hook, so its MCP traffic never
   // reaches the colony observations table — see the recodee dashboard backend
@@ -601,7 +617,8 @@ export function buildColonyHealthPayload(
     now,
     root: options.codex_sessions_root,
   });
-  const calls: ToolCallRow[] = [...colonyCalls, ...codexCalls].sort(
+  const repoStoreCalls = mergeStorages.flatMap((s) => s.toolCallsSince(options.since));
+  const calls: ToolCallRow[] = [...colonyCalls, ...repoStoreCalls, ...codexCalls].sort(
     (a, b) => a.ts - b.ts || a.id - b.id,
   );
   const tasks = storage.listTasks(2000);
@@ -647,12 +664,16 @@ export function buildColonyHealthPayload(
   const searchCalls = searchCallsPerSession(calls);
   const runtimeClaimBeforeEdit =
     omxRuntimeStats.status === 'available' ? omxRuntimeStats.claim_before_edit : undefined;
+  const baseClaimStats = storage.claimBeforeEditStats(options.since);
+  const baseRecentClaimStats = storage.claimBeforeEditStats(recentSince);
+  const repoClaimStats = mergeStorages.map((s) => s.claimBeforeEditStats(options.since));
+  const repoRecentClaimStats = mergeStorages.map((s) => s.claimBeforeEditStats(recentSince));
   const claimBeforeEditStats = claimBeforeEditStatsWithRuntimeSummary(
-    storage.claimBeforeEditStats(options.since),
+    mergeClaimBeforeEditStats(baseClaimStats, repoClaimStats),
     runtimeClaimBeforeEdit,
   );
   const recentClaimBeforeEditStats = claimBeforeEditStatsWithRuntimeSummary(
-    storage.claimBeforeEditStats(recentSince),
+    mergeClaimBeforeEditStats(baseRecentClaimStats, repoRecentClaimStats),
     runtimeClaimBeforeEdit,
   );
   const taskSelection = taskSelectionPayload(calls);
@@ -688,6 +709,8 @@ export function buildColonyHealthPayload(
       source_breakdown: {
         colony_observations: colonyCalls.length,
         codex_rollouts: codexCalls.length,
+        ...(repoStoreCalls.length > 0 ? { repo_store_observations: repoStoreCalls.length } : {}),
+        ...(mergedRepoStores.length > 0 ? { merged_repo_stores: mergedRepoStores } : {}),
       },
     },
     mcp_capability_map: discoverMcpCapabilities({
@@ -1279,6 +1302,10 @@ export function registerHealthCommand(program: Command): void {
       '--release-safe-stale-claims',
       'with --fix-plan --apply, release only safe stale claims through the coordination sweep',
     )
+    .option(
+      '--merge-repo-store',
+      'merge claim-before-edit signals from <repo_root>/.omx/colony-home/data.db when present (covers per-repo COLONY_HOME redirects)',
+    )
     .action(
       async (opts: {
         hours: string;
@@ -1290,45 +1317,59 @@ export function registerHealthCommand(program: Command): void {
         fixPlan?: boolean;
         apply?: boolean;
         releaseSafeStaleClaims?: boolean;
+        mergeRepoStore?: boolean;
       }) => {
         const hours = parseHours(opts.hours);
         const recentWindowHours = parseHours(opts.recentWindowHours);
         const settings = loadSettings();
         const repoRoot = resolve(opts.repoRoot ?? process.cwd());
+        const repoStorePath =
+          opts.mergeRepoStore === true ? join(repoRoot, '.omx', 'colony-home', 'data.db') : null;
+        const repoStorePathToMerge =
+          repoStorePath !== null && existsSync(repoStorePath) ? repoStorePath : null;
 
         if (opts.fixPlan === true) {
           const { withStore } = await import('../util/store.js');
-          await withStore(settings, (store) => {
-            const payload = buildColonyHealthPayload(store.storage, {
-              since: Date.now() - hours * 3_600_000,
-              window_hours: hours,
-              recent_window_hours: recentWindowHours,
-              claim_stale_minutes: settings.claimStaleMinutes,
-              repo_root: repoRoot,
-            });
-            const coordinationSweep =
-              opts.apply === true
-                ? buildCoordinationSweep(store, {
-                    repo_root: repoRoot,
-                    release_safe_stale_claims: opts.releaseSafeStaleClaims === true,
-                  })
-                : undefined;
-            const queenSweep =
-              opts.apply === true
-                ? sweepQueenPlans(store, {
-                    repo_root: repoRoot,
-                    auto_message: false,
-                  })
-                : undefined;
-            const fixPlan = buildHealthFixPlan(payload, {
-              repo_root: repoRoot,
-              apply: opts.apply === true,
-              release_safe_stale_claims: opts.releaseSafeStaleClaims === true,
-              ...(coordinationSweep !== undefined ? { coordination_sweep: coordinationSweep } : {}),
-              ...(queenSweep !== undefined ? { queen_sweep: queenSweep } : {}),
-            });
-            process.stdout.write(
-              `${opts.json === true ? JSON.stringify(fixPlan, null, 2) : formatHealthFixPlanOutput(fixPlan)}\n`,
+          await withStore(settings, async (store) => {
+            await withMergedRepoStorages(
+              repoStorePathToMerge,
+              async (mergeStorages, mergedRepoStores) => {
+                const payload = buildColonyHealthPayload(store.storage, {
+                  since: Date.now() - hours * 3_600_000,
+                  window_hours: hours,
+                  recent_window_hours: recentWindowHours,
+                  claim_stale_minutes: settings.claimStaleMinutes,
+                  repo_root: repoRoot,
+                  merge_storages: mergeStorages,
+                  merged_repo_stores: mergedRepoStores,
+                });
+                const coordinationSweep =
+                  opts.apply === true
+                    ? buildCoordinationSweep(store, {
+                        repo_root: repoRoot,
+                        release_safe_stale_claims: opts.releaseSafeStaleClaims === true,
+                      })
+                    : undefined;
+                const queenSweep =
+                  opts.apply === true
+                    ? sweepQueenPlans(store, {
+                        repo_root: repoRoot,
+                        auto_message: false,
+                      })
+                    : undefined;
+                const fixPlan = buildHealthFixPlan(payload, {
+                  repo_root: repoRoot,
+                  apply: opts.apply === true,
+                  release_safe_stale_claims: opts.releaseSafeStaleClaims === true,
+                  ...(coordinationSweep !== undefined
+                    ? { coordination_sweep: coordinationSweep }
+                    : {}),
+                  ...(queenSweep !== undefined ? { queen_sweep: queenSweep } : {}),
+                });
+                process.stdout.write(
+                  `${opts.json === true ? JSON.stringify(fixPlan, null, 2) : formatHealthFixPlanOutput(fixPlan)}\n`,
+                );
+              },
             );
           });
           return;
@@ -1337,18 +1378,25 @@ export function registerHealthCommand(program: Command): void {
         const { withStorage } = await import('../util/store.js');
         await withStorage(
           settings,
-          (storage) => {
-            const payload = buildColonyHealthPayload(storage, {
-              since: Date.now() - hours * 3_600_000,
-              window_hours: hours,
-              recent_window_hours: recentWindowHours,
-              claim_stale_minutes: settings.claimStaleMinutes,
-              repo_root: repoRoot,
-            });
-            const formatOptions = opts.json
-              ? { json: true }
-              : { prompts: Boolean(opts.prompts), verbose: Boolean(opts.verbose) };
-            process.stdout.write(`${formatColonyHealthOutput(payload, formatOptions)}\n`);
+          async (storage) => {
+            await withMergedRepoStorages(
+              repoStorePathToMerge,
+              async (mergeStorages, mergedRepoStores) => {
+                const payload = buildColonyHealthPayload(storage, {
+                  since: Date.now() - hours * 3_600_000,
+                  window_hours: hours,
+                  recent_window_hours: recentWindowHours,
+                  claim_stale_minutes: settings.claimStaleMinutes,
+                  repo_root: repoRoot,
+                  merge_storages: mergeStorages,
+                  merged_repo_stores: mergedRepoStores,
+                });
+                const formatOptions = opts.json
+                  ? { json: true }
+                  : { prompts: Boolean(opts.prompts), verbose: Boolean(opts.verbose) };
+                process.stdout.write(`${formatColonyHealthOutput(payload, formatOptions)}\n`);
+              },
+            );
           },
           { readonly: true },
         );
@@ -1652,6 +1700,84 @@ function omxRuntimeSummaryStats(storage: unknown, since: number): OmxRuntimeSumm
   );
 }
 
+function mergeClaimBeforeEditStats(
+  base: ClaimBeforeEditStats,
+  additional: ClaimBeforeEditStats[],
+): ClaimBeforeEditStats {
+  if (additional.length === 0) return base;
+  return additional.reduce<ClaimBeforeEditStats>((acc, next) => {
+    const claimMatchWindowMs = acc.claim_match_window_ms ?? next.claim_match_window_ms;
+    const claimMatchSources = mergeClaimMatchSources(
+      acc.claim_match_sources,
+      next.claim_match_sources,
+    );
+    const claimMissReasons = mergeClaimMissReasons(acc.claim_miss_reasons, next.claim_miss_reasons);
+    const nearestClaimExamples = [
+      ...(acc.nearest_claim_examples ?? []),
+      ...(next.nearest_claim_examples ?? []),
+    ];
+    return {
+      edit_tool_calls: acc.edit_tool_calls + next.edit_tool_calls,
+      edits_with_file_path: acc.edits_with_file_path + next.edits_with_file_path,
+      edits_claimed_before: acc.edits_claimed_before + next.edits_claimed_before,
+      auto_claimed_before_edit:
+        (acc.auto_claimed_before_edit ?? 0) + (next.auto_claimed_before_edit ?? 0),
+      session_binding_missing:
+        (acc.session_binding_missing ?? 0) + (next.session_binding_missing ?? 0),
+      pre_tool_use_signals: (acc.pre_tool_use_signals ?? 0) + (next.pre_tool_use_signals ?? 0),
+      ...(claimMatchWindowMs !== undefined ? { claim_match_window_ms: claimMatchWindowMs } : {}),
+      ...(claimMatchSources !== undefined ? { claim_match_sources: claimMatchSources } : {}),
+      ...(claimMissReasons !== undefined ? { claim_miss_reasons: claimMissReasons } : {}),
+      ...(nearestClaimExamples.length > 0 ? { nearest_claim_examples: nearestClaimExamples } : {}),
+    };
+  }, base);
+}
+
+function mergeClaimMatchSources(
+  a: Partial<ClaimMatchSources> | undefined,
+  b: Partial<ClaimMatchSources> | undefined,
+): Partial<ClaimMatchSources> | undefined {
+  if (a === undefined && b === undefined) return undefined;
+  return {
+    exact_session: (a?.exact_session ?? 0) + (b?.exact_session ?? 0),
+    repo_branch: (a?.repo_branch ?? 0) + (b?.repo_branch ?? 0),
+    worktree: (a?.worktree ?? 0) + (b?.worktree ?? 0),
+    agent_lane: (a?.agent_lane ?? 0) + (b?.agent_lane ?? 0),
+  };
+}
+
+function mergeClaimMissReasons(
+  a: Partial<ClaimMissReasons> | undefined,
+  b: Partial<ClaimMissReasons> | undefined,
+): Partial<ClaimMissReasons> | undefined {
+  if (a === undefined && b === undefined) return undefined;
+  return {
+    no_claim_for_file: (a?.no_claim_for_file ?? 0) + (b?.no_claim_for_file ?? 0),
+    claim_after_edit: (a?.claim_after_edit ?? 0) + (b?.claim_after_edit ?? 0),
+    session_id_mismatch: (a?.session_id_mismatch ?? 0) + (b?.session_id_mismatch ?? 0),
+    repo_root_mismatch: (a?.repo_root_mismatch ?? 0) + (b?.repo_root_mismatch ?? 0),
+    branch_mismatch: (a?.branch_mismatch ?? 0) + (b?.branch_mismatch ?? 0),
+    path_mismatch: (a?.path_mismatch ?? 0) + (b?.path_mismatch ?? 0),
+    worktree_path_mismatch: (a?.worktree_path_mismatch ?? 0) + (b?.worktree_path_mismatch ?? 0),
+    pseudo_path_skipped: (a?.pseudo_path_skipped ?? 0) + (b?.pseudo_path_skipped ?? 0),
+    pre_tool_use_missing: (a?.pre_tool_use_missing ?? 0) + (b?.pre_tool_use_missing ?? 0),
+  };
+}
+
+async function withMergedRepoStorages<T>(
+  repoStorePath: string | null,
+  fn: (mergeStorages: ClaimBeforeEditStorage[], mergedRepoStores: string[]) => Promise<T> | T,
+): Promise<T> {
+  if (repoStorePath === null) return fn([], []);
+  const { Storage } = await import('@colony/storage');
+  const storage = new Storage(repoStorePath, { readonly: true });
+  try {
+    return await fn([storage], [repoStorePath]);
+  } finally {
+    storage.close();
+  }
+}
+
 function claimBeforeEditStatsWithRuntimeSummary(
   stats: ClaimBeforeEditStats,
   runtime: OmxRuntimeSummaryHealthStats['claim_before_edit'] | undefined,
@@ -1871,7 +1997,8 @@ function lifecycleBridgeRootCause(input: {
 
   if (
     input.runtime_bridge_status !== 'available' &&
-    input.task_claim_file_calls >= LIFECYCLE_BRIDGE_MISSING_MIN_TASK_CLAIM_FILE_CALLS
+    input.task_claim_file_calls >= LIFECYCLE_BRIDGE_MISSING_MIN_TASK_CLAIM_FILE_CALLS &&
+    isNearZeroPreToolUseSignals(input.pre_tool_use_signals, input.hook_capable_edits)
   ) {
     return {
       kind: 'lifecycle_bridge_unavailable',

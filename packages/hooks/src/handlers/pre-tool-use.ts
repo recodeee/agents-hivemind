@@ -4,6 +4,7 @@ import {
   type ClaimAgeClass,
   type ClaimOwnershipStrength,
   type MemoryStore,
+  TaskThread,
   classifyClaimAge,
   detectRepoBranch,
   isStrongClaimAge,
@@ -183,6 +184,8 @@ export function claimBeforeEditFromToolUse(
     }
     return result;
   }
+
+  ensurePreToolUseTask(store, input, scope);
 
   for (const file_path of files) {
     const protectedConflict = protectedLiveClaimConflict(store, input.session_id, scope, file_path);
@@ -537,6 +540,43 @@ function compareClaimConflicts(left: ClaimConflictInfo, right: ClaimConflictInfo
 
 function isProtectedBranch(branch: string): boolean {
   return PROTECTED_BRANCHES.has(branch);
+}
+
+/**
+ * Materialize a Colony task on the detected (repo_root, branch) when the
+ * session has none. Without this, fresh sessions running in real worktrees
+ * (e.g. codex in `agent/...` branches that share Colony as memory backend)
+ * fail every auto-claim with ACTIVE_TASK_NOT_FOUND and claim-before-edit
+ * telemetry sticks at 0%.
+ *
+ * Restricted to detected real branches on purpose — sessions with no real
+ * checkout keep the existing ACTIVE_TASK_NOT_FOUND warning path so callers
+ * still see actionable guidance instead of silent synthetic-task creation.
+ */
+function ensurePreToolUseTask(
+  store: MemoryStore,
+  input: PreToolUseInput,
+  scope: ReturnType<typeof taskScopeForToolUse>,
+): void {
+  if (!scope.repo_root || !scope.branch) return;
+  try {
+    if (store.storage.findActiveTaskForSession(input.session_id) !== undefined) return;
+    const candidates = activeTaskCandidatesForSession(store, {
+      session_id: input.session_id,
+      ...scope,
+    });
+    if (candidates.length > 0) return;
+    const ide = input.ide ?? scope.agent ?? store.storage.getSession(input.session_id)?.ide;
+    const thread = TaskThread.open(store, {
+      repo_root: scope.repo_root,
+      branch: scope.branch,
+      session_id: input.session_id,
+    });
+    thread.join(input.session_id, ide ?? 'unknown');
+  } catch {
+    // Best-effort. If task materialization fails, the existing
+    // ACTIVE_TASK_NOT_FOUND warning path keeps the failure visible.
+  }
 }
 
 function taskScopeForToolUse(
