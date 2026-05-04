@@ -80,6 +80,7 @@ describe('MCP server', () => {
       'task_claim_quota_release_expired',
       'task_decline_handoff',
       'task_decline_relay',
+      'task_file_history',
       'task_foraging_report',
       'task_hand_off',
       'task_link',

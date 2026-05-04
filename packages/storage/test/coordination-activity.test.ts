@@ -718,3 +718,57 @@ describe('agentCapabilityCompletions', () => {
     ).toBe(0);
   });
 });
+
+describe('fileTroubleHistory', () => {
+  it('returns zeros for files with no observations', () => {
+    const result = storage.fileTroubleHistory({
+      file_paths: ['apps/api/foo.ts', 'apps/api/bar.ts'],
+      since_ts: 0,
+    });
+    expect(result.size).toBe(2);
+    expect(result.get('apps/api/foo.ts')).toEqual({ claims: 0, takeovers: 0, conflicts: 0 });
+    expect(result.get('apps/api/bar.ts')).toEqual({ claims: 0, takeovers: 0, conflicts: 0 });
+  });
+
+  it('counts claim, lane-takeover, and claim-conflict observations per file in window', () => {
+    session('codex@trouble');
+    function record(kind: string, file_path: string, ts: number): void {
+      storage.insertObservation({
+        session_id: 'codex@trouble',
+        kind,
+        content: `${kind} ${file_path}`,
+        compressed: false,
+        intensity: null,
+        ts,
+        metadata: { kind, file_path },
+      });
+    }
+    record('claim', 'apps/api/foo.ts', 100);
+    record('claim', 'apps/api/foo.ts', 200);
+    record('lane-takeover', 'apps/api/foo.ts', 300);
+    record('claim-conflict', 'apps/api/foo.ts', 400);
+    record('claim', 'apps/api/bar.ts', 500);
+    // Outside the window — should not count.
+    record('lane-takeover', 'apps/api/foo.ts', 50);
+
+    const result = storage.fileTroubleHistory({
+      file_paths: ['apps/api/foo.ts', 'apps/api/bar.ts', 'apps/api/missing.ts'],
+      since_ts: 99,
+    });
+    expect(result.get('apps/api/foo.ts')).toEqual({
+      claims: 2,
+      takeovers: 1,
+      conflicts: 1,
+    });
+    expect(result.get('apps/api/bar.ts')).toEqual({ claims: 1, takeovers: 0, conflicts: 0 });
+    expect(result.get('apps/api/missing.ts')).toEqual({
+      claims: 0,
+      takeovers: 0,
+      conflicts: 0,
+    });
+  });
+
+  it('returns an empty map when no file_paths are passed', () => {
+    expect(storage.fileTroubleHistory({ file_paths: [], since_ts: 0 }).size).toBe(0);
+  });
+});

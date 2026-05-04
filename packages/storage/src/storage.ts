@@ -1794,6 +1794,54 @@ export class Storage {
     return row.n;
   }
 
+  /**
+   * Pathfinder v1: per-file trouble signal. Returns counts of `claim`,
+   * `lane-takeover`, and `claim-conflict` observations whose
+   * `metadata.file_path` matches each requested path within the
+   * window. The caller turns this into a `pathfinder_file_history`
+   * negative warning when takeovers + conflicts > 0 — the goal is to
+   * surface "past lanes hit a wall on this file" before a fresh lane
+   * pays the same surprise cost. Pseudo paths like `/dev/null` are
+   * filtered out by the WHERE clause indirectly: callers should never
+   * pass them in. Empty `file_paths` returns an empty map.
+   */
+  fileTroubleHistory(args: {
+    file_paths: string[];
+    since_ts: number;
+  }): Map<string, { claims: number; takeovers: number; conflicts: number }> {
+    const result = new Map<
+      string,
+      { claims: number; takeovers: number; conflicts: number }
+    >();
+    if (args.file_paths.length === 0) return result;
+    const placeholders = args.file_paths.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(
+        `SELECT json_extract(metadata, '$.file_path') AS file_path, kind, COUNT(*) AS n
+         FROM observations
+         WHERE ts > ?
+           AND kind IN ('claim', 'lane-takeover', 'claim-conflict')
+           AND json_extract(metadata, '$.file_path') IN (${placeholders})
+         GROUP BY file_path, kind`,
+      )
+      .all(args.since_ts, ...args.file_paths) as Array<{
+      file_path: string;
+      kind: string;
+      n: number;
+    }>;
+    for (const path of args.file_paths) {
+      result.set(path, { claims: 0, takeovers: 0, conflicts: 0 });
+    }
+    for (const row of rows) {
+      const bucket = result.get(row.file_path);
+      if (!bucket) continue;
+      if (row.kind === 'claim') bucket.claims = row.n;
+      else if (row.kind === 'lane-takeover') bucket.takeovers = row.n;
+      else if (row.kind === 'claim-conflict') bucket.conflicts = row.n;
+    }
+    return result;
+  }
+
   taskObservationsSince(task_id: number, since_ts: number, limit = 50): ObservationRow[] {
     return this.db
       .prepare('SELECT * FROM observations WHERE task_id = ? AND ts > ? ORDER BY ts ASC LIMIT ?')

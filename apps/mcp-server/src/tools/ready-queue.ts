@@ -229,6 +229,53 @@ export function register(server: McpServer, ctx: ToolContext): void {
   const { store } = ctx;
 
   server.tool(
+    'task_file_history',
+    'Pathfinder v1: per-file trouble signal. Returns counts of recent claims, lane-takeovers, and claim-conflicts for the given files in a 14-day window so an agent can ask "did past lanes hit a wall on these files?" before claiming. Empty file_paths returns an empty array.',
+    {
+      file_paths: z.array(z.string().min(1)).max(100),
+      since_ts: z.number().int().nonnegative().optional(),
+    },
+    wrapHandler('task_file_history', async ({ file_paths, since_ts }) => {
+      const window_ms = PATHFINDER_LOOKBACK_MS;
+      const cutoff = since_ts ?? Date.now() - window_ms;
+      const history = store.storage.fileTroubleHistory({
+        file_paths,
+        since_ts: cutoff,
+      });
+      const files: Array<{
+        file_path: string;
+        claims: number;
+        takeovers: number;
+        conflicts: number;
+        trouble: boolean;
+      }> = [];
+      let troubled = 0;
+      for (const file_path of file_paths) {
+        const counts = history.get(file_path) ?? { claims: 0, takeovers: 0, conflicts: 0 };
+        const trouble = counts.takeovers + counts.conflicts > 0;
+        if (trouble) troubled++;
+        files.push({ file_path, ...counts, trouble });
+      }
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              window_ms,
+              since_ts: cutoff,
+              files,
+              summary: {
+                troubled_file_count: troubled,
+                total_file_count: file_paths.length,
+              },
+            }),
+          },
+        ],
+      };
+    }),
+  );
+
+  server.tool(
     'task_ready_for_agent',
     'Find the next task to claim for this agent. Use this when deciding what to work on. Returns exact task_plan_claim_subtask args when work is claimable, or a compact empty_state when no plan sub-tasks can be claimed. Capability map is opt-in via include_capability_map. By default the server also claims the single unambiguous candidate in the same call (auto_claim defaults to true) so the ready→claim loop closes without a follow-up tool call. Pass auto_claim=false to opt out — only do that for browse-only callers; agents picking work should leave auto_claim alone. The auto-claim only fires when next_tool would be task_plan_claim_subtask and assigned_agent matches the caller, so cross-agent picks and ambiguous routings still defer to an explicit claim call.',
     {
@@ -402,11 +449,13 @@ export async function buildReadyForAgent(
             next_action_reason: claimReason(subtaskEntry),
             codex_mcp_call: codexMcpCall(subtaskEntry.claim_args),
           };
+      const pathfinder = pathfinderFileWarnings(store, subtaskEntry);
       return {
         ...subtaskEntry,
         priority,
         ...claimMetadata,
         negative_warnings: await readyNegativeWarnings(store, subtaskEntry),
+        ...(pathfinder.length > 0 ? { pathfinder_file_history: pathfinder } : {}),
       };
     }),
   );
@@ -530,6 +579,50 @@ function claimReason(entry: ReadySubtask): string {
     return `Claim ${entry.plan_slug}/sub-${entry.subtask_index}: blocking task message overrides the current task bias.`;
   }
   return `Claim ${entry.plan_slug}/sub-${entry.subtask_index}: it is unclaimed, dependencies are met, and it is the highest-ranked claimable ready item.`;
+}
+
+/**
+ * Pathfinder v1: per-file trouble history. Empty array when none of
+ * the candidate's files have prior conflict/takeover signal in the
+ * 14-day window. Surfaced on the ready entry as
+ * `pathfinder_file_history` so an agent picking the work knows which
+ * files past lanes lost ownership on before claiming.
+ */
+const PATHFINDER_LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000;
+const PATHFINDER_MAX_WARNINGS = 5;
+
+export interface PathfinderFileWarning {
+  file_path: string;
+  takeovers: number;
+  conflicts: number;
+  claims: number;
+}
+
+function pathfinderFileWarnings(
+  store: MemoryStore,
+  entry: ReadySubtask,
+): PathfinderFileWarning[] {
+  if (entry.file_scope.length === 0) return [];
+  const since_ts = Date.now() - PATHFINDER_LOOKBACK_MS;
+  const history = store.storage.fileTroubleHistory({
+    file_paths: entry.file_scope,
+    since_ts,
+  });
+  const warnings: PathfinderFileWarning[] = [];
+  for (const file_path of entry.file_scope) {
+    const counts = history.get(file_path);
+    if (!counts) continue;
+    const trouble = counts.takeovers + counts.conflicts;
+    if (trouble === 0) continue;
+    warnings.push({
+      file_path,
+      takeovers: counts.takeovers,
+      conflicts: counts.conflicts,
+      claims: counts.claims,
+    });
+    if (warnings.length >= PATHFINDER_MAX_WARNINGS) break;
+  }
+  return warnings;
 }
 
 async function readyNegativeWarnings(
