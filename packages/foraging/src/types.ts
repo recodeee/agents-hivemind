@@ -1,3 +1,5 @@
+import type { ForagingConceptTag } from './concepts.js';
+
 /**
  * Foraging's domain model: an `examples/<name>/` directory is a "food
  * source" an agent can forage from. Scanner discovers food sources,
@@ -31,12 +33,18 @@ export interface FoodSource {
   repo_root: string;
   example_name: string;
   abs_path: string;
+  /** Repo-relative source root when example_name is a compact synthetic source. */
+  source_path?: string;
   manifest_kind: ExampleManifestKind;
   manifest_path: string | null;
   readme_path: string | null;
   entrypoints: string[];
   file_tree: ForagedFileEntry[];
   skipped_files: SkippedForagedFile[];
+  /** Optional compact filetree lines. Normal examples still use the live walk. */
+  filetree_paths?: string[];
+  /** Optional source-level tags persisted with each indexed observation. */
+  concept_tags?: ForagingConceptTag[];
   content_hash: string;
 }
 
@@ -56,18 +64,23 @@ export interface ForagedPattern {
 
 /**
  * Deterministic plan handed to an agent by `examples_integrate_plan`.
- * No LLM in the loop — the plan is derived from the example's manifest
- * diffed against the target repo's manifest. `uncertainty_notes`
- * captures everything the planner couldn't resolve so the agent knows
- * where to apply judgement.
+ * No LLM in the loop. The plan is derived from indexed observations and
+ * manifests. `uncertainty_notes` captures everything the planner couldn't
+ * resolve so the agent knows where to apply judgement.
  */
 export interface IntegrationPlan {
   example_name: string;
-  dependency_delta: {
-    add: Record<string, string>;
-    remove: string[];
-  };
-  files_to_copy: Array<{ from: string; to_suggestion: string; rationale: string }>;
+  dependency_considerations: Array<{
+    package_name: string;
+    version: string;
+    rationale: string;
+  }>;
+  concepts_to_port: Array<{
+    source: string;
+    target_hint: string;
+    concept_tags: ForagingConceptTag[];
+    rationale: string;
+  }>;
   config_steps: string[];
   uncertainty_notes: string[];
 }

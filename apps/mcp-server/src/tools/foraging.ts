@@ -1,4 +1,4 @@
-import { buildIntegrationPlan } from '@colony/foraging';
+import { buildIntegrationPlan, expandForagingConceptQuery } from '@colony/foraging';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { type ToolContext, defaultWrapHandler } from './context.js';
@@ -34,27 +34,31 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'examples_query',
-    'Search example code patterns and reference implementations. Returns compact indexed hits; fetch full bodies with get_observations before copying files.',
+    'Search example code patterns and reference implementations. Returns compact indexed hits; fetch full bodies with get_observations before porting concepts.',
     {
       query: z.string().min(1),
+      repo_root: z.string().optional(),
       example_name: z.string().optional(),
       limit: z.number().int().positive().max(20).optional(),
     },
-    wrapHandler('examples_query', async ({ query, example_name, limit }) => {
+    wrapHandler('examples_query', async ({ query, repo_root, example_name, limit }) => {
       const expandedQuery = expandForagingQuery(query);
       const e = (await resolveEmbedder()) ?? undefined;
       const filter: { kind: string; metadata?: Record<string, string> } = {
         kind: 'foraged-pattern',
       };
-      if (example_name) filter.metadata = { example_name };
+      const metadata: Record<string, string> = {};
+      if (repo_root) metadata.repo_root = repo_root;
+      if (example_name) metadata.example_name = example_name;
+      if (Object.keys(metadata).length > 0) filter.metadata = metadata;
       const hits = await store.search(expandedQuery, limit ?? 10, e, filter);
-      return { content: [{ type: 'text', text: JSON.stringify(hits) }] };
+      return { content: [{ type: 'text', text: JSON.stringify(enrichForagingHits(store, hits)) }] };
     }),
   );
 
   server.tool(
     'examples_integrate_plan',
-    'Plan how to integrate an example project into this repo. Returns dependency deltas, file copy scope, config steps, and target hints.',
+    'Plan how to integrate an example project into this repo. Returns concept port candidates, package considerations, config steps, and target hints.',
     {
       example_name: z.string().min(1),
       repo_root: z.string().min(1),
@@ -72,20 +76,44 @@ export function register(server: McpServer, ctx: ToolContext): void {
 }
 
 export function expandForagingQuery(query: string): string {
-  const q = query.toLowerCase();
-  const extras: string[] = [];
-  if (q.includes('outcome-learning') || q.includes('concept=outcome-learning')) {
-    extras.push('outcome learning verification completion');
+  return expandForagingConceptQuery(query);
+}
+
+function enrichForagingHits(
+  store: ToolContext['store'],
+  hits: Array<{ id: number; score: number; snippet: string }>,
+): Array<{
+  id: number;
+  score: number;
+  snippet: string;
+  example_name?: string;
+  file_path?: string;
+  entry_kind?: string;
+  concept_tags?: string[];
+}> {
+  const rows = store.storage.getObservations(hits.map((h) => h.id));
+  const metadataById = new Map<number, Record<string, unknown>>();
+  for (const row of rows) {
+    if (!row.metadata) continue;
+    try {
+      metadataById.set(row.id, JSON.parse(row.metadata) as Record<string, unknown>);
+    } catch {
+      continue;
+    }
   }
-  if (q.includes('token-budget') || q.includes('concept=token-budget')) {
-    extras.push('token budget compact hydrate collapse');
-  }
-  if (q.includes('pattern-memory') || q.includes('concept=pattern-memory')) {
-    extras.push('pattern memory observation history');
-  }
-  if (q.includes('trigger-routing') || q.includes('concept=trigger-routing')) {
-    extras.push('trigger routing classify route');
-  }
-  if (extras.length === 0) return query;
-  return `${query} ${extras.join(' ')}`;
+  return hits.map((h) => {
+    const md = metadataById.get(h.id);
+    const conceptTags = Array.isArray(md?.concept_tags)
+      ? md.concept_tags.filter((tag): tag is string => typeof tag === 'string')
+      : undefined;
+    return {
+      id: h.id,
+      score: h.score,
+      snippet: h.snippet,
+      ...(typeof md?.example_name === 'string' ? { example_name: md.example_name } : {}),
+      ...(typeof md?.file_path === 'string' ? { file_path: md.file_path } : {}),
+      ...(typeof md?.entry_kind === 'string' ? { entry_kind: md.entry_kind } : {}),
+      ...(conceptTags ? { concept_tags: conceptTags } : {}),
+    };
+  });
 }

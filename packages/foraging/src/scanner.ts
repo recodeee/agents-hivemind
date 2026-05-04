@@ -1,10 +1,17 @@
 import { createHash } from 'node:crypto';
-import { readdirSync, statSync } from 'node:fs';
+import { type Stats, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { MemoryStore } from '@colony/core';
+import type { ForagingConceptTag } from './concepts.js';
 import { type ExtractedShape, extract, readCapped } from './extractor.js';
 import { indexFoodSource } from './indexer.js';
-import { DEFAULT_SCAN_LIMITS, type FoodSource, type ScanLimits, type ScanResult } from './types.js';
+import {
+  DEFAULT_SCAN_LIMITS,
+  type ExampleManifestKind,
+  type FoodSource,
+  type ScanLimits,
+  type ScanResult,
+} from './types.js';
 
 export interface ScanFsOptions {
   repo_root: string;
@@ -13,7 +20,157 @@ export interface ScanFsOptions {
 
 export interface ScanFsResult {
   scanned: FoodSource[];
+  suppressed_examples?: string[];
 }
+
+interface RufloSubSourceSpec {
+  example_name: string;
+  manifest_kind: ExampleManifestKind;
+  manifest_path: string | null;
+  readme_path: string | null;
+  entrypoints: readonly string[];
+  filetree_paths: readonly string[];
+  concept_tags: readonly ForagingConceptTag[];
+}
+
+const RUFLO_EXAMPLE_NAME = 'ruflo';
+const RUFLO_SOURCE_PATH = 'examples/ruflo';
+const RUFLO_SUB_SOURCES: readonly RufloSubSourceSpec[] = [
+  {
+    example_name: 'ruflo-v3-mcp',
+    manifest_kind: 'npm',
+    manifest_path: 'v3/package.json',
+    readme_path: 'v3/README.md',
+    entrypoints: [
+      'v3/mcp/server-entry.ts',
+      'v3/mcp/server.ts',
+      'v3/mcp/tool-registry.ts',
+      'v3/mcp/session-manager.ts',
+      'v3/mcp/connection-pool.ts',
+      'v3/mcp/index.ts',
+    ],
+    filetree_paths: ['v3/', 'v3/mcp/'],
+    concept_tags: ['mcp-bridge', 'tool-catalog'],
+  },
+  {
+    example_name: 'ruflo-plugins',
+    manifest_kind: 'unknown',
+    manifest_path: '.claude-plugin/plugin.json',
+    readme_path: 'plugins/README.md',
+    entrypoints: [
+      '.claude-plugin/marketplace.json',
+      '.claude-plugin/hooks/hooks.json',
+      'plugin/.claude-plugin/plugin.json',
+      'plugin/hooks/hooks.json',
+    ],
+    filetree_paths: ['.claude-plugin/', '.claude-plugin/hooks/', 'plugin/', 'plugins/'],
+    concept_tags: ['plugin-registry', 'tool-catalog'],
+  },
+  {
+    example_name: 'ruflo-hooks',
+    manifest_kind: 'unknown',
+    manifest_path: '.claude-plugin/hooks/hooks.json',
+    readme_path: '.claude/helpers/README.md',
+    entrypoints: [
+      '.claude/helpers/hook-handler.cjs',
+      '.claude/helpers/context-persistence-hook.mjs',
+      '.claude/helpers/guidance-hook.sh',
+      '.claude/helpers/memory.cjs',
+      '.claude/helpers/router.cjs',
+    ],
+    filetree_paths: ['.claude/', '.claude/helpers/', '.claude-plugin/hooks/'],
+    concept_tags: ['sidecar-runtime', 'trigger-routing'],
+  },
+  {
+    example_name: 'ruflo-memory',
+    manifest_kind: 'npm',
+    manifest_path: 'v3/@claude-flow/memory/package.json',
+    readme_path: 'v3/@claude-flow/memory/README.md',
+    entrypoints: [
+      'v3/@claude-flow/memory/src/index.ts',
+      'v3/@claude-flow/memory/src/hybrid-backend.ts',
+      'v3/@claude-flow/memory/src/smart-retrieval.ts',
+      'v3/@claude-flow/memory/src/auto-memory-bridge.ts',
+      '.claude/helpers/memory.cjs',
+      '.claude/helpers/auto-memory-hook.mjs',
+    ],
+    filetree_paths: ['v3/@claude-flow/memory/', 'v3/@claude-flow/memory/src/', '.claude/helpers/'],
+    concept_tags: ['pattern-memory', 'agentdb'],
+  },
+  {
+    example_name: 'ruflo-swarm',
+    manifest_kind: 'npm',
+    manifest_path: 'v3/@claude-flow/swarm/package.json',
+    readme_path: 'v3/@claude-flow/swarm/README.md',
+    entrypoints: [
+      'v3/@claude-flow/swarm/src/index.ts',
+      'v3/@claude-flow/swarm/src/queen-coordinator.ts',
+      'v3/@claude-flow/swarm/src/topology-manager.ts',
+      'v3/@claude-flow/swarm/src/message-bus.ts',
+      'v3/swarm.config.ts',
+      '.claude/helpers/swarm-comms.sh',
+      '.claude/helpers/swarm-hooks.sh',
+    ],
+    filetree_paths: ['v3/@claude-flow/swarm/', 'v3/@claude-flow/swarm/src/', '.claude/helpers/'],
+    concept_tags: ['ready-work-ranking', 'goal-planning'],
+  },
+  {
+    example_name: 'ruflo-federation',
+    manifest_kind: 'npm',
+    manifest_path: 'v3/@claude-flow/plugin-agent-federation/package.json',
+    readme_path: 'v3/@claude-flow/plugin-agent-federation/README.md',
+    entrypoints: [
+      'v3/@claude-flow/plugin-agent-federation/src/index.ts',
+      'v3/@claude-flow/plugin-agent-federation/src/plugin.ts',
+      'v3/@claude-flow/plugin-agent-federation/src/mcp-tools.ts',
+      'v3/@claude-flow/plugin-agent-federation/src/cli-commands.ts',
+      'v3/mcp/tools/federation-tools.ts',
+      'plugins/ruflo-federation/README.md',
+    ],
+    filetree_paths: [
+      'v3/@claude-flow/plugin-agent-federation/',
+      'v3/@claude-flow/plugin-agent-federation/src/',
+      'v3/mcp/tools/',
+      'plugins/ruflo-federation/',
+    ],
+    concept_tags: ['federation', 'mcp-bridge'],
+  },
+  {
+    example_name: 'ruflo-agentdb',
+    manifest_kind: 'npm',
+    manifest_path: 'v3/@claude-flow/memory/package.json',
+    readme_path: 'plugins/ruflo-agentdb/README.md',
+    entrypoints: [
+      'v3/@claude-flow/memory/src/agentdb-adapter.ts',
+      'v3/@claude-flow/memory/src/agentdb-backend.ts',
+      'v3/@claude-flow/memory/examples/agentdb-example.ts',
+      'plugins/ruflo-agentdb/.claude-plugin/plugin.json',
+      'plugins/ruflo-agentdb/commands/agentdb.md',
+    ],
+    filetree_paths: ['v3/@claude-flow/memory/src/', 'plugins/ruflo-agentdb/'],
+    concept_tags: ['agentdb', 'pattern-memory'],
+  },
+  {
+    example_name: 'ruflo-ruvector',
+    manifest_kind: 'npm',
+    manifest_path: 'v3/plugins/ruvector-upstream/package.json',
+    readme_path: 'v3/plugins/ruvector-upstream/README.md',
+    entrypoints: [
+      'v3/plugins/ruvector-upstream/src/index.ts',
+      'v3/plugins/ruvector-upstream/src/registry.ts',
+      'v3/plugins/ruvector-upstream/src/types.ts',
+      'v3/@claude-flow/providers/src/ruvector-provider.ts',
+      'plugins/ruflo-ruvector/.claude-plugin/plugin.json',
+    ],
+    filetree_paths: [
+      'v3/plugins/ruvector-upstream/',
+      'v3/plugins/ruvector-upstream/src/',
+      'v3/@claude-flow/providers/src/',
+      'plugins/ruflo-ruvector/',
+    ],
+    concept_tags: ['ruvector', 'pattern-memory'],
+  },
+];
 
 /**
  * Discover food sources on disk without touching storage. Storage-aware
@@ -37,6 +194,7 @@ export function scanExamplesFs(opts: ScanFsOptions): ScanFsResult {
   names.sort();
 
   const scanned: FoodSource[] = [];
+  const suppressed_examples: string[] = [];
   for (const example_name of names) {
     const abs_path = join(examplesDir, example_name);
     let isDir = false;
@@ -46,6 +204,12 @@ export function scanExamplesFs(opts: ScanFsOptions): ScanFsResult {
       continue;
     }
     if (!isDir) continue;
+
+    if (example_name === RUFLO_EXAMPLE_NAME && isLargeRufloExample(abs_path)) {
+      scanned.push(...buildRufloSubSources(opts.repo_root, abs_path, limits));
+      suppressed_examples.push(example_name);
+      continue;
+    }
 
     const shape = extract(abs_path, limits);
     const content_hash = computeContentHash(abs_path, shape, limits);
@@ -62,7 +226,110 @@ export function scanExamplesFs(opts: ScanFsOptions): ScanFsResult {
       content_hash,
     });
   }
-  return { scanned };
+  return suppressed_examples.length > 0 ? { scanned, suppressed_examples } : { scanned };
+}
+
+function isLargeRufloExample(abs_path: string): boolean {
+  return directoryExists(join(abs_path, 'v3')) && directoryExists(join(abs_path, 'plugins'));
+}
+
+function buildRufloSubSources(
+  repo_root: string,
+  abs_path: string,
+  limits: ScanLimits,
+): FoodSource[] {
+  const out: FoodSource[] = [];
+  for (const spec of RUFLO_SUB_SOURCES) {
+    const manifest_path =
+      spec.manifest_path && fileExists(join(abs_path, spec.manifest_path))
+        ? spec.manifest_path
+        : null;
+    const readme_path =
+      spec.readme_path && fileExists(join(abs_path, spec.readme_path)) ? spec.readme_path : null;
+    const entrypoints = spec.entrypoints.filter((p) => fileExists(join(abs_path, p)));
+    const filetree_paths = compactExistingPaths(abs_path, [
+      ...spec.filetree_paths,
+      ...(manifest_path ? [manifest_path] : []),
+      ...(readme_path ? [readme_path] : []),
+      ...entrypoints,
+    ]);
+    if (!manifest_path && !readme_path && entrypoints.length === 0 && filetree_paths.length === 0) {
+      continue;
+    }
+    out.push({
+      repo_root,
+      example_name: spec.example_name,
+      abs_path,
+      source_path: RUFLO_SOURCE_PATH,
+      manifest_kind: manifest_path ? spec.manifest_kind : 'unknown',
+      manifest_path,
+      readme_path,
+      entrypoints,
+      file_tree: [],
+      skipped_files: [],
+      filetree_paths,
+      concept_tags: Array.from(new Set(spec.concept_tags)).sort(),
+      content_hash: computeRufloContentHash(abs_path, spec.example_name, filetree_paths, limits),
+    });
+  }
+  return out;
+}
+
+function compactExistingPaths(abs_path: string, paths: readonly string[]): string[] {
+  const out = new Set<string>();
+  for (const p of paths) {
+    const abs = join(abs_path, p);
+    try {
+      const st = statSync(abs);
+      out.add(st.isDirectory() ? `${p.replace(/\/$/, '')}/` : p);
+    } catch {
+      continue;
+    }
+  }
+  return Array.from(out).sort();
+}
+
+function computeRufloContentHash(
+  abs_path: string,
+  example_name: string,
+  filetree_paths: readonly string[],
+  limits: ScanLimits,
+): string {
+  const hash = createHash('sha256');
+  hash.update(`ruflo-sub-source:${example_name}\n`);
+  for (const rel of filetree_paths) {
+    const cleanRel = rel.replace(/\/$/, '');
+    const abs = join(abs_path, cleanRel);
+    let st: Stats;
+    try {
+      st = statSync(abs);
+    } catch {
+      continue;
+    }
+    hash.update(`${rel}\t${st.size}\n`);
+    if (st.isFile()) {
+      const text = readCapped(abs, limits.max_file_bytes);
+      if (text !== null) hash.update(text);
+      hash.update('\n');
+    }
+  }
+  return hash.digest('hex');
+}
+
+function fileExists(abs: string): boolean {
+  try {
+    return statSync(abs).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function directoryExists(abs: string): boolean {
+  try {
+    return statSync(abs).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -123,12 +390,17 @@ export interface ScanOptions {
  * next run treats the source as changed and retries cleanly.
  */
 export function scanExamples(opts: ScanOptions): ScanResult {
-  const { scanned } = scanExamplesFs({
+  const { scanned, suppressed_examples } = scanExamplesFs({
     repo_root: opts.repo_root,
     ...(opts.limits !== undefined ? { limits: opts.limits } : {}),
   });
   let skipped_unchanged = 0;
   let indexed_observations = 0;
+
+  for (const example_name of suppressed_examples ?? []) {
+    opts.store.storage.deleteForagedObservations(opts.repo_root, example_name);
+    opts.store.storage.deleteExample(opts.repo_root, example_name);
+  }
 
   for (const food of scanned) {
     const existing = opts.store.storage.getExample(food.repo_root, food.example_name);
