@@ -229,14 +229,14 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'task_ready_for_agent',
-    'Find the next task to claim for this agent. Use this when deciding what to work on. Returns exact task_plan_claim_subtask args when work is claimable, or a compact empty_state when no plan sub-tasks can be claimed. Capability map is opt-in via include_capability_map. Pass auto_claim=true to have the server claim the single unambiguous candidate in the same call (only fires when next_tool would be task_plan_claim_subtask and assigned_agent matches the caller).',
+    'Find the next task to claim for this agent. Use this when deciding what to work on. Returns exact task_plan_claim_subtask args when work is claimable, or a compact empty_state when no plan sub-tasks can be claimed. Capability map is opt-in via include_capability_map. By default the server also claims the single unambiguous candidate in the same call (auto_claim defaults to true) so the ready→claim loop closes without a follow-up tool call. Pass auto_claim=false to opt out — only do that for browse-only callers; agents picking work should leave auto_claim alone. The auto-claim only fires when next_tool would be task_plan_claim_subtask and assigned_agent matches the caller, so cross-agent picks and ambiguous routings still defer to an explicit claim call.',
     {
       session_id: z.string().min(1),
       agent: z.string().min(1),
       repo_root: z.string().min(1).optional(),
       limit: z.number().int().positive().max(20).optional(),
       include_capability_map: z.boolean().optional(),
-      auto_claim: z.boolean().optional(),
+      auto_claim: z.boolean().optional().default(true),
     },
     wrapHandler(
       'task_ready_for_agent',

@@ -489,6 +489,7 @@ describe('task_ready_for_agent', () => {
       session_id: 'agent-session',
       agent: 'codex',
       repo_root: repoRoot,
+      auto_claim: false,
     });
 
     expect(result.ready.map((entry) => entry.subtask_index)).toEqual([0]);
@@ -622,6 +623,7 @@ describe('task_ready_for_agent', () => {
       session_id: 'agent-session',
       agent: 'codex',
       repo_root: repoRoot,
+      auto_claim: false,
     });
 
     expect(result.ready).toHaveLength(1);
@@ -1316,6 +1318,7 @@ describe('task_ready_for_agent', () => {
       agent: 'codex',
       repo_root: repoRoot,
       limit: 10,
+      auto_claim: false,
     });
 
     expect(result.total_available).toBe(3);
@@ -1382,6 +1385,7 @@ describe('task_ready_for_agent', () => {
       agent: 'codex',
       repo_root: repoRoot,
       limit: 10,
+      auto_claim: false,
     });
 
     expect(result.ready.map((entry) => entry.subtask_index).sort((a, b) => a - b)).toEqual([

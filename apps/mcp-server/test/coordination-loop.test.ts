@@ -518,6 +518,7 @@ describe('coordination loop discovery', () => {
       agent: 'codex',
       repo_root: repoRoot,
       limit: 3,
+      auto_claim: false,
     });
     expect(ready.total_available).toBe(1);
     const readyTask = ready.ready[0];
@@ -645,6 +646,7 @@ describe('coordination loop discovery', () => {
       agent: 'codex',
       repo_root: repoRoot,
       limit: 3,
+      auto_claim: false,
     });
     expect(ready.total_available).toBe(1);
     expect(ready.ready[0]).toMatchObject({
