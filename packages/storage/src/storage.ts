@@ -1755,6 +1755,45 @@ export class Storage {
       .all() as AgentProfileRow[];
   }
 
+  /**
+   * Count plan-subtask-claim observations whose status is `completed`,
+   * for a given agent and (optional) capability_hint dimension, since
+   * `since_ts`. Drives the outcome-attributed boost in rankSubtask: an
+   * agent who has actually finished similar work recently is more likely
+   * to finish this one too. Returns 0 when there are no matching rows
+   * (covers brand-new agents and capability dimensions that have not
+   * received any completions yet).
+   */
+  agentCapabilityCompletions(args: {
+    agent: string;
+    capability_hint: string | null;
+    since_ts: number;
+  }): number {
+    if (args.capability_hint === null) {
+      const row = this.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM observations
+             WHERE kind = 'plan-subtask-claim'
+               AND ts > ?
+               AND json_extract(metadata, '$.status') = 'completed'
+               AND json_extract(metadata, '$.agent') = ?`,
+        )
+        .get(args.since_ts, args.agent) as { n: number };
+      return row.n;
+    }
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM observations
+           WHERE kind = 'plan-subtask-claim'
+             AND ts > ?
+             AND json_extract(metadata, '$.status') = 'completed'
+             AND json_extract(metadata, '$.agent') = ?
+             AND json_extract(metadata, '$.capability_hint') = ?`,
+      )
+      .get(args.since_ts, args.agent, args.capability_hint) as { n: number };
+    return row.n;
+  }
+
   taskObservationsSince(task_id: number, since_ts: number, limit = 50): ObservationRow[] {
     return this.db
       .prepare('SELECT * FROM observations WHERE task_id = ? AND ts > ? ORDER BY ts ASC LIMIT ?')

@@ -6,7 +6,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MemoryStore } from '../src/memory-store.js';
 import {
   DEFAULT_CAPABILITIES,
+  OUTCOME_BOOST_CAP,
+  OUTCOME_BOOST_WINDOW_MS,
+  loadOutcomeBoost,
   loadProfile,
+  outcomeBoostScore,
   rankCandidates,
   saveProfile,
   scoreHandoff,
@@ -200,5 +204,68 @@ describe('TaskThread.handOff suggested_candidates integration', () => {
       suggested_candidates?: unknown;
     };
     expect(meta.suggested_candidates).toBeUndefined();
+  });
+});
+
+describe('outcomeBoostScore / loadOutcomeBoost', () => {
+  it('returns 0 boost for zero or negative completion counts', () => {
+    expect(outcomeBoostScore(0)).toBe(0);
+    expect(outcomeBoostScore(-3)).toBe(0);
+    expect(outcomeBoostScore(Number.NaN)).toBe(0);
+  });
+
+  it('produces a monotonic boost capped at OUTCOME_BOOST_CAP', () => {
+    const oneShot = outcomeBoostScore(1);
+    const fewShot = outcomeBoostScore(4);
+    const manyShot = outcomeBoostScore(50);
+    expect(oneShot).toBeGreaterThan(0);
+    expect(fewShot).toBeGreaterThan(oneShot);
+    expect(manyShot).toBeGreaterThan(fewShot);
+    expect(manyShot).toBeLessThanOrEqual(OUTCOME_BOOST_CAP);
+    expect(oneShot).toBeLessThan(OUTCOME_BOOST_CAP);
+  });
+
+  it('scales boost with recent completions for the matching capability', () => {
+    seed('codex-a');
+    const now = Date.now();
+    function recordCompletion(ts: number, capability: string | null): void {
+      store.storage.insertObservation({
+        session_id: 'codex-a',
+        kind: 'plan-subtask-claim',
+        content: `done at ${ts}`,
+        compressed: false,
+        intensity: null,
+        ts,
+        metadata: {
+          status: 'completed',
+          agent: 'codex',
+          capability_hint: capability,
+        },
+      });
+    }
+    recordCompletion(now - 1_000, 'api_work');
+    recordCompletion(now - 2_000, 'api_work');
+    recordCompletion(now - 3_000, 'ui_work');
+    // Outside the window — should not contribute.
+    recordCompletion(now - OUTCOME_BOOST_WINDOW_MS - 60_000, 'api_work');
+
+    const apiBoost = loadOutcomeBoost(store.storage, {
+      agent: 'codex',
+      capability_hint: 'api_work',
+      now,
+    });
+    const uiBoost = loadOutcomeBoost(store.storage, {
+      agent: 'codex',
+      capability_hint: 'ui_work',
+      now,
+    });
+    const docBoost = loadOutcomeBoost(store.storage, {
+      agent: 'codex',
+      capability_hint: 'doc_work',
+      now,
+    });
+    expect(apiBoost).toBeGreaterThan(uiBoost);
+    expect(uiBoost).toBeGreaterThan(0);
+    expect(docBoost).toBe(0);
   });
 });

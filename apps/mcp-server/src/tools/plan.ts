@@ -294,6 +294,7 @@ export function register(server: McpServer, ctx: ToolContext): void {
               agent: located.info.claimed_by_agent ?? 'unknown',
               plan_slug: args.plan_slug,
               subtask_index: args.subtask_index,
+              capability_hint: located.info.capability_hint,
               completed_at: Date.now(),
             },
           });

@@ -135,6 +135,55 @@ export function loadProfile(storage: Storage, agent: string): AgentProfile {
   return { agent, capabilities: caps, updated_at: row.updated_at };
 }
 
+/**
+ * Default lookback for the outcome-attributed boost. 14 days is long
+ * enough to capture multiple completions for active lanes and short
+ * enough that an agent that recently regressed loses the boost quickly.
+ */
+export const OUTCOME_BOOST_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+
+/**
+ * Maximum bonus the outcome boost can add to fit_score. Capped low so
+ * it tilts ties between equally-capable agents toward the one with a
+ * track record but doesn't override the static capability profile —
+ * a fresh agent should still be able to claim work in a new dimension.
+ */
+export const OUTCOME_BOOST_CAP = 0.2;
+
+/**
+ * Convert a recent-completion count into a fit_score boost in [0, 0.2]
+ * with diminishing returns. Zero completions returns zero boost; the
+ * curve hits ~0.05 at one completion, ~0.13 at four, and asymptotes at
+ * the cap regardless of how many completions an agent has banked.
+ * Diminishing returns matters because we want the signal to discriminate
+ * between "no track record" and "some track record"; the gap between
+ * "lots" and "tons" is not load-bearing for routing.
+ */
+export function outcomeBoostScore(completionCount: number): number {
+  if (!Number.isFinite(completionCount) || completionCount <= 0) return 0;
+  return OUTCOME_BOOST_CAP * (1 - Math.exp(-completionCount * 0.2));
+}
+
+/**
+ * Hydrate the rolling outcome boost for an agent on a given capability
+ * dimension. Reads recent `plan-subtask-claim` rows with `status:
+ * completed` and folds them through `outcomeBoostScore`. Returns 0 when
+ * the storage method is unavailable so older databases stay compatible.
+ */
+export function loadOutcomeBoost(
+  storage: Storage,
+  args: { agent: string; capability_hint: string | null; now?: number },
+): number {
+  const now = args.now ?? Date.now();
+  const since_ts = now - OUTCOME_BOOST_WINDOW_MS;
+  const completions = storage.agentCapabilityCompletions({
+    agent: args.agent,
+    capability_hint: args.capability_hint,
+    since_ts,
+  });
+  return outcomeBoostScore(completions);
+}
+
 /** Write a full or partial capability profile for an agent. */
 export function saveProfile(
   storage: Storage,

@@ -9,6 +9,7 @@ import {
   discoverMcpCapabilities,
   listMessagesForAgent,
   listPlans,
+  loadOutcomeBoost,
   loadProfile,
   rankCandidates,
 } from '@colony/core';
@@ -663,8 +664,20 @@ function rankSubtask(
   const scopeConflictPenalty = conflicts.length > 0 ? 1 : 0;
   const recentClaimDensity = recentReleaseDensity(store, args.subtask.file_scope);
   const queenBonus = args.parent_plan_created_by === 'queen' ? 0.1 : 0;
+  // Outcome-attributed boost: agents with recent completions in this
+  // capability dimension get a small fit_score lift. Capped at 0.2 so
+  // it tilts ties toward proven performers without locking new agents
+  // out of work they could do.
+  const outcomeBoost = loadOutcomeBoost(store.storage, {
+    agent: args.agent,
+    capability_hint: args.subtask.capability_hint,
+  });
   const fitScore = clampScore(
-    capabilityMatch - 0.3 * scopeConflictPenalty - 0.1 * recentClaimDensity + queenBonus,
+    capabilityMatch -
+      0.3 * scopeConflictPenalty -
+      0.1 * recentClaimDensity +
+      queenBonus +
+      outcomeBoost,
   );
 
   return {

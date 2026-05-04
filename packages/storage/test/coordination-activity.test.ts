@@ -606,3 +606,115 @@ describe('sessionsEndedWithoutHandoff', () => {
     ]);
   });
 });
+
+describe('agentCapabilityCompletions', () => {
+  it('counts completions by agent with optional capability_hint filter', () => {
+    session('codex@one');
+    session('claude@one');
+    storage.insertObservation({
+      session_id: 'codex@one',
+      kind: 'plan-subtask-claim',
+      content: 'codex done api 1',
+      compressed: false,
+      intensity: null,
+      ts: 100,
+      metadata: {
+        status: 'completed',
+        agent: 'codex',
+        capability_hint: 'api_work',
+        plan_slug: 'p1',
+        subtask_index: 0,
+      },
+    });
+    storage.insertObservation({
+      session_id: 'codex@one',
+      kind: 'plan-subtask-claim',
+      content: 'codex done api 2',
+      compressed: false,
+      intensity: null,
+      ts: 200,
+      metadata: {
+        status: 'completed',
+        agent: 'codex',
+        capability_hint: 'api_work',
+        plan_slug: 'p1',
+        subtask_index: 1,
+      },
+    });
+    storage.insertObservation({
+      session_id: 'codex@one',
+      kind: 'plan-subtask-claim',
+      content: 'codex claimed api',
+      compressed: false,
+      intensity: null,
+      ts: 250,
+      metadata: {
+        status: 'claimed',
+        agent: 'codex',
+        capability_hint: 'api_work',
+      },
+    });
+    storage.insertObservation({
+      session_id: 'codex@one',
+      kind: 'plan-subtask-claim',
+      content: 'codex done ui',
+      compressed: false,
+      intensity: null,
+      ts: 300,
+      metadata: {
+        status: 'completed',
+        agent: 'codex',
+        capability_hint: 'ui_work',
+      },
+    });
+    storage.insertObservation({
+      session_id: 'claude@one',
+      kind: 'plan-subtask-claim',
+      content: 'claude done api',
+      compressed: false,
+      intensity: null,
+      ts: 400,
+      metadata: {
+        status: 'completed',
+        agent: 'claude',
+        capability_hint: 'api_work',
+      },
+    });
+
+    expect(
+      storage.agentCapabilityCompletions({
+        agent: 'codex',
+        capability_hint: 'api_work',
+        since_ts: 0,
+      }),
+    ).toBe(2);
+    expect(
+      storage.agentCapabilityCompletions({
+        agent: 'codex',
+        capability_hint: 'ui_work',
+        since_ts: 0,
+      }),
+    ).toBe(1);
+    expect(
+      storage.agentCapabilityCompletions({
+        agent: 'codex',
+        capability_hint: null,
+        since_ts: 0,
+      }),
+    ).toBe(3);
+    expect(
+      storage.agentCapabilityCompletions({
+        agent: 'codex',
+        capability_hint: 'api_work',
+        since_ts: 150,
+      }),
+    ).toBe(1);
+    expect(
+      storage.agentCapabilityCompletions({
+        agent: 'unknown',
+        capability_hint: 'api_work',
+        since_ts: 0,
+      }),
+    ).toBe(0);
+  });
+});

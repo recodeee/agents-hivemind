@@ -216,7 +216,11 @@ export {
 } from './signal-metadata.js';
 export {
   DEFAULT_CAPABILITIES,
+  OUTCOME_BOOST_CAP,
+  OUTCOME_BOOST_WINDOW_MS,
+  loadOutcomeBoost,
   loadProfile,
+  outcomeBoostScore,
   rankCandidates,
   saveProfile,
   scoreHandoff,
