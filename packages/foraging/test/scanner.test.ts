@@ -160,4 +160,54 @@ describe('scanExamplesFs', () => {
     expect(source?.file_tree.map((f) => f.path)).toContain('package-lock.json');
     expect(source?.skipped_files.some((s) => s.path === 'package-lock.json')).toBe(false);
   });
+
+  it('splits large Ruflo examples into compact sub-sources', () => {
+    write('examples/ruflo/package.json', '{"name":"ruflo"}');
+    write('examples/ruflo/README.md', '# Ruflo');
+    write('examples/ruflo/v3/package.json', '{"name":"ruflo-v3"}');
+    write('examples/ruflo/v3/README.md', '# Ruflo v3');
+    write('examples/ruflo/v3/mcp/server-entry.ts', 'export {}');
+    write('examples/ruflo/v3/mcp/server.ts', 'export {}');
+    write('examples/ruflo/plugins/README.md', '# plugins');
+    write('examples/ruflo/.claude-plugin/plugin.json', '{"name":"ruflo"}');
+    write('examples/ruflo/.claude-plugin/hooks/hooks.json', '{}');
+    write('examples/ruflo/.claude/helpers/README.md', '# hooks');
+    write('examples/ruflo/.claude/helpers/hook-handler.cjs', 'module.exports = {}');
+    write('examples/ruflo/v3/@claude-flow/memory/package.json', '{"name":"memory"}');
+    write('examples/ruflo/v3/@claude-flow/memory/README.md', '# memory');
+    write('examples/ruflo/v3/@claude-flow/memory/src/index.ts', 'export {}');
+    write('examples/ruflo/v3/@claude-flow/swarm/package.json', '{"name":"swarm"}');
+    write('examples/ruflo/v3/@claude-flow/swarm/README.md', '# swarm');
+    write('examples/ruflo/v3/@claude-flow/swarm/src/index.ts', 'export {}');
+    write(
+      'examples/ruflo/v3/@claude-flow/plugin-agent-federation/package.json',
+      '{"name":"federation"}',
+    );
+    write('examples/ruflo/v3/@claude-flow/plugin-agent-federation/README.md', '# federation');
+    write('examples/ruflo/v3/@claude-flow/plugin-agent-federation/src/index.ts', 'export {}');
+    write('examples/ruflo/plugins/ruflo-agentdb/README.md', '# agentdb');
+    write('examples/ruflo/v3/@claude-flow/memory/src/agentdb-adapter.ts', 'export {}');
+    write('examples/ruflo/v3/plugins/ruvector-upstream/package.json', '{"name":"ruvector"}');
+    write('examples/ruflo/v3/plugins/ruvector-upstream/README.md', '# ruvector');
+    write('examples/ruflo/v3/plugins/ruvector-upstream/src/index.ts', 'export {}');
+    write('examples/ruflo/v2/docs/huge.md', 'do not index by default');
+
+    const { scanned, suppressed_examples } = scanExamplesFs({ repo_root: repo });
+    expect(suppressed_examples).toEqual(['ruflo']);
+    expect(scanned.map((s) => s.example_name)).toEqual([
+      'ruflo-v3-mcp',
+      'ruflo-plugins',
+      'ruflo-hooks',
+      'ruflo-memory',
+      'ruflo-swarm',
+      'ruflo-federation',
+      'ruflo-agentdb',
+      'ruflo-ruvector',
+    ]);
+    expect(scanned.find((s) => s.example_name === 'ruflo')).toBeUndefined();
+    const mcp = scanned.find((s) => s.example_name === 'ruflo-v3-mcp');
+    expect(mcp?.entrypoints).toContain('v3/mcp/server-entry.ts');
+    expect(mcp?.filetree_paths).toContain('v3/mcp/');
+    expect(mcp?.filetree_paths?.some((p) => p.includes('v2/docs'))).toBe(false);
+  });
 });

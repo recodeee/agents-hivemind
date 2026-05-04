@@ -112,11 +112,15 @@ describe('indexFoodSource', () => {
     expect(readmeRow).toBeDefined();
   });
 
-  it('adds concept tags for Ruflo-like learning/token patterns', () => {
+  it('adds compact concept tags for Ruflo-like patterns', () => {
     write('examples/ruflo-lite/package.json', '{"name":"ruflo-lite"}');
     write(
       'examples/ruflo-lite/README.md',
-      'Outcome learning with token budget and trigger routing improves pattern memory.',
+      [
+        'Outcome learning with token budget and trigger routing improves pattern memory.',
+        'A sidecar runtime exposes an MCP bridge, plugin registry, and tool catalog.',
+        'Goal planning uses AgentDB, RuVector, federation, and ready-work ranking.',
+      ].join('\n'),
     );
     write('examples/ruflo-lite/src/index.ts', 'export const triggerRouting = true');
 
@@ -136,6 +140,22 @@ describe('indexFoodSource', () => {
     expect(allTags.has('outcome-learning')).toBe(true);
     expect(allTags.has('pattern-memory')).toBe(true);
     expect(allTags.has('trigger-routing')).toBe(true);
+    expect(allTags.has('sidecar-runtime')).toBe(true);
+    expect(allTags.has('mcp-bridge')).toBe(true);
+    expect(allTags.has('plugin-registry')).toBe(true);
+    expect(allTags.has('tool-catalog')).toBe(true);
+    expect(allTags.has('goal-planning')).toBe(true);
+    expect(allTags.has('agentdb')).toBe(true);
+    expect(allTags.has('ruvector')).toBe(true);
+    expect(allTags.has('federation')).toBe(true);
+    expect(allTags.has('ready-work-ranking')).toBe(true);
+
+    const readme = rows.find((r) => {
+      const md = r.metadata ? (JSON.parse(r.metadata) as { entry_kind?: string }) : null;
+      return md?.entry_kind === 'readme';
+    });
+    expect(readme?.content).toContain('concept=pattern-memory');
+    expect(readme?.content).toContain('concept=mcp-bridge');
 
     const filetree = rows.find((r) => {
       const md = r.metadata
@@ -194,6 +214,39 @@ describe('indexFoodSource', () => {
         }),
       ]),
     );
+  });
+
+  it('uses compact Ruflo filetrees and source-level concept tags', () => {
+    write('examples/ruflo/v3/package.json', '{"name":"ruflo-v3"}');
+    write('examples/ruflo/v3/README.md', '# Ruflo v3 MCP');
+    write('examples/ruflo/v3/mcp/server-entry.ts', 'export const mcp = true');
+    write('examples/ruflo/v3/mcp/server.ts', 'export const server = true');
+    write('examples/ruflo/plugins/README.md', '# plugins');
+    write('examples/ruflo/v2/docs/huge.md', 'do not index by default');
+
+    const { scanned } = scanExamplesFs({ repo_root: repo });
+    const mcp = scanned.find((s) => s.example_name === 'ruflo-v3-mcp');
+    if (!mcp) throw new Error('fixture missing');
+    indexFoodSource(mcp, store, { session_id: 'session-forage' });
+
+    const rows = store.storage.listForagedObservations(repo, 'ruflo-v3-mcp');
+    const filetree = rows.find((r) => {
+      const md = r.metadata ? (JSON.parse(r.metadata) as { entry_kind?: string }) : null;
+      return md?.entry_kind === 'filetree';
+    });
+    expect(filetree).toBeDefined();
+    const expanded = filetree ? store.getObservations([filetree.id], { expand: true })[0] : null;
+    expect(expanded?.content).toContain('v3/mcp/server-entry.ts');
+    expect(expanded?.content).not.toContain('v2/docs/huge.md');
+
+    const allTags = new Set(
+      rows.flatMap((r) => {
+        const md = r.metadata ? (JSON.parse(r.metadata) as { concept_tags?: string[] }) : null;
+        return md?.concept_tags ?? [];
+      }),
+    );
+    expect(allTags.has('mcp-bridge')).toBe(true);
+    expect(allTags.has('tool-catalog')).toBe(true);
   });
 });
 

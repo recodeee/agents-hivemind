@@ -1,7 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Storage } from '@colony/storage';
-import type { IntegrationPlan } from './types.js';
+import { FORAGING_CONCEPT_RULES, type ForagingConceptTag } from './concepts.js';
+import type { ForagedPattern, IntegrationPlan } from './types.js';
 
 export interface BuildIntegrationPlanOptions {
   repo_root: string;
@@ -13,11 +14,10 @@ export interface BuildIntegrationPlanOptions {
 
 /**
  * Produce a deterministic plan an agent can reason about:
- * - dependency_delta: what the example depends on but the target doesn't,
- *   and anything the target has but the example doesn't list (the `remove`
- *   list is informational, never a recommendation to delete).
- * - files_to_copy: for each indexed filetree-listed entrypoint / manifest,
- *   a suggested destination under the target repo.
+ * - dependency_considerations: packages mentioned by the example that may
+ *   support a concept, never an instruction to change the target manifest.
+ * - concepts_to_port: indexed example patterns that carry behavior ideas,
+ *   with source paths used only as references.
  * - config_steps: side-effects the example expects (build scripts, env
  *   variables called out in the manifest) that an integrator must wire up.
  * - uncertainty_notes: every ambiguity the planner couldn't resolve — the
@@ -50,12 +50,9 @@ export function buildIntegrationPlan(
     const md = r.metadata ? safeJson(r.metadata) : null;
     return md && (md as { entry_kind?: string }).entry_kind === 'filetree';
   });
-  const entrypointMetas = observations
-    .map((r) => {
-      const md = r.metadata ? safeJson(r.metadata) : null;
-      return md as { entry_kind?: string; file_path?: string } | null;
-    })
-    .filter((m): m is { entry_kind: string; file_path: string } => m?.entry_kind === 'entrypoint');
+  const patternMetas = observations
+    .map((r) => patternMetaFromJson(r.metadata ? safeJson(r.metadata) : null))
+    .filter((m): m is PatternMeta => m !== null);
 
   // Re-read the example's manifest from disk rather than parsing the
   // compressed observation — the compressor preserves technical tokens
@@ -66,35 +63,35 @@ export function buildIntegrationPlan(
     opts.example_name,
     example.manifest_kind,
   );
-  const dependency_delta = buildDependencyDelta(
+  const dependency_considerations = buildDependencyConsiderations(
     example.manifest_kind,
     exampleManifestPath,
     resolveTargetManifestPath(opts.repo_root, opts.target_hint),
     uncertainty_notes,
   );
 
-  const files_to_copy = entrypointMetas.map((m) => ({
-    from: `examples/${opts.example_name}/${m.file_path}`,
-    to_suggestion: suggestTargetPath(m.file_path),
-    rationale:
-      'Port concept from this entrypoint into target code; keep directory shape only when it supports the integration.',
+  const concepts_to_port = patternMetas.map((m) => ({
+    source: `${sourcePathForExample(opts.example_name)}/${m.file_path}`,
+    target_hint: suggestTargetPath(m.file_path),
+    concept_tags: m.concept_tags,
+    rationale: 'Port concept from this indexed pattern; keep only behavior that fits target boundaries.',
   }));
 
   const config_steps = extractConfigSteps(example.manifest_kind, exampleManifestPath);
 
   if (!manifestObs) {
-    uncertainty_notes.push('Manifest observation missing — dependency_delta may be incomplete.');
+    uncertainty_notes.push('Manifest observation missing — dependency considerations may be incomplete.');
   }
   if (!filetreeObs) {
     uncertainty_notes.push(
-      'Filetree observation missing — files_to_copy may not reflect full shape.',
+      'Filetree observation missing — concept port list may not reflect full shape.',
     );
   }
 
   return {
     example_name: opts.example_name,
-    dependency_delta,
-    files_to_copy,
+    dependency_considerations,
+    concepts_to_port,
     config_steps,
     uncertainty_notes,
   };
@@ -103,54 +100,59 @@ export function buildIntegrationPlan(
 function emptyPlan(example_name: string, uncertainty_notes: string[]): IntegrationPlan {
   return {
     example_name,
-    dependency_delta: { add: {}, remove: [] },
-    files_to_copy: [],
+    dependency_considerations: [],
+    concepts_to_port: [],
     config_steps: [],
     uncertainty_notes,
   };
 }
 
 /**
- * For npm manifests we can read both package.jsons and return a true diff.
- * Other kinds produce an empty `add` and an uncertainty note; cross-language
- * dep diffing is too ecosystem-specific to guess at.
+ * For npm manifests we can read both package.jsons and surface review-only
+ * package signals. Other kinds produce no package notes; cross-language
+ * dependency reasoning is too ecosystem-specific to guess at.
  */
-function buildDependencyDelta(
+function buildDependencyConsiderations(
   kind: string | null,
   exampleManifestPath: string | null,
   targetManifestPath: string,
   notes: string[],
-): { add: Record<string, string>; remove: string[] } {
+): IntegrationPlan['dependency_considerations'] {
   if (kind !== 'npm') {
     if (kind && kind !== 'unknown') {
       notes.push(
-        `dependency_delta is only computed for npm examples today; '${kind}' left for the agent.`,
+        `Package considerations are only computed for npm examples today; '${kind}' left for the agent.`,
       );
     }
-    return { add: {}, remove: [] };
+    return [];
   }
 
   const exampleDeps = exampleManifestPath ? parseNpmDepsFromFile(exampleManifestPath) : null;
   if (!exampleDeps) {
-    notes.push('Example manifest could not be read or parsed as JSON; dependency_delta empty.');
-    return { add: {}, remove: [] };
+    notes.push('Example manifest could not be read or parsed as JSON; package considerations empty.');
+    return [];
   }
 
   const targetDeps = parseNpmDepsFromFile(targetManifestPath);
   if (targetDeps === null) {
     notes.push(
-      `Target manifest not found at ${targetManifestPath}; reporting all example deps as 'add'.`,
+      `Target manifest not found at ${targetManifestPath}; package considerations include example packages for review.`,
     );
   }
   const targetMap = targetDeps ?? {};
 
-  const add: Record<string, string> = {};
+  const out: IntegrationPlan['dependency_considerations'] = [];
   for (const [name, version] of Object.entries(exampleDeps)) {
-    if (!(name in targetMap)) add[name] = version;
+    if (name in targetMap) continue;
+    out.push({
+      package_name: name,
+      version,
+      rationale:
+        'Package appears in the source example; port concept first, then decide whether the target needs an equivalent runtime package.',
+    });
   }
-  const remove: string[] = Object.keys(targetMap).filter((n) => !(n in exampleDeps));
 
-  return { add, remove };
+  return out;
 }
 
 function parseNpmDepsFromFile(path: string): Record<string, string> | null {
@@ -176,6 +178,9 @@ function resolveExampleManifestPath(
   example_name: string,
   kind: string | null,
 ): string | null {
+  const rufloManifest = RUFLO_MANIFEST_PATHS[example_name];
+  if (rufloManifest) return join(repo_root, 'examples', 'ruflo', rufloManifest);
+
   const baseDir = join(repo_root, 'examples', example_name);
   switch (kind) {
     case 'npm':
@@ -189,6 +194,19 @@ function resolveExampleManifestPath(
     default:
       return null;
   }
+}
+
+const RUFLO_MANIFEST_PATHS: Record<string, string> = {
+  'ruflo-v3-mcp': 'v3/package.json',
+  'ruflo-memory': 'v3/@claude-flow/memory/package.json',
+  'ruflo-swarm': 'v3/@claude-flow/swarm/package.json',
+  'ruflo-federation': 'v3/@claude-flow/plugin-agent-federation/package.json',
+  'ruflo-agentdb': 'v3/@claude-flow/memory/package.json',
+  'ruflo-ruvector': 'v3/plugins/ruvector-upstream/package.json',
+};
+
+function sourcePathForExample(example_name: string): string {
+  return example_name.startsWith('ruflo-') ? 'examples/ruflo' : `examples/${example_name}`;
 }
 
 /**
@@ -226,6 +244,42 @@ function resolveTargetManifestPath(repo_root: string, hint?: string): string {
   // Allow both absolute and repo-relative hints. Keep it simple: if it
   // looks absolute, use it as-is; otherwise join onto repo_root.
   return hint.startsWith('/') ? hint : join(repo_root, hint);
+}
+
+type PatternMeta = {
+  entry_kind: Extract<ForagedPattern['entry_kind'], 'manifest' | 'readme' | 'entrypoint'>;
+  file_path: string;
+  concept_tags: ForagingConceptTag[];
+};
+
+const KNOWN_CONCEPT_TAGS = new Set<string>(FORAGING_CONCEPT_RULES.map((rule) => rule.tag));
+
+function patternMetaFromJson(md: unknown): PatternMeta | null {
+  if (!md || typeof md !== 'object') return null;
+  const raw = md as { entry_kind?: unknown; file_path?: unknown; concept_tags?: unknown };
+  if (
+    raw.entry_kind !== 'manifest' &&
+    raw.entry_kind !== 'readme' &&
+    raw.entry_kind !== 'entrypoint'
+  ) {
+    return null;
+  }
+  if (typeof raw.file_path !== 'string') return null;
+  return {
+    entry_kind: raw.entry_kind,
+    file_path: raw.file_path,
+    concept_tags: normalizeConceptTags(raw.concept_tags),
+  };
+}
+
+function normalizeConceptTags(value: unknown): ForagingConceptTag[] {
+  if (!Array.isArray(value)) return [];
+  const tags: ForagingConceptTag[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string' || !KNOWN_CONCEPT_TAGS.has(item)) continue;
+    tags.push(item as ForagingConceptTag);
+  }
+  return [...new Set(tags)];
 }
 
 function safeJson(s: string): unknown {

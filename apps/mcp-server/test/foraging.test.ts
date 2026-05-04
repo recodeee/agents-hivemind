@@ -78,10 +78,15 @@ describe('MCP foraging tools', () => {
       content: 'A random mention of stripe that should not match a foraged query.',
     });
 
-    const hits = await callJson<Array<{ id: number; snippet: string }>>('examples_query', {
+    const hits = await callJson<
+      Array<{ id: number; snippet: string; example_name?: string; file_path?: string }>
+    >('examples_query', {
       query: 'stripe',
+      repo_root: repoRoot,
     });
     expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0]?.example_name).toBe('stripe');
+    expect(hits[0]?.file_path).toBe('package.json');
 
     // Every hit id must be a foraged-pattern row.
     for (const h of hits) {
@@ -111,7 +116,9 @@ describe('MCP foraging tools', () => {
   it('expands concept aliases for Ruflo-style discovery queries', async () => {
     const expanded = expandForagingQuery('concept=token-budget');
     expect(expanded).toContain('token budget');
-    expect(expanded).toContain('hydrate');
+
+    const bridge = expandForagingQuery('ruflo mcp bridge');
+    expect(bridge).toContain('mcp bridge');
   });
 
   it('examples_integrate_plan returns a deterministic plan', async () => {
@@ -128,13 +135,15 @@ describe('MCP foraging tools', () => {
 
     const plan = await callJson<{
       example_name: string;
-      dependency_delta: { add: Record<string, string>; remove: string[] };
+      dependency_considerations: Array<{ package_name: string; version: string }>;
       config_steps: string[];
     }>('examples_integrate_plan', { repo_root: repoRoot, example_name: 'stripe' });
 
     expect(plan.example_name).toBe('stripe');
-    expect(plan.dependency_delta.add.stripe).toBe('^14.0.0');
-    expect(plan.dependency_delta.add.zod).toBeUndefined();
+    expect(plan.dependency_considerations).toEqual([
+      expect.objectContaining({ package_name: 'stripe', version: '^14.0.0' }),
+    ]);
+    expect(plan.dependency_considerations.some((d) => d.package_name === 'zod')).toBe(false);
     expect(plan.config_steps).toContain('npm run build');
   });
 });

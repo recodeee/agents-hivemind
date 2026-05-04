@@ -1,5 +1,6 @@
 import { dirname, join } from 'node:path';
 import type { MemoryStore } from '@colony/core';
+import { detectForagingConceptTags, type ForagingConceptTag } from './concepts.js';
 import { readCapped } from './extractor.js';
 import { redact } from './redact.js';
 import {
@@ -36,43 +37,49 @@ export function indexFoodSource(
 
   let written = 0;
   for (const p of patterns) {
-    const concept_tags = detectConceptTags(food, p);
+    const concept_tags = conceptTagsForPattern(food, p);
     const safe = redact(p.content, opts.extra_secret_env_names ?? []);
     if (!safe.trim()) continue;
+    const content = prefixConceptTags(safe, concept_tags);
+    const metadata: Record<string, unknown> = {
+      repo_root: food.repo_root,
+      example_name: food.example_name,
+      manifest_kind: food.manifest_kind,
+      file_path: p.file_path,
+      entry_kind: p.entry_kind,
+      concept_tags,
+    };
+    if (food.source_path) metadata.source_path = food.source_path;
+    if (p.skipped_due_to !== undefined) metadata.skipped_due_to = p.skipped_due_to;
+    if (p.size !== undefined) metadata.file_size = p.size;
     const id = store.addObservation({
       session_id: opts.session_id,
       kind: 'foraged-pattern',
-      content: safe,
-      metadata: {
-        repo_root: food.repo_root,
-        example_name: food.example_name,
-        manifest_kind: food.manifest_kind,
-        file_path: p.file_path,
-        entry_kind: p.entry_kind,
-        ...(p.skipped_due_to !== undefined ? { skipped_due_to: p.skipped_due_to } : {}),
-        ...(p.size !== undefined ? { file_size: p.size } : {}),
-        concept_tags,
-      },
+      content,
+      metadata,
     });
     if (id > 0) written += 1;
   }
   return written;
 }
 
-function detectConceptTags(food: FoodSource, pattern: ForagedPattern): string[] {
+function conceptTagsForPattern(food: FoodSource, pattern: ForagedPattern): ForagingConceptTag[] {
   if (pattern.entry_kind === 'filetree' || pattern.entry_kind === 'skipped') return [];
-  const hay = `${food.example_name}\n${pattern.file_path}\n${pattern.content}`.toLowerCase();
-  const tags: string[] = [];
-  if (hasAny(hay, ['outcome', 'debrief', 'completion', 'verification']))
-    tags.push('outcome-learning');
-  if (hasAny(hay, ['token', 'budget', 'compact', 'hydrate', 'collapse'])) tags.push('token-budget');
-  if (hasAny(hay, ['pattern', 'memory', 'observation', 'history'])) tags.push('pattern-memory');
-  if (hasAny(hay, ['trigger', 'route', 'routing', 'classify'])) tags.push('trigger-routing');
-  return tags;
+  return mergeConceptTags(food.concept_tags ?? [], detectConceptTags(food, pattern));
 }
 
-function hasAny(hay: string, needles: readonly string[]): boolean {
-  return needles.some((n) => hay.includes(n));
+function detectConceptTags(food: FoodSource, pattern: ForagedPattern): ForagingConceptTag[] {
+  const hay = `${food.example_name}\n${pattern.file_path}\n${pattern.content}`.toLowerCase();
+  return detectForagingConceptTags(hay);
+}
+
+function prefixConceptTags(content: string, tags: readonly ForagingConceptTag[]): string {
+  if (tags.length === 0) return content;
+  return `${tags.map((tag) => `concept=${tag}`).join(' ')}\n${content}`;
+}
+
+function mergeConceptTags(...groups: readonly ForagingConceptTag[][]): ForagingConceptTag[] {
+  return Array.from(new Set(groups.flat())).sort();
 }
 
 /**
@@ -143,6 +150,10 @@ function buildPatterns(food: FoodSource, maxBytes: number): ForagedPattern[] {
  * the single source of truth for what may be surfaced.
  */
 function renderFiletree(food: FoodSource): string {
+  if (food.filetree_paths) {
+    return Array.from(new Set(food.filetree_paths)).sort().join('\n');
+  }
+
   const lines: string[] = [];
   const seenDirs = new Set<string>();
 

@@ -16,6 +16,8 @@ describe('Colony CLI program', () => {
       'cockpit',
       'coordination',
       'doctor',
+      'examples_integrate_plan',
+      'examples_query',
       'foraging',
       'health',
       'hook',
@@ -54,73 +56,53 @@ describe('Colony CLI program', () => {
       Cross-agent persistent memory with compressed storage.
 
       Options:
-        -v, -V, --version                   output the version number
-        -h, --help                          display help for command
+        -v, -V, --version                                 output the version number
+        -h, --help                                        display help for command
 
       Commands:
-        agents                              Launch Colony plan subtasks through an
-                                            external executor
-        cockpit [options]                   Open a GitGuardex cockpit for
-                                            Colony-managed plan lanes
-        claims                              Inspect Colony file claim coverage
-        install [options]                   Register hooks + MCP server for an IDE
-        lane                                Pause, resume, and take over contended
-                                            lanes
-        uninstall [options]                 Remove IDE integration
-        status [options]                    Show colony wiring, data, and worker
-                                            state
-        health [options]                    Show Colony adoption ratios from local DB
-                                            evidence
-        config                              View or edit colony settings
-        doctor                              Run health checks
-        start                               Start the worker daemon (embeddings +
-                                            viewer)
-        stop                                Stop the worker daemon
-        restart                             Restart the worker daemon
-        viewer                              Open the memory viewer in your browser
-                                            (auto-starts worker)
-        worker                              Manage local worker daemon
-        worktree                            Inspect managed worktrees
-        mcp                                 Run the MCP stdio server (typically
-                                            invoked by the IDE)
-        bridge                              OMX/HUD bridge helpers for compact Colony
-                                            status
-        search [options] <query>            Query memory from the terminal
-        suggest [options] <description...>  Suggest an approach from similar past
-                                            task history
-        task                                Task scheduling helpers
-        compress [options] <file>           Compress a file in place (.original
-                                            backup created)
-        expand <file>                       Expand abbreviations in a file
-        coordination                        Inspect biological coordination signals
-        export <out>                        Export memory to JSONL
-        import <in>                         Import memory from JSONL
-        hook                                Internal: hook handler entrypoints
-        reindex                             Rebuild FTS index
-        backfill                            Heal historical rows that predate newer
-                                            inference logic.
-        note [options] [text...]            Record scratch notes and compact working
-                                            handoff notes
-        observe [options]                   Live dashboard of collaboration state.
-                                            Run in a spare terminal during a session.
-        openspec                            Inspect Colony and OpenSpec drift
-        plan                                Create and operate OpenSpec-like Colony
-                                            plan workspaces
-        plans                               Prepare safe launch packets for published
-                                            Colony plans
-        debrief [options]                   End-of-day collaboration post-mortem over
-                                            structured DB evidence.
-        inbox [options]                     Compact list of attention items for a
-                                            session: pending handoffs, wakes, stalled
-                                            lanes, recent claims, stale claim
-                                            signals, hot files
-        foraging                            Index and query <repo_root>/examples food
-                                            sources
-        queen                               Queen coordination helpers for published
-                                            plan lanes
-        resume                              Build read-only recovery packets
-        rescue                              Clean up stranded sessions safely
-        help [command]                      display help for command
+        agents                                            Launch Colony plan subtasks through an external executor
+        cockpit [options]                                 Open a GitGuardex cockpit for Colony-managed plan lanes
+        claims                                            Inspect Colony file claim coverage
+        install [options]                                 Register hooks + MCP server for an IDE
+        lane                                              Pause, resume, and take over contended lanes
+        uninstall [options]                               Remove IDE integration
+        status [options]                                  Show colony wiring, data, and worker state
+        health [options]                                  Show Colony adoption ratios from local DB evidence
+        config                                            View or edit colony settings
+        doctor                                            Run health checks
+        start                                             Start the worker daemon (embeddings + viewer)
+        stop                                              Stop the worker daemon
+        restart                                           Restart the worker daemon
+        viewer                                            Open the memory viewer in your browser (auto-starts worker)
+        worker                                            Manage local worker daemon
+        worktree                                          Inspect managed worktrees
+        mcp                                               Run the MCP stdio server (typically invoked by the IDE)
+        bridge                                            OMX/HUD bridge helpers for compact Colony status
+        search [options] <query>                          Query memory from the terminal
+        suggest [options] <description...>                Suggest an approach from similar past task history
+        task                                              Task scheduling helpers
+        compress [options] <file>                         Compress a file in place (.original backup created)
+        expand <file>                                     Expand abbreviations in a file
+        coordination                                      Inspect biological coordination signals
+        export <out>                                      Export memory to JSONL
+        import <in>                                       Import memory from JSONL
+        hook                                              Internal: hook handler entrypoints
+        reindex                                           Rebuild FTS index
+        backfill                                          Heal historical rows that predate newer inference logic.
+        note [options] [text...]                          Record scratch notes and compact working handoff notes
+        observe [options]                                 Live dashboard of collaboration state. Run in a spare terminal during a session.
+        openspec                                          Inspect Colony and OpenSpec drift
+        plan                                              Create and operate OpenSpec-like Colony plan workspaces
+        plans                                             Prepare safe launch packets for published Colony plans
+        debrief [options]                                 End-of-day collaboration post-mortem over structured DB evidence.
+        inbox [options]                                   Compact list of attention items for a session: pending handoffs, wakes, stalled lanes, recent claims, stale claim signals, hot files
+        examples_query [options] <query>                  Search example concepts with compact foraged hits
+        examples_integrate_plan [options] <example_name>  Plan concept ports from an indexed example
+        foraging                                          Index and query <repo_root>/examples food sources
+        queen                                             Queen coordination helpers for published plan lanes
+        resume                                            Build read-only recovery packets
+        rescue                                            Clean up stranded sessions safely
+        help [command]                                    display help for command
       "
     `);
   });

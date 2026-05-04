@@ -1,0 +1,14 @@
+{
+  "name": "ruflo",
+  "private": true,
+  "description": "Selected Ruflo concept index: outcome learning, pattern memory, trigger routing, token budget, sidecar runtime, MCP bridge, plugin registry, tool catalog, goal planning, AgentDB, RuVector, federation, and ready-work ranking.",
+  "keywords": [
+    "ruflo",
+    "mcp",
+    "agentdb",
+    "ruvector",
+    "federation",
+    "goal-planning",
+    "pattern-memory"
+  ]
+}

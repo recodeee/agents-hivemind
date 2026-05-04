@@ -38,10 +38,10 @@ describe('buildIntegrationPlan', () => {
     expect(plan.uncertainty_notes[0]).toMatch(/never|run.*scan|indexed row/i);
   });
 
-  it('computes an npm dependency delta against a target package.json', () => {
+  it('surfaces npm package considerations against a target package.json', () => {
     // Target repo already has `zod` — the example also wants zod (no-op)
-    // and adds `stripe` (true delta). `lodash` only in target → goes to
-    // `remove`, informational.
+    // while `stripe` appears only in the source example and becomes a
+    // review-only consideration.
     write(
       'package.json',
       JSON.stringify({
@@ -65,9 +65,10 @@ describe('buildIntegrationPlan', () => {
       repo_root: repo,
       example_name: 'stripe-webhook',
     });
-    expect(plan.dependency_delta.add).toMatchObject({ stripe: '^14.0.0' });
-    expect(plan.dependency_delta.add.zod).toBeUndefined();
-    expect(plan.dependency_delta.remove).toContain('lodash');
+    expect(plan.dependency_considerations).toEqual([
+      expect.objectContaining({ package_name: 'stripe', version: '^14.0.0' }),
+    ]);
+    expect(plan.dependency_considerations.some((d) => d.package_name === 'zod')).toBe(false);
     expect(plan.config_steps).toEqual(expect.arrayContaining(['npm run build', 'npm run test']));
     expect(plan.uncertainty_notes).toHaveLength(0);
   });
@@ -83,14 +84,14 @@ describe('buildIntegrationPlan', () => {
       repo_root: repo,
       example_name: 'rust-cli',
     });
-    expect(plan.dependency_delta.add).toEqual({});
+    expect(plan.dependency_considerations).toEqual([]);
     expect(plan.uncertainty_notes.some((n) => /cargo/.test(n))).toBe(true);
   });
 
-  it('files_to_copy reflects the indexed entrypoints', () => {
+  it('concepts_to_port reflects indexed patterns without file-transfer wording', () => {
     write('package.json', JSON.stringify({ name: 'target' }));
     write('examples/app/package.json', JSON.stringify({ name: 'app' }));
-    write('examples/app/src/index.ts', 'export {}');
+    write('examples/app/src/index.ts', 'export const memoryPattern = true');
 
     scanExamples({ repo_root: repo, store, session_id: 's' });
 
@@ -98,9 +99,11 @@ describe('buildIntegrationPlan', () => {
       repo_root: repo,
       example_name: 'app',
     });
-    expect(plan.files_to_copy.some((f) => f.from === 'examples/app/src/index.ts')).toBe(true);
-    expect(plan.files_to_copy[0]?.to_suggestion).toBe('src/index.ts');
-    expect(plan.files_to_copy[0]?.rationale).toMatch(/Port concept/i);
+    expect(plan.concepts_to_port.some((f) => f.source === 'examples/app/src/index.ts')).toBe(true);
+    expect(plan.concepts_to_port[0]?.target_hint).toBe('package.json');
+    expect(JSON.stringify(plan)).toContain('Port concept');
+    expect(JSON.stringify(plan)).not.toContain('copy file');
+    expect(JSON.stringify(plan)).not.toContain('add dependency');
   });
 
   it('handles a missing target manifest gracefully', () => {
@@ -113,7 +116,37 @@ describe('buildIntegrationPlan', () => {
       repo_root: repo,
       example_name: 'app',
     });
-    expect(plan.dependency_delta.add).toMatchObject({ stripe: '^14.0.0' });
+    expect(plan.dependency_considerations).toEqual([
+      expect.objectContaining({ package_name: 'stripe', version: '^14.0.0' }),
+    ]);
     expect(plan.uncertainty_notes.some((n) => /Target manifest not found/.test(n))).toBe(true);
+  });
+
+  it('plans Ruflo sub-source paths from examples/ruflo without inventing a copied tree', () => {
+    write('package.json', JSON.stringify({ name: 'target' }));
+    write(
+      'examples/ruflo/v3/package.json',
+      JSON.stringify({
+        name: 'ruflo-v3',
+        dependencies: { zod: '^3.23.0' },
+        scripts: { build: 'tsc' },
+      }),
+    );
+    write('examples/ruflo/v3/README.md', '# Ruflo v3');
+    write('examples/ruflo/v3/mcp/server-entry.ts', 'export const mcpBridge = true');
+    write('examples/ruflo/plugins/README.md', '# plugins');
+
+    scanExamples({ repo_root: repo, store, session_id: 's' });
+
+    const plan = buildIntegrationPlan(store.storage, {
+      repo_root: repo,
+      example_name: 'ruflo-v3-mcp',
+    });
+    expect(plan.dependency_considerations).toEqual([
+      expect.objectContaining({ package_name: 'zod', version: '^3.23.0' }),
+    ]);
+    expect(plan.concepts_to_port.some((c) => c.source === 'examples/ruflo/v3/mcp/server-entry.ts'))
+      .toBe(true);
+    expect(plan.config_steps).toContain('npm run build');
   });
 });
