@@ -139,7 +139,7 @@ export interface ReadyScopeOverlapWarning {
 export interface ReadyForAgentResult {
   ready: ReadyQueueEntry[];
   total_available: number;
-  mcp_capability_map: McpCapabilityMap;
+  mcp_capability_map?: McpCapabilityMap;
   ready_scope_overlap_warnings: ReadyScopeOverlapWarning[];
   next_action: string;
   next_tool?: 'task_plan_claim_subtask' | 'task_claim_quota_accept' | 'rescue_stranded_scan';
@@ -191,29 +191,40 @@ export function register(server: McpServer, ctx: ToolContext): void {
 
   server.tool(
     'task_ready_for_agent',
-    'Find the next task to claim for this agent. Use this when deciding what to work on. Returns exact task_plan_claim_subtask args when work is claimable, or a compact empty_state when no plan sub-tasks can be claimed.',
+    'Find the next task to claim for this agent. Use this when deciding what to work on. Returns exact task_plan_claim_subtask args when work is claimable, or a compact empty_state when no plan sub-tasks can be claimed. Capability map is opt-in via include_capability_map.',
     {
       session_id: z.string().min(1),
       agent: z.string().min(1),
       repo_root: z.string().min(1).optional(),
       limit: z.number().int().positive().max(20).optional(),
+      include_capability_map: z.boolean().optional(),
     },
-    wrapHandler('task_ready_for_agent', async ({ session_id, agent, repo_root, limit }) => {
-      return jsonReply(
-        await buildReadyForAgent(store, {
-          session_id,
-          agent,
-          ...(repo_root !== undefined ? { repo_root } : {}),
-          ...(limit !== undefined ? { limit } : {}),
-        }),
-      );
-    }),
+    wrapHandler(
+      'task_ready_for_agent',
+      async ({ session_id, agent, repo_root, limit, include_capability_map }) => {
+        return jsonReply(
+          await buildReadyForAgent(store, {
+            session_id,
+            agent,
+            ...(repo_root !== undefined ? { repo_root } : {}),
+            ...(limit !== undefined ? { limit } : {}),
+            ...(include_capability_map !== undefined ? { include_capability_map } : {}),
+          }),
+        );
+      },
+    ),
   );
 }
 
 export async function buildReadyForAgent(
   store: MemoryStore,
-  args: { session_id: string; agent: string; repo_root?: string; limit?: number },
+  args: {
+    session_id: string;
+    agent: string;
+    repo_root?: string;
+    limit?: number;
+    include_capability_map?: boolean;
+  },
 ): Promise<ReadyForAgentResult> {
   const allTasks = store.storage.listTasks(2000);
   const plans = listPlans(store, {
@@ -313,7 +324,7 @@ export async function buildReadyForAgent(
     {
       ready,
       total_available: available.length + quotaRelays.length,
-      mcp_capability_map: discoverMcpCapabilities(),
+      ...(args.include_capability_map ? { mcp_capability_map: discoverMcpCapabilities() } : {}),
       ready_scope_overlap_warnings: readyScopeOverlapWarnings(store, plans),
     },
     claimable,
