@@ -1,5 +1,7 @@
 #!/usr/bin/env node
+import { readSync } from 'node:fs';
 import { join } from 'node:path';
+import { PassThrough, type Readable } from 'node:stream';
 import { type Settings, loadSettings, resolveDataDir } from '@colony/config';
 import { type Embedder, MemoryStore } from '@colony/core';
 import { createEmbedder } from '@colony/embedding';
@@ -149,8 +151,58 @@ export async function main(): Promise<void> {
   const store = new MemoryStore({ dbPath, settings });
 
   const server = buildServer(store, settings);
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  const input = createMcpInput();
+  const transport = new StdioServerTransport(input, process.stdout);
+  try {
+    await server.connect(transport);
+    await waitForInputClose(input);
+  } finally {
+    store.close();
+  }
+}
+
+function createMcpInput(): Readable {
+  if (process.stdin.isTTY) return process.stdin;
+
+  const input = new PassThrough();
+  const firstChunk = Buffer.alloc(64 * 1024);
+  const bytesRead = readSync(0, firstChunk, 0, firstChunk.length, null);
+
+  if (bytesRead === 0) {
+    input.end();
+    return input;
+  }
+
+  input.write(firstChunk.subarray(0, bytesRead));
+  process.stdin.pipe(input);
+  return input;
+}
+
+function waitForInputClose(input: Readable): Promise<void> {
+  if (input.destroyed || input.readableEnded) return Promise.resolve();
+
+  return new Promise((resolve) => {
+    const keepAlive = setInterval(() => {}, 1_000_000_000);
+    const done = () => {
+      clearInterval(keepAlive);
+      process.off('SIGTERM', done);
+      process.off('SIGINT', done);
+      input.off('end', done);
+      input.off('close', done);
+      input.off('error', done);
+      resolve();
+    };
+
+    input.once('end', done);
+    input.once('close', done);
+    input.once('error', done);
+    process.once('SIGTERM', done);
+    process.once('SIGINT', done);
+
+    // A stdio MCP server must keep the process alive after connect() returns.
+    // The stdin stream alone is not a reliable event-loop ref in spawned MCP
+    // clients. The MCP client owns shutdown by closing/killing the child.
+  });
 }
 
 if (isMainEntry(import.meta.url)) {

@@ -126,7 +126,7 @@ if (isMainEntry()) {
     if (err.code === 'EPIPE') process.exit(0);
     throw err;
   });
-  createProgram()
+  await createProgram()
     .parseAsync(process.argv)
     .catch((err) => {
       process.stderr.write(`colony error: ${err instanceof Error ? err.message : String(err)}\n`);
