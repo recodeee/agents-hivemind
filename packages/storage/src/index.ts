@@ -51,7 +51,13 @@ export type {
   ToolCallRow,
 } from './storage.js';
 export type { ToolClass } from './tool-classes.js';
+export {
+  IMPORTANCE_BASE_WEIGHT,
+  baseWeightFor,
+  isDecayingImportance,
+} from './types.js';
 export type {
+  Importance,
   SessionRow,
   ObservationRow,
   SummaryRow,

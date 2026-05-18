@@ -20,6 +20,13 @@ export const SCOUT_PROPOSAL_ERROR_CODES = {
 export type ScoutProposalErrorCode =
   (typeof SCOUT_PROPOSAL_ERROR_CODES)[keyof typeof SCOUT_PROPOSAL_ERROR_CODES];
 
+/**
+ * ICM slice 3 — observation importance tier. Re-exported from @colony/storage
+ * as a string-literal union so downstream typing matches the storage row
+ * shape without importing storage internals.
+ */
+export type Importance = 'critical' | 'high' | 'medium' | 'low';
+
 export interface Observation {
   id: number;
   session_id: string;
@@ -31,6 +38,13 @@ export interface Observation {
   metadata: Record<string, unknown> | null;
   task_id: number | null;
   reply_to: number | null;
+  // ICM slice 3 — additive fields. Default 'medium' / 0 / null / 1.0 on
+  // newly-inserted rows. Existing tools that destructure `Observation`
+  // ignore them.
+  importance: Importance;
+  access_count: number;
+  last_accessed_at: number | null;
+  weight: number;
 }
 
 export interface Session {

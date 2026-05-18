@@ -1,6 +1,11 @@
 import { compress, countTokens, expand, redactPrivate } from '@colony/compress';
 import type { Settings } from '@colony/config';
-import { type NewObservation, type ObservationRow, Storage } from '@colony/storage';
+import {
+  type Importance,
+  type NewObservation,
+  type ObservationRow,
+  Storage,
+} from '@colony/storage';
 import { inferSessionIdentity, sessionIdentityMetadata } from './infer-ide.js';
 import { cosine, hybridRank } from './ranker.js';
 import { type RustSearchOptions, searchWithRust } from './rust-search.js';
@@ -13,6 +18,20 @@ export interface MemoryStoreOptions {
 }
 
 /**
+ * ICM slice 3 — debounced batch flush window for `recordAccess`.
+ *
+ * Strategy (b): every `getObservations` / `search` call queues the returned
+ * ids into `accessBuffer`. The first queue starts a 50ms `setTimeout` that
+ * flushes the coalesced set in one transactional UPDATE. This guarantees
+ * every access is counted (unlike threshold-sampling) while keeping write
+ * amplification at most one extra UPDATE per ~50ms hot loop.
+ *
+ * `readonly` stores skip the buffer entirely — there is no writeable handle
+ * to flush against.
+ */
+const RECORD_ACCESS_DEBOUNCE_MS = 50;
+
+/**
  * Facade over storage + compression. All write paths go through here to
  * enforce: redact private tags → compress → persist.
  */
@@ -20,14 +39,20 @@ export class MemoryStore {
   readonly dbPath: string;
   readonly storage: Storage;
   readonly settings: Settings;
+  readonly #readonly: boolean;
+  #accessBuffer: Set<number> = new Set();
+  #accessTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(opts: MemoryStoreOptions) {
     this.dbPath = opts.dbPath;
-    this.storage = new Storage(opts.dbPath, opts.readonly === true ? { readonly: true } : {});
+    this.#readonly = opts.readonly === true;
+    this.storage = new Storage(opts.dbPath, this.#readonly ? { readonly: true } : {});
     this.settings = opts.settings;
   }
 
   close(): void {
+    // Flush any pending access bookkeeping before the connection goes away.
+    this.flushAccessBuffer();
     this.storage.close();
   }
 
@@ -62,6 +87,11 @@ export class MemoryStore {
     metadata?: Record<string, unknown>;
     task_id?: number | null;
     reply_to?: number | null;
+    /**
+     * ICM slice 3. Defaults to 'medium'. critical/high pin weight to their
+     * base value and never decay; medium/low decay on read.
+     */
+    importance?: Importance;
   }): number {
     const intensity = this.settings.compression.intensity;
     const prepared = prepareMemoryText(p.content, intensity);
@@ -80,8 +110,56 @@ export class MemoryStore {
       metadata,
       ...(p.task_id !== undefined ? { task_id: p.task_id } : {}),
       ...(p.reply_to !== undefined ? { reply_to: p.reply_to } : {}),
+      ...(p.importance !== undefined ? { importance: p.importance } : {}),
     };
     return this.storage.insertObservation(obs);
+  }
+
+  /**
+   * ICM slice 3 — purge near-zero-weight medium/low observations.
+   * Critical/high are unaffected. Returns the count deleted.
+   */
+  pruneLowDecay(opts: { minWeight?: number } = {}): number {
+    this.flushAccessBuffer();
+    return this.storage.pruneLowDecay(opts);
+  }
+
+  /**
+   * ICM slice 3 — queue ids for debounced `recordAccess`. Idempotent within
+   * the 50ms window; ids land in a Set so repeated reads coalesce. No-op for
+   * readonly stores.
+   */
+  private scheduleAccess(ids: ReadonlyArray<number>): void {
+    if (this.#readonly || ids.length === 0) return;
+    for (const id of ids) this.#accessBuffer.add(id);
+    if (this.#accessTimer !== null) return;
+    this.#accessTimer = setTimeout(() => {
+      this.flushAccessBuffer();
+    }, RECORD_ACCESS_DEBOUNCE_MS);
+    // Allow Node to exit if the access timer is the only pending work.
+    const t = this.#accessTimer as unknown as { unref?: () => void };
+    if (typeof t.unref === 'function') t.unref();
+  }
+
+  /**
+   * Flush the queued ids. Safe to call multiple times; reentrant-safe via
+   * a snapshot. Called from `close()` so the buffer is never dropped on
+   * shutdown, and from the debounce timer.
+   */
+  flushAccessBuffer(): void {
+    if (this.#accessTimer !== null) {
+      clearTimeout(this.#accessTimer);
+      this.#accessTimer = null;
+    }
+    if (this.#readonly || this.#accessBuffer.size === 0) return;
+    const ids = Array.from(this.#accessBuffer);
+    this.#accessBuffer.clear();
+    try {
+      this.storage.recordAccess(ids);
+    } catch {
+      // Access bookkeeping is best-effort; never let a decay-update failure
+      // bubble into the read path that triggered it.
+    }
   }
 
   addSummary(p: { session_id: string; scope: 'turn' | 'session'; content: string }): number {
@@ -125,7 +203,11 @@ export class MemoryStore {
 
   getObservations(ids: number[], opts: GetObservationsOptions = {}): Observation[] {
     const want = opts.expand ?? this.settings.compression.expandForModel;
-    return this.storage.getObservations(ids).map((r) => toObservation(r, want));
+    const rows = this.storage.getObservations(ids);
+    // ICM slice 3: schedule decay bookkeeping for the rows we actually
+    // returned (not the input ids — missing ids should not be counted).
+    if (rows.length > 0) this.scheduleAccess(rows.map((r) => r.id));
+    return rows.map((r) => toObservation(r, want));
   }
 
   timeline(sessionId: string, aroundId?: number, limit?: number): Observation[] {
@@ -152,10 +234,14 @@ export class MemoryStore {
     // and force a second pass to drop them. The filtered FTS output is
     // already scoped correctly — keyword-only is faster and cleaner.
     if (filter && (filter.kind || (filter.metadata && Object.keys(filter.metadata).length > 0))) {
-      return keyword.slice(0, cap);
+      const out = keyword.slice(0, cap);
+      this.scheduleAccess(out.map((h) => h.id));
+      return out;
     }
     if (!embedder || this.settings.embedding.provider === 'none') {
-      return keyword.slice(0, cap);
+      const out = keyword.slice(0, cap);
+      this.scheduleAccess(out.map((h) => h.id));
+      return out;
     }
     // Normal searches already have enough FTS candidates. Bound vector work to
     // those candidates so semantic reranking does not load every stored vector.
@@ -215,7 +301,7 @@ export class MemoryStore {
         });
       }
     }
-    return ranked.map((r) => {
+    const results = ranked.map((r) => {
       const info = infoById.get(r.id);
       return {
         id: r.id,
@@ -227,6 +313,8 @@ export class MemoryStore {
         task_id: info?.task_id ?? null,
       };
     });
+    this.scheduleAccess(results.map((r) => r.id));
+    return results;
   }
 
   // --- pure-vector semantic search ---
@@ -309,6 +397,7 @@ export class MemoryStore {
         task_id: row.task_id,
       });
     }
+    this.scheduleAccess(out.map((r) => r.id));
     return out;
   }
 
@@ -473,6 +562,11 @@ function toObservation(r: ObservationRow, expandText: boolean): Observation {
     metadata: r.metadata ? safeParse(r.metadata) : null,
     task_id: r.task_id,
     reply_to: r.reply_to,
+    // ICM slice 3 — additive fields. Older callers ignore them.
+    importance: r.importance,
+    access_count: r.access_count,
+    last_accessed_at: r.last_accessed_at,
+    weight: r.weight,
   };
 }
 

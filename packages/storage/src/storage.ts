@@ -22,6 +22,7 @@ import type {
   AggregateMcpMetricsOptions,
   CoachStepRow,
   ExampleRow,
+  Importance,
   LaneRunState,
   LaneStateRow,
   LaneTakeoverResult,
@@ -64,6 +65,7 @@ import type {
   TaskParticipantRow,
   TaskRow,
 } from './types.js';
+import { baseWeightFor, isDecayingImportance } from './types.js';
 
 export interface StorageOptions {
   readonly?: boolean;
@@ -771,8 +773,13 @@ export class Storage {
 
   insertObservation(o: NewObservation): number {
     const ts = o.ts ?? Date.now();
+    // ICM slice 3: importance defaults to 'medium'; insert-time weight is the
+    // base weight for the tier (critical=4, high=2, medium=1, low=0.5).
+    // recordAccess() recomputes weight lazily on read.
+    const importance: Importance = o.importance ?? 'medium';
+    const weight = baseWeightFor(importance);
     const stmt = this.db.prepare(
-      'INSERT INTO observations(session_id, kind, content, compressed, intensity, ts, metadata, task_id, reply_to) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO observations(session_id, kind, content, compressed, intensity, ts, metadata, task_id, reply_to, importance, access_count, last_accessed_at, weight) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)',
     );
     const info = stmt.run(
       o.session_id,
@@ -784,8 +791,84 @@ export class Storage {
       o.metadata ? JSON.stringify(o.metadata) : null,
       o.task_id ?? null,
       o.reply_to ?? null,
+      importance,
+      weight,
     );
     return Number(info.lastInsertRowid);
+  }
+
+  /**
+   * ICM slice 3 — record that observations were accessed.
+   *
+   * Increments `access_count`, stamps `last_accessed_at = now`, and recomputes
+   * `weight`:
+   *   - critical/high are pinned to `baseWeightFor(importance)` and never decay.
+   *   - medium/low decay as `baseWeightFor(importance) / (1 + access_count * 0.1)`.
+   *
+   * Caller is expected to gate invocation (see `Storage.shouldRecordAccess`
+   * thresholds) so the read path doesn't write on every fetch. A single
+   * transaction covers all ids so search/get_observations stay atomic from
+   * the caller's perspective.
+   */
+  recordAccess(ids: number[], now: number = Date.now()): void {
+    if (ids.length === 0) return;
+    const placeholders = ids.map(() => '?').join(',');
+    // One UPDATE that does the math in SQL so we never round-trip through JS
+    // per row. The CASE branch keeps critical/high pinned to their base weight
+    // and lets medium/low decay. The CAST is defensive — SQLite stores REAL
+    // already but better-sqlite3 doesn't bind doubles unless we ask.
+    const sql = `UPDATE observations
+       SET access_count = access_count + 1,
+           last_accessed_at = ?,
+           weight = CASE importance
+             WHEN 'critical' THEN ${baseWeightFor('critical')}
+             WHEN 'high'     THEN ${baseWeightFor('high')}
+             WHEN 'medium'   THEN CAST(${baseWeightFor('medium')} AS REAL) / (1.0 + (access_count + 1) * 0.1)
+             WHEN 'low'      THEN CAST(${baseWeightFor('low')} AS REAL) / (1.0 + (access_count + 1) * 0.1)
+             ELSE weight
+           END
+       WHERE id IN (${placeholders})`;
+    const stmt = this.db.prepare(sql);
+    const txn = this.db.transaction((args: Array<number>) => {
+      stmt.run(now, ...args);
+    });
+    txn(ids);
+  }
+
+  /**
+   * ICM slice 3 — purge near-zero-weight medium/low rows. Critical/high are
+   * never affected even when their weight numerically dips (they're pinned to
+   * baseWeight by `recordAccess`, but a caller could in theory ALTER the row
+   * out-of-band; the `importance IN (...)` filter keeps the safety guarantee
+   * orthogonal to that). Returns the row count deleted.
+   *
+   * Not called automatically. CLI `colony memory prune` and direct callers
+   * are the only invocation paths.
+   */
+  pruneLowDecay(opts: { minWeight?: number } = {}): number {
+    const minWeight = opts.minWeight ?? 0.1;
+    const info = this.db
+      .prepare(
+        `DELETE FROM observations
+         WHERE importance IN ('medium','low')
+           AND weight < ?`,
+      )
+      .run(minWeight);
+    return Number(info.changes);
+  }
+
+  /**
+   * ICM slice 3 — read-only count of rows that `pruneLowDecay` would delete
+   * for the same `minWeight`. Used by `colony memory prune --dry-run`.
+   */
+  countLowDecayCandidates(minWeight = 0.1): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM observations
+         WHERE importance IN ('medium','low') AND weight < ?`,
+      )
+      .get(minWeight) as { n: number } | undefined;
+    return row?.n ?? 0;
   }
 
   getObservation(id: number): ObservationRow | undefined {
@@ -1480,9 +1563,9 @@ export class Storage {
   // when the requested baseline window starts before the first recorded
   // receipt — drift signals are noisy when the baseline lacks history.
   mcpMetricsMinTs(): number | null {
-    const row = this.db
-      .prepare('SELECT MIN(ts) AS min_ts FROM mcp_metrics')
-      .get() as { min_ts: number | null } | undefined;
+    const row = this.db.prepare('SELECT MIN(ts) AS min_ts FROM mcp_metrics').get() as
+      | { min_ts: number | null }
+      | undefined;
     return row?.min_ts ?? null;
   }
 

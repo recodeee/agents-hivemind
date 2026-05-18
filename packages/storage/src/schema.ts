@@ -22,7 +22,11 @@ CREATE TABLE IF NOT EXISTS observations (
   compressed INTEGER NOT NULL DEFAULT 1,
   intensity TEXT,
   ts INTEGER NOT NULL,
-  metadata TEXT
+  metadata TEXT,
+  importance TEXT NOT NULL DEFAULT 'medium' CHECK(importance IN ('critical','high','medium','low')),
+  access_count INTEGER NOT NULL DEFAULT 0,
+  last_accessed_at INTEGER,
+  weight REAL NOT NULL DEFAULT 1.0
 );
 CREATE INDEX IF NOT EXISTS idx_observations_session ON observations(session_id, ts);
 CREATE INDEX IF NOT EXISTS idx_observations_ts ON observations(ts);
@@ -331,7 +335,7 @@ CREATE TABLE IF NOT EXISTS coach_progress (
   evidence TEXT
 );
 
-INSERT OR IGNORE INTO schema_version(version) VALUES (14);
+INSERT OR IGNORE INTO schema_version(version) VALUES (15);
 `;
 
 /**
@@ -410,6 +414,29 @@ export const COLUMN_MIGRATIONS: ReadonlyArray<{ table: string; column: string; s
     column: 'open_proposal_count',
     sql: 'ALTER TABLE agent_profiles ADD COLUMN open_proposal_count INTEGER NOT NULL DEFAULT 0',
   },
+  // ICM slice 3 — observation importance + temporal decay.
+  // Default 'medium' / 0 / NULL / 1.0 matches the SCHEMA_SQL DDL so a fresh DB
+  // and an upgraded DB are indistinguishable after migration.
+  {
+    table: 'observations',
+    column: 'importance',
+    sql: "ALTER TABLE observations ADD COLUMN importance TEXT NOT NULL DEFAULT 'medium' CHECK(importance IN ('critical','high','medium','low'))",
+  },
+  {
+    table: 'observations',
+    column: 'access_count',
+    sql: 'ALTER TABLE observations ADD COLUMN access_count INTEGER NOT NULL DEFAULT 0',
+  },
+  {
+    table: 'observations',
+    column: 'last_accessed_at',
+    sql: 'ALTER TABLE observations ADD COLUMN last_accessed_at INTEGER',
+  },
+  {
+    table: 'observations',
+    column: 'weight',
+    sql: 'ALTER TABLE observations ADD COLUMN weight REAL NOT NULL DEFAULT 1.0',
+  },
 ];
 
 export const POST_MIGRATION_SQL = `
@@ -423,4 +450,6 @@ CREATE INDEX IF NOT EXISTS idx_mcp_metrics_error_ts ON mcp_metrics(ok, error_cod
 CREATE INDEX IF NOT EXISTS idx_task_threads_proposal_status
   ON tasks(proposal_status)
   WHERE proposal_status IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_observations_importance ON observations(importance);
+CREATE INDEX IF NOT EXISTS idx_observations_weight ON observations(weight);
 `;

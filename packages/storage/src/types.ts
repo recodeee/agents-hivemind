@@ -7,6 +7,40 @@ export interface SessionRow {
   metadata: string | null;
 }
 
+/**
+ * ICM slice 3 — observation importance tiers.
+ *
+ * critical/high pin their weight to baseWeight(importance) and never decay,
+ * so they survive `pruneLowDecay`. medium/low decay as access_count grows
+ * unless re-accessed.
+ */
+export type Importance = 'critical' | 'high' | 'medium' | 'low';
+
+/**
+ * Base weight per importance tier. Higher tiers start with more headroom so
+ * the `baseWeight / (1 + access_count * 0.1)` decay curve still leaves them
+ * above plausible prune thresholds for longer than lower tiers.
+ */
+export const IMPORTANCE_BASE_WEIGHT: Readonly<Record<Importance, number>> = Object.freeze({
+  critical: 4,
+  high: 2,
+  medium: 1,
+  low: 0.5,
+});
+
+/**
+ * Whether this tier ever decays. critical/high keep `weight = baseWeight`
+ * regardless of access_count; medium/low decay per the formula in
+ * `Storage.recordAccess`.
+ */
+export function isDecayingImportance(importance: Importance): boolean {
+  return importance === 'medium' || importance === 'low';
+}
+
+export function baseWeightFor(importance: Importance): number {
+  return IMPORTANCE_BASE_WEIGHT[importance];
+}
+
 export interface ObservationRow {
   id: number;
   session_id: string;
@@ -18,6 +52,10 @@ export interface ObservationRow {
   metadata: string | null;
   task_id: number | null;
   reply_to: number | null;
+  importance: Importance;
+  access_count: number;
+  last_accessed_at: number | null;
+  weight: number;
 }
 
 export interface SummaryRow {
@@ -40,6 +78,11 @@ export interface NewObservation {
   ts?: number;
   task_id?: number | null;
   reply_to?: number | null;
+  /**
+   * ICM slice 3. Defaults to 'medium' when omitted, matching the SCHEMA_SQL
+   * DDL. Insert-time weight is seeded from `baseWeightFor(importance)`.
+   */
+  importance?: Importance;
 }
 
 /**
