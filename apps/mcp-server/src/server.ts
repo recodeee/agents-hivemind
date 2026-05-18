@@ -14,6 +14,7 @@ import * as autopilot from './tools/autopilot.js';
 import * as bridge from './tools/bridge.js';
 import type { ToolContext } from './tools/context.js';
 import * as drift from './tools/drift.js';
+import * as feedback from './tools/feedback.js';
 import * as foraging from './tools/foraging.js';
 import { registerTaskForagingReport } from './tools/foraging.js';
 import * as handoff from './tools/handoff.js';
@@ -30,8 +31,8 @@ import * as readyQueue from './tools/ready-queue.js';
 import * as recall from './tools/recall.js';
 import * as relay from './tools/relay.js';
 import * as rescue from './tools/rescue.js';
-import * as savings from './tools/savings.js';
 import * as savingsDrift from './tools/savings-drift.js';
+import * as savings from './tools/savings.js';
 import * as search from './tools/search.js';
 import * as spec from './tools/spec.js';
 import * as startupPanel from './tools/startup-panel.js';
@@ -124,6 +125,11 @@ export function buildServer(
   rescue.register(server, ctx);
   savings.register(server, ctx);
   savingsDrift.register(server, ctx);
+
+  // ICM slice 2 feedback lane (docs/icm-integration-plan.md). Registered
+  // after the read-side surfaces so the heartbeat wrapper has seen every
+  // core tool first.
+  feedback.register(server, ctx);
 
   // Autopilot lane (tick advisor + drift checker). Cheap compositions of
   // existing primitives; registered after the core surface so the heartbeat

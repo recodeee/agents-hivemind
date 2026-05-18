@@ -17,11 +17,16 @@ import {
 import type {
   AccountClaimRow,
   AccountClaimState,
+  AddFeedbackInput,
   AgentProfileRow,
   AggregateMcpMetricsDailyOptions,
   AggregateMcpMetricsOptions,
   CoachStepRow,
   ExampleRow,
+  FeedbackHit,
+  FeedbackImportance,
+  FeedbackRow,
+  FeedbackStat,
   LaneRunState,
   LaneStateRow,
   LaneTakeoverResult,
@@ -1297,6 +1302,136 @@ export class Storage {
       .prepare('SELECT COUNT(*) AS n FROM observations WHERE kind = ? AND ts >= ?')
       .get(kind, since) as { n: number } | undefined;
     return row?.n ?? 0;
+  }
+
+  // --- feedback (ICM slice 2) ---
+  //
+  // The MemoryStore facade is the only sanctioned write path: it routes
+  // prediction/correction/context through `prepareMemoryText` before calling
+  // `insertFeedback`. Calling `insertFeedback` directly with raw prose is a
+  // defect (compression invariant). `searchFeedback` mirrors the progressive-
+  // disclosure shape used by `searchFts`: compact hits only, callers fetch
+  // full bodies via `getFeedback(id)`.
+
+  insertFeedback(input: AddFeedbackInput): number {
+    const ts = input.created_at ?? Date.now();
+    const importance: FeedbackImportance = input.importance ?? 'medium';
+    const stmt = this.db.prepare(
+      `INSERT INTO feedback(topic, prediction, correction, context, compressed, importance, created_at, created_by)
+       VALUES (?, ?, ?, ?, 1, ?, ?, ?)`,
+    );
+    const info = stmt.run(
+      input.topic,
+      input.prediction,
+      input.correction,
+      input.context ?? null,
+      importance,
+      ts,
+      input.created_by ?? null,
+    );
+    return Number(info.lastInsertRowid);
+  }
+
+  getFeedback(id: number): FeedbackRow | undefined {
+    return this.db.prepare('SELECT * FROM feedback WHERE id = ?').get(id) as
+      | FeedbackRow
+      | undefined;
+  }
+
+  searchFeedback(input: { topic?: string; query: string; limit?: number }): FeedbackHit[] {
+    const cap = Math.max(1, input.limit ?? 20);
+    const trimmedQuery = input.query.trim();
+    const topicFilter = input.topic?.trim();
+
+    // Empty FTS query degrades to a topic listing so callers can browse a
+    // single topic without inventing a tokenizable keyword.
+    if (!trimmedQuery) {
+      if (!topicFilter) return [];
+      const rows = this.db
+        .prepare(
+          `SELECT id, topic, importance, created_at,
+                  substr(correction, 1, 120) AS snippet
+             FROM feedback
+            WHERE topic = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?`,
+        )
+        .all(topicFilter, cap) as Array<{
+        id: number;
+        topic: string;
+        importance: FeedbackImportance;
+        created_at: number;
+        snippet: string | null;
+      }>;
+      return rows.map((r) => ({
+        id: r.id,
+        topic: r.topic,
+        importance: r.importance,
+        score: 0,
+        snippet: r.snippet ?? '',
+        created_at: r.created_at,
+      }));
+    }
+
+    const match = sanitizeMatch(trimmedQuery);
+    const conditions: string[] = ['feedback_fts MATCH ?'];
+    const params: Array<string | number> = [match];
+    if (topicFilter) {
+      conditions.push('f.topic = ?');
+      params.push(topicFilter);
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT f.id, f.topic, f.importance, f.created_at,
+                snippet(feedback_fts, 2, '[', ']', '…', 16) AS snippet,
+                bm25(feedback_fts) AS score
+           FROM feedback_fts
+           JOIN feedback f ON f.id = feedback_fts.rowid
+          WHERE ${conditions.join(' AND ')}
+          ORDER BY score ASC
+          LIMIT ?`,
+      )
+      .all(...params, cap) as Array<{
+      id: number;
+      topic: string;
+      importance: FeedbackImportance;
+      created_at: number;
+      snippet: string;
+      score: number;
+    }>;
+    return rows.map((r) => ({
+      id: r.id,
+      topic: r.topic,
+      importance: r.importance,
+      // FTS5 bm25 is "lower is better"; flip so higher = better downstream.
+      score: -r.score,
+      snippet: r.snippet,
+      created_at: r.created_at,
+    }));
+  }
+
+  feedbackStats(input: { topic?: string } = {}): FeedbackStat[] {
+    const topicFilter = input.topic?.trim();
+    if (topicFilter) {
+      const row = this.db
+        .prepare(
+          `SELECT topic, COUNT(*) AS n, MAX(created_at) AS last_ts
+             FROM feedback
+            WHERE topic = ?
+            GROUP BY topic`,
+        )
+        .get(topicFilter) as { topic: string; n: number; last_ts: number } | undefined;
+      return row ? [{ topic: row.topic, count: row.n, last_created_at: row.last_ts }] : [];
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT topic, COUNT(*) AS n, MAX(created_at) AS last_ts
+           FROM feedback
+          GROUP BY topic
+          ORDER BY last_ts DESC, topic ASC`,
+      )
+      .all() as Array<{ topic: string; n: number; last_ts: number }>;
+    return rows.map((r) => ({ topic: r.topic, count: r.n, last_created_at: r.last_ts }));
   }
 
   recordMcpMetric(metric: NewMcpMetric): void {

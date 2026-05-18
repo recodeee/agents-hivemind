@@ -102,6 +102,9 @@ workflow guidance.
 | Rescue | `rescue_stranded_run` | Emit rescue relays and release abandoned claims. |
 | Metrics | `savings_report` | Report live MCP token receipts and reference savings model. |
 | Metrics | `savings_drift_report` | Flag tools whose median tokens-per-call drifted vs a baseline window. |
+| Feedback | `feedback_record` | Record an "AI predicted X, real answer was Y" correction. |
+| Feedback | `feedback_search` | Search prior corrections by FTS5 query and optional topic. |
+| Feedback | `feedback_stats` | Per-topic counts of recorded corrections. |
 
 ## Ruflo sidecar boundary
 
@@ -2265,6 +2268,43 @@ Response shape:
 ```
 
 Classifications: `up_drift`, `down_drift`, `new_tool` (no baseline data), `gone` (no recent calls), `insufficient_data` (either window below `min_calls`), or `stable`. When the baseline window starts before the earliest `mcp_metrics` receipt the response adds a `warning` field nudging callers to wait for more history before trusting signals.
+
+## `feedback_record`
+
+Record an "AI predicted X, real answer was Y" correction. ICM slice 2 (see `docs/icm-integration-plan.md`). Bodies pass through the same compression path as observations — `MemoryStore.recordFeedback` runs `prediction`, `correction`, and (optional) `context` through `prepareMemoryText` before persisting. Returns only the new row id; full bodies stay behind the storage layer.
+
+Args:
+
+- `topic` — short, stable label callers can pivot on (e.g. `"frontend.routing"`).
+- `prediction` — what the AI predicted or asserted.
+- `correction` — what the real answer turned out to be.
+- `context?` — optional surrounding context (where the prediction was made).
+- `importance?` — `critical | high | medium | low`. Defaults to `medium`.
+- `created_by?` — agent or human author for audit.
+
+Returns `{ "id": <number> }`. When privacy redaction collapses `prediction` or `correction` to empty, the tool returns an `INTERNAL_ERROR` instead of writing a phantom row.
+
+## `feedback_search`
+
+Search prior corrections. Compact-hit progressive disclosure: returns `id`, `topic`, `importance`, FTS5 `score` (higher = better), `snippet`, and `created_at` only. Bodies live behind storage so callers don't pay the expansion cost on every search.
+
+Args:
+
+- `query` — FTS5 query across `topic + prediction + correction + context`.
+- `topic?` — exact-match filter on the feedback topic.
+- `limit?` — defaults to 20, max 100.
+
+If `query` is empty/whitespace and `topic` is set, returns a newest-first listing for that topic. Empty `query` without a `topic` returns no hits.
+
+## `feedback_stats`
+
+Per-topic counts of recorded corrections, sorted by most recent first.
+
+Args:
+
+- `topic?` — exact-match filter; scopes the response to a single bucket.
+
+Response shape: `{ "stats": [{ "topic": string, "count": number, "last_created_at": number }] }`.
 
 ## Plan observation kinds
 

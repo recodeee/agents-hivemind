@@ -250,6 +250,52 @@ export interface NewAgentProfile {
   updated_at?: number;
 }
 
+/**
+ * ICM slice 2 — feedback lane. One row per "AI predicted X, real answer
+ * was Y" correction. prediction/correction/context are stored compressed
+ * (via @colony/core MemoryStore.recordFeedback) for the same token-budget
+ * reasons observations are. `topic` is left raw so callers can pivot on
+ * a stable string without expanding the compressor's lexicon for it.
+ */
+export type FeedbackImportance = 'critical' | 'high' | 'medium' | 'low';
+
+export interface FeedbackRow {
+  id: number;
+  topic: string;
+  prediction: string;
+  correction: string;
+  context: string | null;
+  compressed: 0 | 1;
+  importance: FeedbackImportance;
+  created_at: number;
+  created_by: string | null;
+}
+
+export interface AddFeedbackInput {
+  topic: string;
+  prediction: string;
+  correction: string;
+  context?: string | null;
+  importance?: FeedbackImportance;
+  created_by?: string | null;
+  created_at?: number;
+}
+
+export interface FeedbackHit {
+  id: number;
+  topic: string;
+  importance: FeedbackImportance;
+  score: number;
+  snippet: string;
+  created_at: number;
+}
+
+export interface FeedbackStat {
+  topic: string;
+  count: number;
+  last_created_at: number;
+}
+
 export interface NewSummary {
   session_id: string;
   scope: 'turn' | 'session';

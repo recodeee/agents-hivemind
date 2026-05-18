@@ -331,7 +331,47 @@ CREATE TABLE IF NOT EXISTS coach_progress (
   evidence TEXT
 );
 
-INSERT OR IGNORE INTO schema_version(version) VALUES (14);
+-- ICM slice 2 (docs/icm-integration-plan.md): "AI predicted X, real answer
+-- was Y" feedback lane. prediction/correction/context bodies pass through
+-- the @colony/core MemoryStore compression path before they ever reach this
+-- table — direct INSERTs that skip the facade are a defect.
+CREATE TABLE IF NOT EXISTS feedback (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  topic       TEXT NOT NULL,
+  prediction  TEXT NOT NULL,
+  correction  TEXT NOT NULL,
+  context     TEXT,
+  compressed  INTEGER NOT NULL DEFAULT 1,
+  importance  TEXT NOT NULL DEFAULT 'medium'
+              CHECK(importance IN ('critical','high','medium','low')),
+  created_at  INTEGER NOT NULL,
+  created_by  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_topic ON feedback(topic);
+CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at DESC);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS feedback_fts USING fts5(
+  topic, prediction, correction, context,
+  content='feedback', content_rowid='id',
+  tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS feedback_ai AFTER INSERT ON feedback BEGIN
+  INSERT INTO feedback_fts(rowid, topic, prediction, correction, context)
+  VALUES (new.id, new.topic, new.prediction, new.correction, new.context);
+END;
+CREATE TRIGGER IF NOT EXISTS feedback_ad AFTER DELETE ON feedback BEGIN
+  INSERT INTO feedback_fts(feedback_fts, rowid, topic, prediction, correction, context)
+  VALUES ('delete', old.id, old.topic, old.prediction, old.correction, old.context);
+END;
+CREATE TRIGGER IF NOT EXISTS feedback_au AFTER UPDATE ON feedback BEGIN
+  INSERT INTO feedback_fts(feedback_fts, rowid, topic, prediction, correction, context)
+  VALUES ('delete', old.id, old.topic, old.prediction, old.correction, old.context);
+  INSERT INTO feedback_fts(rowid, topic, prediction, correction, context)
+  VALUES (new.id, new.topic, new.prediction, new.correction, new.context);
+END;
+
+INSERT OR IGNORE INTO schema_version(version) VALUES (15);
 `;
 
 /**

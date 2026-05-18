@@ -1,6 +1,15 @@
 import { compress, countTokens, expand, redactPrivate } from '@colony/compress';
 import type { Settings } from '@colony/config';
-import { type NewObservation, type ObservationRow, Storage } from '@colony/storage';
+import {
+  type AddFeedbackInput,
+  type FeedbackHit,
+  type FeedbackImportance,
+  type FeedbackRow,
+  type FeedbackStat,
+  type NewObservation,
+  type ObservationRow,
+  Storage,
+} from '@colony/storage';
 import { inferSessionIdentity, sessionIdentityMetadata } from './infer-ide.js';
 import { cosine, hybridRank } from './ranker.js';
 import { type RustSearchOptions, searchWithRust } from './rust-search.js';
@@ -96,6 +105,73 @@ export class MemoryStore {
       compressed: true,
       intensity,
     });
+  }
+
+  // --- feedback (ICM slice 2 — docs/icm-integration-plan.md) ---
+  //
+  // All three prose fields (prediction, correction, optional context) flow
+  // through `prepareMemoryText` so the compression invariant matches the
+  // observation path exactly. Returning -1 mirrors `addObservation`'s
+  // contract for "everything was redacted / empty after privacy strip".
+  recordFeedback(input: {
+    topic: string;
+    prediction: string;
+    correction: string;
+    context?: string;
+    importance?: FeedbackImportance;
+    created_by?: string;
+  }): number {
+    const intensity = this.settings.compression.intensity;
+    const prediction = prepareMemoryText(input.prediction, intensity);
+    const correction = prepareMemoryText(input.correction, intensity);
+    if (!prediction || !correction) return -1;
+    const context =
+      input.context !== undefined ? prepareMemoryText(input.context, intensity) : null;
+    const row: AddFeedbackInput = {
+      topic: input.topic,
+      prediction: prediction.compressed,
+      correction: correction.compressed,
+      context: context ? context.compressed : null,
+      ...(input.importance !== undefined ? { importance: input.importance } : {}),
+      ...(input.created_by !== undefined ? { created_by: input.created_by } : {}),
+    };
+    return this.storage.insertFeedback(row);
+  }
+
+  searchFeedback(input: { topic?: string; query: string; limit?: number }): FeedbackHit[] {
+    return this.storage.searchFeedback(input);
+  }
+
+  /**
+   * Full feedback row with prediction/correction/context expanded for human
+   * consumption. Same shape as `getObservations` honoring `expandForModel`.
+   * Pass `{ expand: false }` from a model-facing caller that wants to keep
+   * the bodies compressed.
+   */
+  getFeedback(
+    id: number,
+    opts: { expand?: boolean } = {},
+  ):
+    | (Omit<FeedbackRow, 'prediction' | 'correction' | 'context'> & {
+        prediction: string;
+        correction: string;
+        context: string | null;
+      })
+    | undefined {
+    const row = this.storage.getFeedback(id);
+    if (!row) return undefined;
+    const want = opts.expand ?? this.settings.compression.expandForModel;
+    if (!want) return row;
+    return {
+      ...row,
+      prediction: expand(row.prediction),
+      correction: expand(row.correction),
+      context: row.context !== null ? expand(row.context) : null,
+    };
+  }
+
+  feedbackStats(input: { topic?: string } = {}): FeedbackStat[] {
+    return this.storage.feedbackStats(input);
   }
 
   /**
