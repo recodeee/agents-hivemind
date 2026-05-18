@@ -1,4 +1,5 @@
 import {
+  type Importance,
   type LinkedTask,
   type ObservationRow,
   type TaskClaimRow,
@@ -596,6 +597,8 @@ export class TaskThread {
     content: string;
     reply_to?: number;
     metadata?: Record<string, unknown>;
+    /** ICM slice 3 — forwarded to MemoryStore.addObservation. */
+    importance?: Importance;
   }): number {
     const id = this.store.addObservation({
       session_id: p.session_id,
@@ -604,6 +607,7 @@ export class TaskThread {
       task_id: this.task_id,
       reply_to: p.reply_to ?? null,
       metadata: { kind: p.kind, ...(p.metadata ?? {}) },
+      ...(p.importance !== undefined ? { importance: p.importance } : {}),
     });
     this.store.storage.touchTask(this.task_id);
     return id;

@@ -86,6 +86,7 @@ describe('Colony CLI program', () => {
         worker                                            Manage local worker daemon
         worktree                                          Inspect managed worktrees
         mcp                                               Run the MCP stdio server (typically invoked by the IDE)
+        memory                                            Inspect and maintain compressed observation memory.
         bridge                                            OMX/HUD bridge helpers for compact Colony status
         search [options] <query>                          Query memory from the terminal
         scout                                             Review scout task proposals

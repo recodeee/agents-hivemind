@@ -1,11 +1,6 @@
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import {
-  TaskThread,
-  classifyClaimAge,
-  guardedClaimFile,
-  listPlans,
-} from '@colony/core';
+import { TaskThread, classifyClaimAge, guardedClaimFile, listPlans } from '@colony/core';
 import { claimPathRejectionMessage } from '@colony/storage';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
@@ -179,35 +174,42 @@ export function register(server: McpServer, ctx: ToolContext): void {
       ]),
       content: z.string().min(1),
       reply_to: z.number().int().positive().optional(),
+      // ICM slice 3 — optional importance tier. Defaults to 'medium' in
+      // storage; critical/high never decay, medium/low decay on read.
+      importance: z.enum(['critical', 'high', 'medium', 'low']).optional(),
     },
-    wrapHandler('task_post', async ({ task_id, session_id, kind, content, reply_to }) => {
-      if (!store.storage.getTask(task_id)) {
-        return mcpErrorResponse('TASK_NOT_FOUND', `task ${task_id} not found`, {
-          task_id,
-          hint: 'Use task_note_working when the active task id is unknown or stale.',
+    wrapHandler(
+      'task_post',
+      async ({ task_id, session_id, kind, content, reply_to, importance }) => {
+        if (!store.storage.getTask(task_id)) {
+          return mcpErrorResponse('TASK_NOT_FOUND', `task ${task_id} not found`, {
+            task_id,
+            hint: 'Use task_note_working when the active task id is unknown or stale.',
+          });
+        }
+        const thread = new TaskThread(store, task_id);
+        const id = thread.post({
+          session_id,
+          kind,
+          content,
+          ...(reply_to !== undefined ? { reply_to } : {}),
+          ...(importance !== undefined ? { importance } : {}),
         });
-      }
-      const thread = new TaskThread(store, task_id);
-      const id = thread.post({
-        session_id,
-        kind,
-        content,
-        ...(reply_to !== undefined ? { reply_to } : {}),
-      });
-      const recommendation = proposalRecommendationForPost(kind, content);
-      const directedMessageSuggestion = taskMessageSuggestionForPost(store, {
-        task_id,
-        session_id,
-        kind,
-        content,
-      });
-      return jsonReply({
-        id,
-        hint: taskPostHint(kind, content),
-        ...(directedMessageSuggestion ?? {}),
-        ...(recommendation ? { recommendation } : {}),
-      });
-    }),
+        const recommendation = proposalRecommendationForPost(kind, content);
+        const directedMessageSuggestion = taskMessageSuggestionForPost(store, {
+          task_id,
+          session_id,
+          kind,
+          content,
+        });
+        return jsonReply({
+          id,
+          hint: taskPostHint(kind, content),
+          ...(directedMessageSuggestion ?? {}),
+          ...(recommendation ? { recommendation } : {}),
+        });
+      },
+    ),
   );
 
   server.tool(

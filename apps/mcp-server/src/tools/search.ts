@@ -1,6 +1,30 @@
+import type { MemoryStore, SearchResult } from '@colony/core';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { type ToolContext, defaultWrapHandler } from './context.js';
+
+/**
+ * ICM slice 3 — augment `SearchResult` rows with the underlying observation's
+ * `importance` + `weight`. Looks up via storage in a single batched query and
+ * is a no-op when the hit list is empty. The lookup does NOT route through
+ * `MemoryStore.getObservations` so it skips the access-bookkeeping flush
+ * scheduled by the search itself (which already covered these ids).
+ */
+function enrichHitsWithImportance(
+  store: MemoryStore,
+  hits: SearchResult[],
+): Array<SearchResult & { importance?: string; weight?: number }> {
+  if (hits.length === 0) return hits;
+  const ids = hits.map((h) => h.id);
+  const meta = new Map<number, { importance: string; weight: number }>();
+  for (const row of store.storage.getObservations(ids)) {
+    meta.set(row.id, { importance: row.importance, weight: row.weight });
+  }
+  return hits.map((h) => {
+    const extra = meta.get(h.id);
+    return extra ? { ...h, importance: extra.importance, weight: extra.weight } : h;
+  });
+}
 
 export function register(server: McpServer, ctx: ToolContext): void {
   const wrapHandler = ctx.wrapHandler ?? defaultWrapHandler;
@@ -13,8 +37,12 @@ export function register(server: McpServer, ctx: ToolContext): void {
     wrapHandler('search', async ({ query, limit }) => {
       const e = (await resolveEmbedder()) ?? undefined;
       const hits = await store.search(query, limit, e);
+      // ICM slice 3: augment each hit with importance + weight without
+      // breaking the existing SearchResult shape. Pull from storage in one
+      // shot to keep this O(1) extra read for the compact list (max ~50 ids).
+      const enriched = enrichHitsWithImportance(store, hits);
       return {
-        content: [{ type: 'text', text: JSON.stringify(hits) }],
+        content: [{ type: 'text', text: JSON.stringify(enriched) }],
       };
     }),
   );
@@ -40,8 +68,9 @@ export function register(server: McpServer, ctx: ToolContext): void {
         };
       }
       const hits = await store.semanticSearch(query, limit, e);
+      const enriched = enrichHitsWithImportance(store, hits);
       return {
-        content: [{ type: 'text', text: JSON.stringify(hits) }],
+        content: [{ type: 'text', text: JSON.stringify(enriched) }],
       };
     }),
   );
@@ -101,6 +130,9 @@ export function register(server: McpServer, ctx: ToolContext): void {
     },
     wrapHandler('get_observations', async ({ ids, expand: expandOpt }) => {
       const rows = store.getObservations(ids, { expand: expandOpt ?? true });
+      // ICM slice 3: include importance + weight on each row so downstream
+      // agents can reason about decay. Additive — older consumers ignore
+      // the extra fields.
       const payload = rows.map((r) => ({
         id: r.id,
         session_id: r.session_id,
@@ -108,6 +140,8 @@ export function register(server: McpServer, ctx: ToolContext): void {
         ts: r.ts,
         content: r.content,
         metadata: r.metadata,
+        importance: r.importance,
+        weight: r.weight,
       }));
       return { content: [{ type: 'text', text: JSON.stringify(payload) }] };
     }),

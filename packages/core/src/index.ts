@@ -119,6 +119,7 @@ export {
   SCOUT_PROPOSAL_ERROR_CODES,
   type AgentRole,
   type GetObservationsOptions,
+  type Importance,
   type Observation,
   type SearchResult,
   type Session,
